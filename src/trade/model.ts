@@ -10,17 +10,19 @@ export interface SettlementPlan {
   refundGuardSeconds: 60;
 }
 
+export const SHORT_LOCK_SECONDS = 1800;
+export const LONG_LOCK_SECONDS = 3600;
+export const RESERVATION_GRACE_SECONDS = 600;
+export const CLAIM_CUTOFF_MARGIN = 120;
+export const MAX_CLOCK_SKEW_SECONDS = 120;
+
 export interface SettlementPlanInput {
   localNow: number;
-  baseMintNow: number;
-  quoteMintNow: number;
+  chainNow: number;
   orderExpiresAt: number;
+  shortLockSeconds?: number;
+  longLockSeconds?: number;
 }
-
-const DAY_SECONDS = 86_400;
-const SHORT_LOCK_SECONDS = 4 * DAY_SECONDS;
-const LONG_LOCK_SECONDS = 7 * DAY_SECONDS;
-const RESERVATION_SECONDS = 8 * DAY_SECONDS;
 
 function unixTime(value: number, label: string): number {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -31,28 +33,25 @@ function unixTime(value: number, label: string): number {
 
 export function createSettlementPlan(input: SettlementPlanInput): SettlementPlan {
   const local = unixTime(input.localNow, "Local clock");
-  const base = unixTime(input.baseMintNow, "Base mint clock");
-  const quote = unixTime(input.quoteMintNow, "Quote mint clock");
+  const chain = unixTime(input.chainNow, "Chain clock");
   const orderExpiresAt = unixTime(input.orderExpiresAt, "Order expiry");
-
-  for (const [label, mint] of [["Base mint", base], ["Quote mint", quote]] as const) {
-    if (Math.abs(mint - local) > 30) {
-      throw new Error(`${label} clock differs from the local clock by more than 30 seconds`);
-    }
+  if (Math.abs(chain - local) > MAX_CLOCK_SKEW_SECONDS) {
+    throw new Error(`Chain clock differs from the local clock by more than ${MAX_CLOCK_SKEW_SECONDS} seconds`);
   }
-
-  const anchor = Math.max(local, base, quote);
-  const reservationExpiresAt = anchor + RESERVATION_SECONDS;
+  const short = input.shortLockSeconds ?? SHORT_LOCK_SECONDS;
+  const long = input.longLockSeconds ?? LONG_LOCK_SECONDS;
+  if (long <= short) throw new Error("Long locktime must exceed the short locktime");
+  const anchor = Math.max(local, chain);
+  const reservationExpiresAt = anchor + long + RESERVATION_GRACE_SECONDS;
   if (orderExpiresAt < reservationExpiresAt) {
     throw new Error("The order expires before the settlement recovery window");
   }
-
   return {
     anchor,
-    shortLocktime: anchor + SHORT_LOCK_SECONDS,
-    makerClaimCutoff: anchor + SHORT_LOCK_SECONDS - 120,
-    longLocktime: anchor + LONG_LOCK_SECONDS,
-    takerClaimCutoff: anchor + LONG_LOCK_SECONDS - 120,
+    shortLocktime: anchor + short,
+    makerClaimCutoff: anchor + short - CLAIM_CUTOFF_MARGIN,
+    longLocktime: anchor + long,
+    takerClaimCutoff: anchor + long - CLAIM_CUTOFF_MARGIN,
     reservationExpiresAt,
     refundGuardSeconds: 60
   };
@@ -68,7 +67,7 @@ function positiveInteger(value: string, label: string): bigint {
 export interface SettlementAmountInput {
   remainingBaseAmount: string;
   fillBaseAmount: string;
-  priceCentsPerBtc: string;
+  price: string;
   execution: "all_or_none" | "partial";
   minimumFillAmount: string;
 }
@@ -77,7 +76,7 @@ export function settlementAmounts(input: SettlementAmountInput): { base: string;
   const remaining = positiveInteger(input.remainingBaseAmount, "Remaining base amount");
   const fill = positiveInteger(input.fillBaseAmount, "Fill base amount");
   const minimum = positiveInteger(input.minimumFillAmount, "Minimum fill amount");
-  positiveInteger(input.priceCentsPerBtc, "Price cents per BTC");
+  positiveInteger(input.price, "Price");
 
   if (fill > remaining) throw new Error("Fill amount exceeds the remaining order amount");
   if (input.execution === "all_or_none" && fill !== remaining) {
@@ -92,7 +91,7 @@ export function settlementAmounts(input: SettlementAmountInput): { base: string;
 
   return {
     base: fill.toString(),
-    quote: quoteAmountForSettlement(fill.toString(), input.priceCentsPerBtc)
+    quote: quoteAmountForSettlement(fill.toString(), input.price)
   };
 }
 

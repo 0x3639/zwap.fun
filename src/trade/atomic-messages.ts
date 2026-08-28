@@ -1,12 +1,13 @@
 import {
   canonicalJson,
   termsHash,
-  type GranolaTradeMessage,
-  type GranolaTradeTerms,
+  type ZwapTradeMessage,
+  type ZwapTradeTerms,
   type JsonValue
 } from "./messages.js";
+import { isAmount, isHex32, isTokenStandard, isZenonAddress } from "../zenon/validate.js";
 
-export const ATOMIC_SWAP_BODY_SCHEMA = "granola/atomic-swap-body/v1" as const;
+export const ATOMIC_SWAP_BODY_SCHEMA = "zwap/atomic-swap-body/v1" as const;
 
 export const ATOMIC_SWAP_MESSAGE_TYPES = [
   "reserve_propose",
@@ -32,16 +33,14 @@ interface VersionedBody {
 
 export interface ReserveProposeBody extends VersionedBody {
   taker_session_pubkey: string;
-  taker_cashu_pubkey: string;
-  taker_refund_pubkey: string;
+  taker_address: string;
   fill_amount: string;
 }
 
 export interface ReserveAcceptBody extends VersionedBody {
   taker_session_pubkey: string;
   maker_session_pubkey: string;
-  maker_cashu_pubkey: string;
-  maker_refund_pubkey: string;
+  maker_address: string;
   reserve_projection_id: string;
   reserve_revision: string;
   settlement_hash: string;
@@ -62,37 +61,35 @@ export interface SessionAckBody extends VersionedBody {
 }
 
 export interface LockBody extends VersionedBody {
-  cashu_token: string;
-  token_commitment: string;
+  htlc_id: string;
   validation_commitment: string;
   settlement_hash: string;
-  mint: string;
-  unit: string;
-  keyset: string;
+  chain_id: string;
+  token_standard: string;
   amount: string;
-  receiver_cashu_pubkey: string;
-  refund_cashu_pubkey: string;
-  locktime: number;
+  hash_locked_address: string;
+  time_locked_address: string;
+  expiration_time: number;
 }
 
 export interface LockAckBody extends VersionedBody {
   lock_message_id: string;
   lock_transcript_hash: string;
-  token_commitment: string;
+  htlc_id: string;
   validation_commitment: string;
   settlement_hash: string;
 }
 
 export interface ClaimNoticeBody extends VersionedBody {
-  quote_token_commitment: string;
+  quote_htlc_id: string;
   claim_operation_commitment: string;
   settlement_hash: string;
   claimed_at: number;
 }
 
 export interface FillRequestBody extends VersionedBody {
-  base_token_commitment: string;
-  quote_token_commitment: string;
+  base_htlc_id: string;
+  quote_htlc_id: string;
   base_spend_commitment: string;
   quote_spend_commitment: string;
   settlement_hash: string;
@@ -101,8 +98,8 @@ export interface FillRequestBody extends VersionedBody {
 export interface SettlementAckBody extends VersionedBody {
   fill_projection_id: string;
   fill_revision: string;
-  base_token_commitment: string;
-  quote_token_commitment: string;
+  base_htlc_id: string;
+  quote_htlc_id: string;
   settlement_hash: string;
 }
 
@@ -110,7 +107,7 @@ export type RefundLeg = "base" | "quote";
 
 export interface RefundBody extends VersionedBody {
   leg: RefundLeg;
-  token_commitment: string;
+  htlc_id: string;
   refund_operation_commitment: string;
   settlement_hash: string;
   refunded_at: number;
@@ -122,9 +119,10 @@ export const ATOMIC_SWAP_ERROR_CODES = [
   "terms_mismatch",
   "order_changed",
   "relay_unavailable",
-  "mint_unavailable",
-  "mint_rejected",
-  "proof_state_invalid",
+  "node_unavailable",
+  "chain_rejected",
+  "htlc_state_invalid",
+  "plasma_unavailable",
   "witness_invalid",
   "deadline_reached",
   "counterparty_abort",
@@ -176,19 +174,13 @@ export type AtomicSwapBody<T extends AtomicSwapMessageType = AtomicSwapMessageTy
   AtomicSwapBodyMap[T];
 
 export type AtomicSwapMessage<T extends AtomicSwapMessageType = AtomicSwapMessageType> =
-  Omit<GranolaTradeMessage, "type" | "body"> & {
+  Omit<ZwapTradeMessage, "type" | "body"> & {
     type: T;
     body: AtomicSwapBody<T>;
   };
 
-const HEX_32 = /^[0-9a-f]{64}$/;
-const COMPRESSED_PUBKEY = /^(02|03)[0-9a-f]{64}$/;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const POSITIVE_INTEGER = /^[1-9][0-9]*$/;
-const UNIT = /^[a-z][a-z0-9_-]{0,15}$/;
-const KEYSET = /^[0-9a-f]{16,66}$/;
-const TOKEN_PREFIX = /^cashu[AB][A-Za-z0-9_-]+$/;
-const utf8 = new TextEncoder();
+const CHAIN_ID = /^[1-9]\d*$/;
 
 function bodyRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -220,11 +212,18 @@ function requiredString(value: unknown, label: string, pattern: RegExp): string 
 }
 
 function hex32(value: unknown, label: string): string {
-  return requiredString(value, label, HEX_32);
+  if (!isHex32(value)) throw new Error(`${label} is invalid`);
+  return value;
 }
 
-function cashuPubkey(value: unknown, label: string): string {
-  return requiredString(value, label, COMPRESSED_PUBKEY);
+function zenonAddress(value: unknown, label: string): string {
+  if (!isZenonAddress(value)) throw new Error(`${label} is invalid`);
+  return value;
+}
+
+function tokenStandard(value: unknown, label: string): string {
+  if (!isTokenStandard(value)) throw new Error(`${label} is invalid`);
+  return value;
 }
 
 function uuid(value: unknown, label: string): string {
@@ -232,7 +231,12 @@ function uuid(value: unknown, label: string): string {
 }
 
 function amount(value: unknown, label: string): string {
-  return requiredString(value, label, POSITIVE_INTEGER);
+  if (!isAmount(value)) throw new Error(`${label} is invalid`);
+  return value;
+}
+
+function chainId(value: unknown, label: string): string {
+  return requiredString(value, label, CHAIN_ID);
 }
 
 function revision(value: unknown, label: string): string {
@@ -246,58 +250,22 @@ function timestamp(value: unknown, label: string): number {
   return value;
 }
 
-function normalizedMint(value: unknown, label: string): string {
-  if (typeof value !== "string") throw new Error(`${label} must be a normalized HTTPS URL`);
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new Error(`${label} must be a normalized HTTPS URL`);
-  }
-  if (
-    parsed.protocol !== "https:" ||
-    parsed.username ||
-    parsed.password ||
-    parsed.search ||
-    parsed.hash ||
-    parsed.toString().replace(/\/$/, "") !== value
-  ) {
-    throw new Error(`${label} must be a normalized HTTPS URL`);
+function expirationTime(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${label} must be a positive safe Unix timestamp`);
   }
   return value;
-}
-
-function token(value: unknown): string {
-  if (typeof value !== "string" || !TOKEN_PREFIX.test(value)) {
-    throw new Error("Cashu token has an invalid encoding");
-  }
-  if (utf8.encode(value).length > 24 * 1024) {
-    throw new Error("Cashu token exceeds the 24 KiB body limit");
-  }
-  return value;
-}
-
-async function sha256Text(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", utf8.encode(value));
-  return [...new Uint8Array(digest)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
 }
 
 function reservePropose(value: unknown): ReserveProposeBody {
   const body = exactBody(value, [
     "taker_session_pubkey",
-    "taker_cashu_pubkey",
-    "taker_refund_pubkey",
+    "taker_address",
     "fill_amount"
   ]);
   hex32(body.taker_session_pubkey, "Taker session public key");
-  cashuPubkey(body.taker_cashu_pubkey, "Taker Cashu public key");
-  cashuPubkey(body.taker_refund_pubkey, "Taker refund Cashu public key");
+  zenonAddress(body.taker_address, "Taker address");
   amount(body.fill_amount, "Fill amount");
-  if (body.taker_cashu_pubkey === body.taker_refund_pubkey) {
-    throw new Error("Taker Cashu settlement and refund keys must differ");
-  }
   return body as unknown as ReserveProposeBody;
 }
 
@@ -305,8 +273,7 @@ function reserveAccept(value: unknown): ReserveAcceptBody {
   const body = exactBody(value, [
     "taker_session_pubkey",
     "maker_session_pubkey",
-    "maker_cashu_pubkey",
-    "maker_refund_pubkey",
+    "maker_address",
     "reserve_projection_id",
     "reserve_revision",
     "settlement_hash",
@@ -319,8 +286,7 @@ function reserveAccept(value: unknown): ReserveAcceptBody {
   ]);
   hex32(body.taker_session_pubkey, "Taker session public key");
   hex32(body.maker_session_pubkey, "Maker session public key");
-  cashuPubkey(body.maker_cashu_pubkey, "Maker Cashu public key");
-  cashuPubkey(body.maker_refund_pubkey, "Maker refund Cashu public key");
+  zenonAddress(body.maker_address, "Maker address");
   hex32(body.reserve_projection_id, "Reserve projection ID");
   revision(body.reserve_revision, "Reserve revision");
   hex32(body.settlement_hash, "Settlement hash");
@@ -329,10 +295,9 @@ function reserveAccept(value: unknown): ReserveAcceptBody {
   const long = timestamp(body.long_locktime, "Long locktime");
   const takerCutoff = timestamp(body.taker_claim_cutoff, "Taker claim cutoff");
   const reservationExpiry = timestamp(body.reservation_expires_at, "Reservation expiry");
-  const locktimeGap = long - short;
   if (
     makerCutoff !== short - 120 ||
-    (locktimeGap !== 600 && locktimeGap !== 3 * 86_400) ||
+    long - short < 600 ||
     takerCutoff !== long - 120
   ) {
     throw new Error("Settlement deadline profile is invalid");
@@ -340,10 +305,10 @@ function reserveAccept(value: unknown): ReserveAcceptBody {
   if (reservationExpiry < long + 600) {
     throw new Error("Reservation expiry does not cover the recovery window");
   }
-  if (body.maker_cashu_pubkey === body.maker_refund_pubkey) {
-    throw new Error("Maker Cashu settlement and refund keys must differ");
+  const baseLock = lock(body.base_lock);
+  if (baseLock.time_locked_address !== body.maker_address) {
+    throw new Error("Base lock time-locked address must be the maker address");
   }
-  lock(body.base_lock);
   return body as unknown as ReserveAcceptBody;
 }
 
@@ -365,31 +330,27 @@ function sessionAck(value: unknown): SessionAckBody {
 
 function lock(value: unknown): LockBody {
   const body = exactBody(value, [
-    "cashu_token",
-    "token_commitment",
+    "htlc_id",
     "validation_commitment",
     "settlement_hash",
-    "mint",
-    "unit",
-    "keyset",
+    "chain_id",
+    "token_standard",
     "amount",
-    "receiver_cashu_pubkey",
-    "refund_cashu_pubkey",
-    "locktime"
+    "hash_locked_address",
+    "time_locked_address",
+    "expiration_time"
   ]);
-  token(body.cashu_token);
-  hex32(body.token_commitment, "Token commitment");
+  hex32(body.htlc_id, "HTLC ID");
   hex32(body.validation_commitment, "Validation commitment");
   hex32(body.settlement_hash, "Settlement hash");
-  normalizedMint(body.mint, "Mint");
-  requiredString(body.unit, "Unit", UNIT);
-  requiredString(body.keyset, "Keyset", KEYSET);
+  chainId(body.chain_id, "Chain ID");
+  tokenStandard(body.token_standard, "Token standard");
   amount(body.amount, "Lock amount");
-  cashuPubkey(body.receiver_cashu_pubkey, "Receiver Cashu public key");
-  cashuPubkey(body.refund_cashu_pubkey, "Refund Cashu public key");
-  timestamp(body.locktime, "Locktime");
-  if (body.receiver_cashu_pubkey === body.refund_cashu_pubkey) {
-    throw new Error("Lock receiver and refund keys must differ");
+  zenonAddress(body.hash_locked_address, "Hash-locked address");
+  zenonAddress(body.time_locked_address, "Time-locked address");
+  expirationTime(body.expiration_time, "Expiration time");
+  if (body.hash_locked_address === body.time_locked_address) {
+    throw new Error("Lock hash-locked and time-locked addresses must differ");
   }
   return body as unknown as LockBody;
 }
@@ -398,13 +359,13 @@ function lockAck(value: unknown): LockAckBody {
   const body = exactBody(value, [
     "lock_message_id",
     "lock_transcript_hash",
-    "token_commitment",
+    "htlc_id",
     "validation_commitment",
     "settlement_hash"
   ]);
   uuid(body.lock_message_id, "Lock message ID");
   hex32(body.lock_transcript_hash, "Lock transcript hash");
-  hex32(body.token_commitment, "Token commitment");
+  hex32(body.htlc_id, "HTLC ID");
   hex32(body.validation_commitment, "Validation commitment");
   hex32(body.settlement_hash, "Settlement hash");
   return body as unknown as LockAckBody;
@@ -412,12 +373,12 @@ function lockAck(value: unknown): LockAckBody {
 
 function claimNotice(value: unknown): ClaimNoticeBody {
   const body = exactBody(value, [
-    "quote_token_commitment",
+    "quote_htlc_id",
     "claim_operation_commitment",
     "settlement_hash",
     "claimed_at"
   ]);
-  hex32(body.quote_token_commitment, "Quote token commitment");
+  hex32(body.quote_htlc_id, "Quote HTLC ID");
   hex32(body.claim_operation_commitment, "Claim operation commitment");
   hex32(body.settlement_hash, "Settlement hash");
   timestamp(body.claimed_at, "Claim timestamp");
@@ -426,14 +387,14 @@ function claimNotice(value: unknown): ClaimNoticeBody {
 
 function fillRequest(value: unknown): FillRequestBody {
   const body = exactBody(value, [
-    "base_token_commitment",
-    "quote_token_commitment",
+    "base_htlc_id",
+    "quote_htlc_id",
     "base_spend_commitment",
     "quote_spend_commitment",
     "settlement_hash"
   ]);
-  hex32(body.base_token_commitment, "Base token commitment");
-  hex32(body.quote_token_commitment, "Quote token commitment");
+  hex32(body.base_htlc_id, "Base HTLC ID");
+  hex32(body.quote_htlc_id, "Quote HTLC ID");
   hex32(body.base_spend_commitment, "Base spend commitment");
   hex32(body.quote_spend_commitment, "Quote spend commitment");
   hex32(body.settlement_hash, "Settlement hash");
@@ -444,14 +405,14 @@ function settlementAck(value: unknown): SettlementAckBody {
   const body = exactBody(value, [
     "fill_projection_id",
     "fill_revision",
-    "base_token_commitment",
-    "quote_token_commitment",
+    "base_htlc_id",
+    "quote_htlc_id",
     "settlement_hash"
   ]);
   hex32(body.fill_projection_id, "Fill projection ID");
   revision(body.fill_revision, "Fill revision");
-  hex32(body.base_token_commitment, "Base token commitment");
-  hex32(body.quote_token_commitment, "Quote token commitment");
+  hex32(body.base_htlc_id, "Base HTLC ID");
+  hex32(body.quote_htlc_id, "Quote HTLC ID");
   hex32(body.settlement_hash, "Settlement hash");
   return body as unknown as SettlementAckBody;
 }
@@ -459,13 +420,13 @@ function settlementAck(value: unknown): SettlementAckBody {
 function refund(value: unknown): RefundBody {
   const body = exactBody(value, [
     "leg",
-    "token_commitment",
+    "htlc_id",
     "refund_operation_commitment",
     "settlement_hash",
     "refunded_at"
   ]);
   if (body.leg !== "base" && body.leg !== "quote") throw new Error("Refund leg is invalid");
-  hex32(body.token_commitment, "Refund token commitment");
+  hex32(body.htlc_id, "Refund HTLC ID");
   hex32(body.refund_operation_commitment, "Refund operation commitment");
   hex32(body.settlement_hash, "Settlement hash");
   timestamp(body.refunded_at, "Refund timestamp");
@@ -503,10 +464,10 @@ const parsers: {
 };
 
 export async function validateAtomicSwapMessage(
-  message: GranolaTradeMessage
+  message: ZwapTradeMessage
 ): Promise<AtomicSwapMessage> {
   if (!ATOMIC_SWAP_MESSAGE_TYPES.includes(message.type as AtomicSwapMessageType)) {
-    throw new Error("Message is not a Granola atomic swap message");
+    throw new Error("Message is not a Zwap atomic swap message");
   }
   const type = message.type as AtomicSwapMessageType;
   const parsedBody = parsers[type](message.body);
@@ -530,17 +491,11 @@ export async function validateAtomicSwapMessage(
     if (body.maker_claim_cutoff <= sentAt) {
       throw new Error("Settlement deadlines are already unsafe at acceptance");
     }
-    if (body.base_lock.token_commitment !== await sha256Text(body.base_lock.cashu_token)) {
-      throw new Error("Token commitment does not match the Cashu token");
-    }
-    if (body.base_lock.locktime <= sentAt) throw new Error("Locktime has already passed");
+    if (body.base_lock.expiration_time <= sentAt) throw new Error("Lock expiration has already passed");
   }
   if (type === "base_lock" || type === "quote_lock") {
     const body = parsedBody as LockBody;
-    if (body.token_commitment !== await sha256Text(body.cashu_token)) {
-      throw new Error("Token commitment does not match the Cashu token");
-    }
-    if (body.locktime <= sentAt) throw new Error("Locktime has already passed");
+    if (body.expiration_time <= sentAt) throw new Error("Lock expiration has already passed");
   }
   if (type === "claim_notice" && (parsedBody as ClaimNoticeBody).claimed_at > sentAt) {
     throw new Error("Claim timestamp is later than the message");
@@ -571,10 +526,8 @@ export interface AtomicSwapParticipants {
   makerOrderPubkey: string;
   makerSessionPubkey?: string;
   takerSessionPubkey?: string;
-  makerCashuPubkey?: string;
-  makerRefundPubkey?: string;
-  takerCashuPubkey?: string;
-  takerRefundPubkey?: string;
+  makerAddress?: string;
+  takerAddress?: string;
 }
 
 export interface AtomicSwapChoreography {
@@ -586,16 +539,16 @@ export interface AtomicSwapChoreography {
   orderProjectionId?: string;
   orderRevision?: string;
   termsHash?: string;
-  terms?: GranolaTradeTerms;
+  terms?: ZwapTradeTerms;
   lastMessageId?: string;
   settlementHash?: string;
   reserveProjectionId?: string;
   reserveProjectionRevision?: string;
   shortLocktime?: number;
   longLocktime?: number;
-  baseTokenCommitment?: string;
+  baseHtlcId?: string;
   baseValidationCommitment?: string;
-  quoteTokenCommitment?: string;
+  quoteHtlcId?: string;
   quoteValidationCommitment?: string;
   refundedLegs: RefundLeg[];
 }
@@ -712,19 +665,18 @@ function assertLockTerms(
     ? (makerOffersBase ? "base" : "quote")
     : (makerOffersBase ? "quote" : "base");
   const prefix = actualLeg === "base" ? "base" : "quote";
-  if (body.mint !== terms[`${prefix}_mint`]) throw new Error(`${prefix} mint differs from terms`);
-  if (body.unit !== terms[`${prefix}_unit`]) throw new Error(`${prefix} unit differs from terms`);
-  if (body.keyset !== terms[`${prefix}_keyset`]) throw new Error(`${prefix} keyset differs from terms`);
+  if (body.chain_id !== terms.chain_id) throw new Error("Chain ID differs from terms");
+  if (body.token_standard !== terms[`${prefix}_token`]) throw new Error(`${prefix} token differs from terms`);
   if (body.amount !== terms[`${prefix}_amount`]) throw new Error(`${prefix} amount differs from terms`);
-  if (body.locktime !== (slot === "base" ? state.longLocktime : state.shortLocktime)) {
-    throw new Error(`${prefix} locktime differs from accepted deadlines`);
+  if (body.expiration_time !== (slot === "base" ? state.longLocktime : state.shortLocktime)) {
+    throw new Error(`${prefix} expiration differs from accepted deadlines`);
   }
   assertSettlement(state, body.settlement_hash);
 }
 
 export async function advanceAtomicSwapChoreography(
   state: AtomicSwapChoreography,
-  rawMessage: GranolaTradeMessage
+  rawMessage: ZwapTradeMessage
 ): Promise<AtomicSwapChoreography> {
   if (state.phase === "settled" || state.phase === "failed") {
     throw new Error("Atomic swap choreography is terminal");
@@ -759,7 +711,7 @@ export async function advanceAtomicSwapChoreography(
   }
 
   if (message.type === "refund") {
-    if (!state.baseTokenCommitment) throw new Error("A refund requires a locked leg");
+    if (!state.baseHtlcId) throw new Error("A refund requires a locked leg");
     sameCommonSession(state, message);
     const body = message.body as RefundBody;
     assertSettlement(state, body.settlement_hash);
@@ -770,21 +722,21 @@ export async function advanceAtomicSwapChoreography(
         state.participants.takerSessionPubkey
       );
       if (
-        body.token_commitment !== state.baseTokenCommitment ||
+        body.htlc_id !== state.baseHtlcId ||
         state.longLocktime === undefined ||
         body.refunded_at <= state.longLocktime + 60
       ) {
         throw new Error("Base refund is not bound to the locked leg or its recovery deadline");
       }
     } else {
-      if (!state.quoteTokenCommitment) throw new Error("A quote refund requires a locked quote leg");
+      if (!state.quoteHtlcId) throw new Error("A quote refund requires a locked quote leg");
       assertRole(
         message,
         state.participants.takerSessionPubkey,
         state.participants.makerSessionPubkey
       );
       if (
-        body.token_commitment !== state.quoteTokenCommitment ||
+        body.htlc_id !== state.quoteHtlcId ||
         state.shortLocktime === undefined ||
         body.refunded_at <= state.shortLocktime + 60
       ) {
@@ -824,8 +776,7 @@ export async function advanceAtomicSwapChoreography(
       participants: {
         makerOrderPubkey: state.participants.makerOrderPubkey,
         takerSessionPubkey: body.taker_session_pubkey,
-        takerCashuPubkey: body.taker_cashu_pubkey,
-        takerRefundPubkey: body.taker_refund_pubkey
+        takerAddress: body.taker_address
       }
     });
   }
@@ -851,13 +802,8 @@ export async function advanceAtomicSwapChoreography(
     ) {
       throw new Error("Reservation acceptance key handoff or projection is invalid");
     }
-    if (
-      body.maker_cashu_pubkey === state.participants.takerCashuPubkey ||
-      body.maker_cashu_pubkey === state.participants.takerRefundPubkey ||
-      body.maker_refund_pubkey === state.participants.takerCashuPubkey ||
-      body.maker_refund_pubkey === state.participants.takerRefundPubkey
-    ) {
-      throw new Error("Cashu settlement and refund keys must be independent");
+    if (body.maker_address === state.participants.takerAddress) {
+      throw new Error("Maker and taker settlement addresses must differ");
     }
     if (
       !message.terms ||
@@ -873,16 +819,15 @@ export async function advanceAtomicSwapChoreography(
       participants: {
         ...state.participants,
         makerSessionPubkey: body.maker_session_pubkey,
-        makerCashuPubkey: body.maker_cashu_pubkey,
-        makerRefundPubkey: body.maker_refund_pubkey
+        makerAddress: body.maker_address
       }
     };
     assertLockTerms(acceptedState, body.base_lock, "base");
     if (
-      body.base_lock.receiver_cashu_pubkey !== state.participants.takerCashuPubkey ||
-      body.base_lock.refund_cashu_pubkey !== body.maker_refund_pubkey
+      body.base_lock.hash_locked_address !== state.participants.takerAddress ||
+      body.base_lock.time_locked_address !== body.maker_address
     ) {
-      throw new Error("Base lock receiver or refund key differs from the accepted participants");
+      throw new Error("Base lock addresses differ from the accepted participants");
     }
     return nextState(state, message, {
       phase: "awaiting_quote_lock",
@@ -893,13 +838,12 @@ export async function advanceAtomicSwapChoreography(
       reserveProjectionRevision: body.reserve_revision,
       shortLocktime: body.short_locktime,
       longLocktime: body.long_locktime,
-      baseTokenCommitment: body.base_lock.token_commitment,
+      baseHtlcId: body.base_lock.htlc_id,
       baseValidationCommitment: body.base_lock.validation_commitment,
       participants: {
         ...state.participants,
         makerSessionPubkey: body.maker_session_pubkey,
-        makerCashuPubkey: body.maker_cashu_pubkey,
-        makerRefundPubkey: body.maker_refund_pubkey
+        makerAddress: body.maker_address
       }
     });
   }
@@ -928,14 +872,14 @@ export async function advanceAtomicSwapChoreography(
     assertRole(message, makerSession, takerSession);
     assertLockTerms(state, body, "base");
     if (
-      body.receiver_cashu_pubkey !== state.participants.takerCashuPubkey ||
-      body.refund_cashu_pubkey !== state.participants.makerRefundPubkey
+      body.hash_locked_address !== state.participants.takerAddress ||
+      body.time_locked_address !== state.participants.makerAddress
     ) {
-      throw new Error("Base lock receiver or refund key differs from the accepted participants");
+      throw new Error("Base lock addresses differ from the accepted participants");
     }
     return nextState(state, message, {
       phase: "awaiting_base_lock_ack",
-      baseTokenCommitment: body.token_commitment,
+      baseHtlcId: body.htlc_id,
       baseValidationCommitment: body.validation_commitment
     });
   }
@@ -949,8 +893,8 @@ export async function advanceAtomicSwapChoreography(
     ) {
       throw new Error("Base lock acknowledgement does not bind the lock message");
     }
-    if (body.token_commitment !== state.baseTokenCommitment) {
-      throw new Error("Base token commitment changed in the acknowledgement");
+    if (body.htlc_id !== state.baseHtlcId) {
+      throw new Error("Base HTLC ID changed in the acknowledgement");
     }
     if (body.validation_commitment !== state.baseValidationCommitment) {
       throw new Error("Base validation commitment changed in the acknowledgement");
@@ -964,14 +908,14 @@ export async function advanceAtomicSwapChoreography(
     assertRole(message, takerSession, makerSession);
     assertLockTerms(state, body, "quote");
     if (
-      body.receiver_cashu_pubkey !== state.participants.makerCashuPubkey ||
-      body.refund_cashu_pubkey !== state.participants.takerRefundPubkey
+      body.hash_locked_address !== state.participants.makerAddress ||
+      body.time_locked_address !== state.participants.takerAddress
     ) {
-      throw new Error("Quote lock receiver or refund key differs from the accepted participants");
+      throw new Error("Quote lock addresses differ from the accepted participants");
     }
     return nextState(state, message, {
       phase: "settling",
-      quoteTokenCommitment: body.token_commitment,
+      quoteHtlcId: body.htlc_id,
       quoteValidationCommitment: body.validation_commitment
     });
   }
@@ -985,8 +929,8 @@ export async function advanceAtomicSwapChoreography(
     ) {
       throw new Error("Quote lock acknowledgement does not bind the lock message");
     }
-    if (body.token_commitment !== state.quoteTokenCommitment) {
-      throw new Error("Quote token commitment changed in the acknowledgement");
+    if (body.htlc_id !== state.quoteHtlcId) {
+      throw new Error("Quote HTLC ID changed in the acknowledgement");
     }
     if (body.validation_commitment !== state.quoteValidationCommitment) {
       throw new Error("Quote validation commitment changed in the acknowledgement");
@@ -998,8 +942,8 @@ export async function advanceAtomicSwapChoreography(
   if (message.type === "claim_notice") {
     const body = message.body as ClaimNoticeBody;
     assertRole(message, makerSession, takerSession);
-    if (body.quote_token_commitment !== state.quoteTokenCommitment) {
-      throw new Error("Claim notice quote token commitment changed");
+    if (body.quote_htlc_id !== state.quoteHtlcId) {
+      throw new Error("Claim notice quote HTLC ID changed");
     }
     assertSettlement(state, body.settlement_hash);
     if (state.shortLocktime === undefined || body.claimed_at >= state.shortLocktime - 120) {
@@ -1012,10 +956,10 @@ export async function advanceAtomicSwapChoreography(
     const body = message.body as FillRequestBody;
     assertRole(message, takerSession, makerSession);
     if (
-      body.base_token_commitment !== state.baseTokenCommitment ||
-      body.quote_token_commitment !== state.quoteTokenCommitment
+      body.base_htlc_id !== state.baseHtlcId ||
+      body.quote_htlc_id !== state.quoteHtlcId
     ) {
-      throw new Error("Fill request token commitment changed");
+      throw new Error("Fill request HTLC ID changed");
     }
     assertSettlement(state, body.settlement_hash);
     return nextState(state, message, { phase: "awaiting_settlement_ack" });
@@ -1028,10 +972,10 @@ export async function advanceAtomicSwapChoreography(
     body.fill_revision !== message.order_revision ||
     state.reserveProjectionRevision === undefined ||
     BigInt(body.fill_revision) !== BigInt(state.reserveProjectionRevision) + 1n ||
-    body.base_token_commitment !== state.baseTokenCommitment ||
-    body.quote_token_commitment !== state.quoteTokenCommitment
+    body.base_htlc_id !== state.baseHtlcId ||
+    body.quote_htlc_id !== state.quoteHtlcId
   ) {
-    throw new Error("Settlement acknowledgement token commitment changed");
+    throw new Error("Settlement acknowledgement HTLC ID changed");
   }
   assertSettlement(state, body.settlement_hash);
   return nextState(state, message, {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { finalizeEvent, getPublicKey, nip44 } from "nostr-tools";
 
+import { ZNN_ZTS, QSR_ZTS } from "../zenon/types.js";
 import {
   createTradeRumor,
   termsHash,
@@ -9,8 +10,8 @@ import {
   unwrapReserveAcceptance,
   unwrapTradeMessage,
   wrapTradeRumor,
-  type GranolaTradeMessage,
-  type GranolaTradeTerms
+  type ZwapTradeMessage,
+  type ZwapTradeTerms
 } from "./messages.js";
 
 const key = (last: number): Uint8Array => {
@@ -27,22 +28,19 @@ const maker = getPublicKey(makerKey);
 const taker = getPublicKey(takerKey);
 const now = 1_800_000_000;
 
-const terms: GranolaTradeTerms = {
-  base_unit: "sat",
-  base_mint: "https://testnut.cashu.space",
-  base_keyset: "0184237e63ce3423df7db2dcedc7329cff722a12b90206db53185fc31a4ca5ed96",
-  quote_unit: "usd",
-  quote_mint: "https://nofee.testnut.cashu.space",
-  quote_keyset: "00ba2e3e5779e035",
-  base_amount: "1000",
-  quote_amount: "20",
-  price_cents_per_btc: "2000000"
+const terms: ZwapTradeTerms = {
+  chain_id: "1",
+  base_token: ZNN_ZTS,
+  quote_token: QSR_ZTS,
+  base_amount: "100000000",
+  quote_amount: "350000000",
+  price: "350000000"
 };
 
-async function proposal(overrides: Partial<GranolaTradeMessage> = {}): Promise<GranolaTradeMessage> {
+async function proposal(overrides: Partial<ZwapTradeMessage> = {}): Promise<ZwapTradeMessage> {
   return {
     schema: "granola/dm/v1",
-    deployment: "cashu-testnet-v1",
+    deployment: "zenon-1-v1",
     type: "reserve_propose",
     message_id: "11111111-1111-4111-8111-111111111111",
     session_id: "55".repeat(32),
@@ -60,7 +58,7 @@ async function proposal(overrides: Partial<GranolaTradeMessage> = {}): Promise<G
     expires_at: now + 120,
     terms_hash: await termsHash(terms),
     terms,
-    body: { taker_cashu_pubkey: "02" + "66".repeat(32) },
+    body: { taker_address: "z1qzal6c5s9rjnnxd2z7dvdhjxpmmj4fmw56a0mz" },
     ...overrides
   };
 }
@@ -74,7 +72,7 @@ const wrapOptions = (ephemeralSecretKey: Uint8Array, nonceByte: number) => ({
   wrapperNonce: new Uint8Array(32).fill(nonceByte + 1)
 });
 
-function expected(message: GranolaTradeMessage, extra: Partial<Parameters<typeof unwrapTradeMessage>[2]> = {}) {
+function expected(message: ZwapTradeMessage, extra: Partial<Parameters<typeof unwrapTradeMessage>[2]> = {}) {
   return {
     now,
     expectedAuthorPubkey: taker,
@@ -86,19 +84,19 @@ function expected(message: GranolaTradeMessage, extra: Partial<Parameters<typeof
   };
 }
 
-describe("strict Granola NIP-17 messages", () => {
-  it("binds the integer BTC price to the truncated quote amount", async () => {
+describe("strict Zwap NIP-17 messages", () => {
+  it("binds the integer price to the truncated quote amount", async () => {
     await expect(termsHash({
       ...terms,
       base_amount: "200",
       quote_amount: "9",
-      price_cents_per_btc: "4950000"
+      price: "4950000"
     })).resolves.toMatch(/^[0-9a-f]{64}$/);
     await expect(termsHash({
       ...terms,
       base_amount: "200",
       quote_amount: "10",
-      price_cents_per_btc: "4950000"
+      price: "4950000"
     })).rejects.toThrow("truncated settlement");
   });
 
@@ -166,7 +164,7 @@ describe("strict Granola NIP-17 messages", () => {
     const firstRumor = await createTradeRumor(first, takerKey);
     const firstTranscript = await (await import("./messages.js")).transcriptHash(null, firstRumor.id);
     const reserveHead = "ab".repeat(32);
-    const acceptance: GranolaTradeMessage = {
+    const acceptance: ZwapTradeMessage = {
       ...first,
       type: "reserve_accept",
       message_id: "99999999-9999-4999-8999-999999999999",
@@ -347,7 +345,7 @@ describe("strict Granola NIP-17 messages", () => {
       .rejects.toThrow(/expiration jitter/i);
   });
 
-  it("rejects non-canonical Granola plaintext", async () => {
+  it("rejects non-canonical Zwap plaintext", async () => {
     const message = await proposal();
     const rumor = await createTradeRumor(message, takerKey);
     const noncanonical = {

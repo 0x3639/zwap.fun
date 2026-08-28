@@ -7,6 +7,9 @@ import {
   verifyEvent
 } from "nostr-tools";
 
+import { isTokenStandard } from "../zenon/validate.js";
+import type { OrderSide } from "../order/model.js";
+
 export type JsonValue =
   | null
   | boolean
@@ -35,23 +38,20 @@ export const TRADE_MESSAGE_TYPES = [
 
 export type TradeMessageType = (typeof TRADE_MESSAGE_TYPES)[number];
 
-export interface GranolaTradeTerms {
+export interface ZwapTradeTerms {
   /** Optional for legacy ask sessions; new sessions bind the maker side. */
-  maker_side?: "buy" | "sell";
-  base_unit: string;
-  base_mint: string;
-  base_keyset: string;
-  quote_unit: string;
-  quote_mint: string;
-  quote_keyset: string;
+  maker_side?: OrderSide;
+  chain_id: string;
+  base_token: string;
+  quote_token: string;
   base_amount: string;
   quote_amount: string;
-  price_cents_per_btc: string;
+  price: string;
 }
 
-export interface GranolaTradeMessage {
+export interface ZwapTradeMessage {
   schema: "granola/dm/v1";
-  deployment: "cashu-testnet-v1";
+  deployment: string;
   type: TradeMessageType;
   message_id: string;
   session_id: string;
@@ -68,7 +68,7 @@ export interface GranolaTradeMessage {
   sent_at: number;
   expires_at: number;
   terms_hash: string;
-  terms?: GranolaTradeTerms;
+  terms?: ZwapTradeTerms;
   body: { [key: string]: JsonValue };
 }
 
@@ -146,7 +146,7 @@ export interface OpenedTradeMessage {
   wrapper: SignedNostrEvent;
   seal: SignedNostrEvent;
   rumor: UnsignedRumor;
-  message: GranolaTradeMessage;
+  message: ZwapTradeMessage;
   transcriptHash: string;
 }
 
@@ -258,44 +258,32 @@ function positiveInteger(value: unknown, label: string): bigint {
   return BigInt(value);
 }
 
-function normalizedMint(value: unknown, label: string): string {
-  if (typeof value !== "string") throw new Error(`${label} must be an HTTPS URL`);
-  const parsed = new URL(value);
-  if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash) {
-    throw new Error(`${label} must be a normalized HTTPS URL`);
-  }
-  const normalized = parsed.toString().replace(/\/$/, "");
-  if (normalized !== value) throw new Error(`${label} must be normalized`);
-  return value;
-}
+const CHAIN_ID = /^[1-9]\d*$/;
 
-function assertTerms(value: unknown): asserts value is GranolaTradeTerms {
+function assertTerms(value: unknown): asserts value is ZwapTradeTerms {
   const terms = record(value, "Terms");
   const hasMakerSide = Object.hasOwn(terms, "maker_side");
   exactKeys(terms, [
     ...(hasMakerSide ? ["maker_side"] : []),
-    "base_unit", "base_mint", "base_keyset", "quote_unit", "quote_mint",
-    "quote_keyset", "base_amount", "quote_amount", "price_cents_per_btc"
+    "chain_id", "base_token", "quote_token", "base_amount", "quote_amount", "price"
   ], "Terms");
   if (hasMakerSide && terms.maker_side !== "buy" && terms.maker_side !== "sell") {
     throw new Error("maker_side is invalid");
   }
-  for (const field of ["base_unit", "quote_unit"] as const) {
-    const unit = terms[field];
-    if (typeof unit !== "string" || !/^[a-z][a-z0-9_-]{0,15}$/.test(unit)) {
+  if (typeof terms.chain_id !== "string" || !CHAIN_ID.test(terms.chain_id)) {
+    throw new Error("chain_id is invalid");
+  }
+  for (const field of ["base_token", "quote_token"] as const) {
+    if (!isTokenStandard(terms[field])) {
       throw new Error(`${field} is invalid`);
     }
   }
-  normalizedMint(terms.base_mint, "base_mint");
-  normalizedMint(terms.quote_mint, "quote_mint");
-  for (const field of ["base_keyset", "quote_keyset"] as const) {
-    if (typeof terms[field] !== "string" || !/^[0-9a-f]{16,66}$/.test(terms[field])) {
-      throw new Error(`${field} is invalid`);
-    }
+  if (terms.base_token === terms.quote_token) {
+    throw new Error("base_token and quote_token must differ");
   }
   const base = positiveInteger(terms.base_amount, "base_amount");
   const quote = positiveInteger(terms.quote_amount, "quote_amount");
-  const price = positiveInteger(terms.price_cents_per_btc, "price_cents_per_btc");
+  const price = positiveInteger(terms.price, "price");
   const expectedQuote = (base * price) / 100_000_000n;
   if (expectedQuote === 0n) {
     throw new Error("Trade quote amount must be at least one quote unit");
@@ -305,9 +293,9 @@ function assertTerms(value: unknown): asserts value is GranolaTradeTerms {
   }
 }
 
-export async function termsHash(terms: GranolaTradeTerms): Promise<string> {
+export async function termsHash(terms: ZwapTradeTerms): Promise<string> {
   assertTerms(terms);
-  return sha256([utf8.encode("granola-terms-v1\n"), utf8.encode(canonicalJson(terms))]);
+  return sha256([utf8.encode("zwap-terms-v1\n"), utf8.encode(canonicalJson(terms))]);
 }
 
 function safeTimestamp(value: unknown, label: string): number {
@@ -324,7 +312,13 @@ function requiredString(value: unknown, label: string, pattern?: RegExp): string
   return value;
 }
 
-async function assertMessage(value: unknown): Promise<GranolaTradeMessage> {
+const DEPLOYMENT = /^zenon-[1-9]\d*-v1$/;
+
+export function deploymentFor(chainId: string): string {
+  return `zenon-${chainId}-v1`;
+}
+
+async function assertMessage(value: unknown): Promise<ZwapTradeMessage> {
   const message = record(value, "Granola message");
   const hasTerms = Object.hasOwn(message, "terms");
   exactKeys(message, [
@@ -335,7 +329,11 @@ async function assertMessage(value: unknown): Promise<GranolaTradeMessage> {
     "previous_transcript_hash", "sent_at", "expires_at", "terms_hash",
     ...(hasTerms ? ["terms"] : []), "body"
   ], "Granola message");
-  if (message.schema !== "granola/dm/v1" || message.deployment !== "cashu-testnet-v1") {
+  if (
+    message.schema !== "granola/dm/v1" ||
+    typeof message.deployment !== "string" ||
+    !DEPLOYMENT.test(message.deployment)
+  ) {
     throw new Error("Unknown Granola message schema or deployment");
   }
   if (!TRADE_MESSAGE_TYPES.includes(message.type as TradeMessageType)) {
@@ -375,6 +373,9 @@ async function assertMessage(value: unknown): Promise<GranolaTradeMessage> {
     if (await termsHash(message.terms) !== message.terms_hash) {
       throw new Error("Terms hash does not match canonical terms");
     }
+    if (message.deployment !== deploymentFor(message.terms.chain_id)) {
+      throw new Error("Message deployment does not match the trade terms chain");
+    }
   }
 
   if (message.type === "reserve_propose" && message.recipient_pubkey !== maker) {
@@ -383,10 +384,10 @@ async function assertMessage(value: unknown): Promise<GranolaTradeMessage> {
   if (["reserve_accept", "reserve_reject"].includes(message.type as string) && message.author_pubkey !== maker) {
     throw new Error("Reservation response must be authored by the maker order key");
   }
-  return message as unknown as GranolaTradeMessage;
+  return message as unknown as ZwapTradeMessage;
 }
 
-function expectedRumorTags(message: GranolaTradeMessage, previousRumorId?: string): string[][] {
+function expectedRumorTags(message: ZwapTradeMessage, previousRumorId?: string): string[][] {
   if (message.sequence === "0") {
     if (previousRumorId !== undefined) throw new Error("Initial message cannot reference a predecessor rumor");
     return [["p", message.recipient_pubkey]];
@@ -398,7 +399,7 @@ function expectedRumorTags(message: GranolaTradeMessage, previousRumorId?: strin
 }
 
 export async function createTradeRumor(
-  message: GranolaTradeMessage,
+  message: ZwapTradeMessage,
   authorSecretKey: Uint8Array,
   previousRumorId?: string
 ): Promise<UnsignedRumor> {
@@ -510,7 +511,7 @@ export function wrapTradeRumor(
 
 export async function transcriptHash(previousTranscriptHash: string | null, rumorId: string): Promise<string> {
   return sha256([
-    utf8.encode("granola-transcript-v1\n"),
+    utf8.encode("zwap-transcript-v1\n"),
     previousTranscriptHash === null ? new Uint8Array(32) : fromHex(previousTranscriptHash),
     fromHex(rumorId)
   ]);

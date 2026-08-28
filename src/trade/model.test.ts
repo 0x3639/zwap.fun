@@ -7,20 +7,19 @@ import {
   type TradePhase
 } from "./model.js";
 
-describe("Granola settlement model", () => {
-  it("derives asymmetric deadlines from the slowest accepted clock", () => {
+describe("Zwap settlement model", () => {
+  it("derives asymmetric deadlines from the slower of the local and chain clocks", () => {
     expect(createSettlementPlan({
       localNow: 1_700_000_000,
-      baseMintNow: 1_700_000_012,
-      quoteMintNow: 1_699_999_990,
+      chainNow: 1_700_000_012,
       orderExpiresAt: 1_700_700_000
     })).toEqual({
       anchor: 1_700_000_012,
-      shortLocktime: 1_700_345_612,
-      makerClaimCutoff: 1_700_345_492,
-      longLocktime: 1_700_604_812,
-      takerClaimCutoff: 1_700_604_692,
-      reservationExpiresAt: 1_700_691_212,
+      shortLocktime: 1_700_001_812,
+      makerClaimCutoff: 1_700_001_692,
+      longLocktime: 1_700_003_612,
+      takerClaimCutoff: 1_700_003_492,
+      reservationExpiresAt: 1_700_004_212,
       refundGuardSeconds: 60
     });
   });
@@ -28,16 +27,14 @@ describe("Granola settlement model", () => {
   it("fails closed on unsafe clocks or an order that expires too soon", () => {
     expect(() => createSettlementPlan({
       localNow: 100,
-      baseMintNow: 131,
-      quoteMintNow: 100,
-      orderExpiresAt: 2_000
+      chainNow: 221,
+      orderExpiresAt: 10_000
     })).toThrow("clock differs");
 
     expect(() => createSettlementPlan({
       localNow: 100,
-      baseMintNow: 100,
-      quoteMintNow: 100,
-      orderExpiresAt: 691_299
+      chainNow: 100,
+      orderExpiresAt: 4_299
     })).toThrow("order expires before");
   });
 
@@ -45,7 +42,7 @@ describe("Granola settlement model", () => {
     expect(settlementAmounts({
       remainingBaseAmount: "20",
       fillBaseAmount: "20",
-      priceCentsPerBtc: "5000000",
+      price: "5000000",
       execution: "all_or_none",
       minimumFillAmount: "20"
     })).toEqual({ base: "20", quote: "1" });
@@ -53,7 +50,7 @@ describe("Granola settlement model", () => {
     expect(() => settlementAmounts({
       remainingBaseAmount: "20",
       fillBaseAmount: "19",
-      priceCentsPerBtc: "5000000",
+      price: "5000000",
       execution: "all_or_none",
       minimumFillAmount: "20"
     })).toThrow("all-or-none");
@@ -61,7 +58,7 @@ describe("Granola settlement model", () => {
     expect(settlementAmounts({
       remainingBaseAmount: "20",
       fillBaseAmount: "10",
-      priceCentsPerBtc: "15000000",
+      price: "15000000",
       execution: "partial",
       minimumFillAmount: "5"
     })).toEqual({ base: "10", quote: "1" });
@@ -69,7 +66,7 @@ describe("Granola settlement model", () => {
     expect(settlementAmounts({
       remainingBaseAmount: "200",
       fillBaseAmount: "200",
-      priceCentsPerBtc: "4950000",
+      price: "4950000",
       execution: "all_or_none",
       minimumFillAmount: "200"
     })).toEqual({ base: "200", quote: "9" });
