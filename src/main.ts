@@ -1,3 +1,6 @@
+import { Buffer } from "buffer";
+(globalThis as { Buffer?: typeof Buffer }).Buffer ??= Buffer;
+
 import { GranolaApi, QuoteRepository, type BrowserGranolaApi, type GranolaState } from "./api/granola-api.js";
 import { OrderApi, TEST_MARKET, type PublishOrderInput } from "./api/order-api.js";
 import { TradeApi, type TakeOrderInput } from "./api/trade-api.js";
