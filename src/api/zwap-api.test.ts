@@ -216,6 +216,48 @@ describe("ZwapApi", () => {
     expect((await api.getState()).address).toBeNull();
   });
 
+  it("does not re-install a key pair that clearWallet erased mid-derive", async () => {
+    const node = new FakeZenonNode({ chainId: 1, now: () => NOW });
+    const keystore = new KeystoreRepository(new MemoryStorageDriver());
+    await keystore.create();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let seedRead!: () => void;
+    const loaded = new Promise<void>((resolve) => { seedRead = resolve; });
+    const loadKeyPair = keystore.loadKeyPair.bind(keystore);
+    let derived: KeyPair | undefined;
+    const api = new ZwapApi({
+      keystore,
+      node,
+      config: config(),
+      createAccount: (keyPair: KeyPair) => {
+        derived = keyPair;
+        return new ZenonAccount({
+          node,
+          signer: node.signer(keyPair.address.toString())
+        });
+      }
+    });
+    // The seed is read before the erase and the derive finishes after it —
+    // exactly the window where a stale derive could resurrect the wallet.
+    vi.spyOn(keystore, "loadKeyPair").mockImplementation(async () => {
+      const keyPair = await loadKeyPair();
+      seedRead();
+      await gate;
+      return keyPair;
+    });
+
+    const inFlight = api.getState();
+    await loaded;
+    await api.clearWallet("DELETE WALLET");
+    release();
+
+    expect((await inFlight).address).toBeNull();
+    expect(api.account()).toBeNull();
+    expect(derived?.privateKey.every((byte) => byte === 0)).toBe(true);
+    expect((await api.getState()).address).toBeNull();
+  });
+
   it("derives the page key pair exactly once for concurrent readers", async () => {
     const { api, keystore } = harness();
     await keystore.create();

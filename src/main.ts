@@ -12,6 +12,7 @@ import {
   withAccountLock,
   withOrderOutboxLock
 } from "./browser/lock.js";
+import { composeKeystore } from "./browser/keystore-compose.js";
 import { profileFromLocation, storageNameForProfile } from "./browser/profile.js";
 import { BrowserTradeController } from "./browser/trade-controller.js";
 import { startInboxListeners } from "./browser/startup.js";
@@ -30,7 +31,6 @@ import { RelayClient } from "./nostr/relay.js";
 import { OrderOutboxRepository } from "./storage/order-outbox.js";
 import { IndexedDbStorageDriver } from "./storage/driver.js";
 import { ZenonAccount } from "./zenon/account.js";
-import { KeystoreRepository } from "./zenon/keystore-repository.js";
 import { KeystoreSigner } from "./zenon/keystore-signer.js";
 import type { PlasmaTier } from "./zenon/plasma-bot.js";
 import { ChainMismatchError, SdkZenonNode } from "./zenon/sdk-node.js";
@@ -89,6 +89,10 @@ const status = byId("status");
 const orderSettlementHint = byId("order-settlement-hint");
 const activity = byId<HTMLOListElement>("activity-log");
 
+const activityEntries: ActivityEntry[] = [];
+const tracedTradeMessages = new Set<string>();
+const tracedTradeCheckpoints = new Set<string>();
+
 let blockedReason: string | undefined;
 
 function showStatus(message: string, error: boolean): void {
@@ -114,6 +118,22 @@ function blockTrading(message: string): void {
   )) {
     node.disabled = true;
   }
+  disableRetryActions();
+}
+
+/**
+ * Retry is wired on every outbox paint whether or not a node is reachable, so
+ * it has to be disabled after the fact. Take and Cancel need no equivalent:
+ * `refreshOrderBook` stops passing their handlers while blocked, so the
+ * buttons are never rendered — which also leaves the show-more toggle usable.
+ */
+function disableRetryActions(): void {
+  for (const node of document.querySelectorAll<HTMLButtonElement>(
+    "#pending-publications button"
+  )) {
+    node.disabled = true;
+    node.title = blockedReason ?? "";
+  }
 }
 
 function setStatus(message: string): void {
@@ -127,7 +147,15 @@ function clearStatus(): void {
 }
 
 function report(message: string, error = false): void {
-  if (blockedReason !== undefined) return;
+  if (blockedReason !== undefined) {
+    // The banner owns `#status` while trading is blocked, but a swallowed
+    // error is worse than a crowded status bar: keep it findable.
+    console.warn(`[zwap] suppressed while blocked: ${message}`);
+    trace(error ? "Error" : "Activity", message, [
+      { label: "suppressed by", value: blockedReason }
+    ]);
+    return;
+  }
   showStatus(message, error);
   window.setTimeout(clearStatus, 5000);
 }
@@ -143,7 +171,10 @@ const locked = <T>(action: () => Promise<T>): Promise<T> =>
   withAccountLock(profile, action);
 const outboxLocked = <T>(action: () => Promise<T>): Promise<T> =>
   withOrderOutboxLock(profile, action);
-const keystore = new KeystoreRepository(driver, locked);
+// The keystore gets its own lock: its encrypted driver re-acquires the runner
+// on every read and write, and the facade already holds the account lock when
+// it calls in. See `composeKeystore`.
+const keystore = composeKeystore(driver, profile);
 const makerIdentity = new MakerIdentity(driver, locked);
 const relayClient = new RelayClient();
 const orderService = new NostrOrderService(makerIdentity, relayClient);
@@ -169,16 +200,24 @@ const orderApi = new OrderApi(
 let walletSigner: KeystoreSigner | undefined;
 let walletApi: ZwapApi | undefined;
 let createTradeRuntime: (() => Promise<BrowserTradeRuntime>) | undefined;
+let resetTradeRuntime: (() => void) | undefined;
+let powWorkerFailure: string | undefined;
 
 try {
   const node = await SdkZenonNode.connect({
     nodeUrl: config.nodeUrl,
     chainId: config.chainId
   });
-  KeystoreSigner.installPowWorker({
-    onPowStart: () => setStatus("Generating proof of work…"),
-    onPowEnd: () => clearStatus()
-  });
+  try {
+    KeystoreSigner.installPowWorker({
+      onPowStart: () => setStatus("Generating proof of work…"),
+      onPowEnd: () => clearStatus()
+    });
+  } catch (error) {
+    // Degraded, not fatal: the wallet still works while the address has
+    // plasma. Only a send from an unfused address would need the worker.
+    powWorkerFailure = messageOf(error);
+  }
   const createAccount = (keyPair: KeyPair): ZenonAccount => {
     walletSigner = new KeystoreSigner(node.zenon, keyPair);
     return new ZenonAccount({ node, signer: walletSigner });
@@ -186,6 +225,7 @@ try {
   const api = new ZwapApi({ keystore, node, config, createAccount });
   walletApi = api;
   let runtimePromise: Promise<BrowserTradeRuntime> | undefined;
+  resetTradeRuntime = () => { runtimePromise = undefined; };
   createTradeRuntime = async () => {
     // `createAccount` runs on the first wallet read, which is what publishes
     // the shared signer. Force it before the runtime asks for one.
@@ -223,9 +263,6 @@ function requireWallet(): ZwapApi {
 }
 
 let tradeControllerPromise: Promise<BrowserTradeController> | undefined;
-const activityEntries: ActivityEntry[] = [];
-const tracedTradeMessages = new Set<string>();
-const tracedTradeCheckpoints = new Set<string>();
 
 function log(message: string): void {
   trace("Activity", message);
@@ -360,11 +397,14 @@ async function refreshOrderBook(): Promise<void> {
     renderOrderBook(
       orderbook,
       { status: "ready", book: result.book },
-      {
-        onTake: takeOrderFromBook,
-        onCancel: cancelOrderFromBook,
-        canCancel: (order) => identities.includes(order.makerPubkey)
-      }
+      blockedReason === undefined
+        ? {
+          onTake: takeOrderFromBook,
+          onCancel: cancelOrderFromBook,
+          canCancel: (order) => identities.includes(order.makerPubkey)
+        }
+        // Read-only while blocked: taking or canceling both need to sign.
+        : {}
     );
   } catch (error) {
     renderOrderBook(orderbook, { status: "error", message: messageOf(error) });
@@ -527,6 +567,25 @@ async function refreshPendingPublications(): Promise<void> {
     await orderApi.getPendingOrderPublications(),
     retryPendingPublication
   );
+  if (blockedReason !== undefined) disableRetryActions();
+}
+
+/**
+ * Drops everything that outlived the erased seed. `ZwapApi.clearWallet` zeroes
+ * the key pair in place, so the `KeystoreSigner` wrapping it and the trade
+ * runtime holding that signer are now signing with zeroes. Both must go, and
+ * the maker listener with them.
+ */
+async function teardownWallet(): Promise<void> {
+  walletSigner = undefined;
+  const controller = tradeControllerPromise;
+  tradeControllerPromise = undefined;
+  resetTradeRuntime?.();
+  if (controller !== undefined) {
+    await controller.then((live) => live.stop()).catch(() => undefined);
+  }
+  tracedTradeMessages.clear();
+  tracedTradeCheckpoints.clear();
 }
 
 const zwap: ZwapBrowserFacade = {
@@ -540,9 +599,12 @@ const zwap: ZwapBrowserFacade = {
   // Reading and erasing the seed touch the keystore only, so they keep working
   // while the node is unreachable.
   revealMnemonic: (confirmation) => keystore.revealMnemonic(confirmation),
-  clearWallet: (confirmation) => locked(() => walletApi === undefined
-    ? keystore.clear(confirmation)
-    : walletApi.clearWallet(confirmation)),
+  clearWallet: async (confirmation) => {
+    await locked(() => walletApi === undefined
+      ? keystore.clear(confirmation)
+      : walletApi.clearWallet(confirmation));
+    await teardownWallet();
+  },
   resetProfile: async (confirmation) => {
     if (confirmation !== "RESET ZWAP PROFILE") {
       throw new Error("Type RESET ZWAP PROFILE to erase this profile");
@@ -564,6 +626,11 @@ const zwap: ZwapBrowserFacade = {
   enableMaker: async () => (await tradeController()).enableMaker()
 };
 window.zwap = zwap;
+
+if (powWorkerFailure !== undefined) {
+  log(`Proof-of-work worker unavailable: ${powWorkerFailure}. Sends from an address with no plasma cannot be signed; fuse plasma first.`);
+  report("Proof-of-work worker unavailable — fuse plasma before sending", true);
+}
 
 if (!hasNativeWebLocks()) {
   log("Web Locks API unavailable. Using single-tab mode; keep this wallet profile in one tab. Use HTTPS and a browser with Web Locks for multi-tab workflows.");

@@ -74,6 +74,11 @@ export class ZwapApi implements ZenonPort {
   private current: ZenonAccount | null = null;
   private keyPair: KeyPair | null = null;
   private unlocking: Promise<ZenonAccount | null> | undefined;
+  /**
+   * Bumped by `clearWallet`. A derive that started before the erase finishes
+   * after it, and must not re-install the key pair the erase just wiped.
+   */
+  private generation = 0;
 
   constructor(dependencies: ZwapApiDependencies) {
     this.keystore = dependencies.keystore;
@@ -153,6 +158,12 @@ export class ZwapApi implements ZenonPort {
   /** Erases the seed and zeroes the resident key pair the signer still holds. */
   async clearWallet(confirmation: string): Promise<void> {
     await this.keystore.clear(confirmation);
+    this.invalidate();
+  }
+
+  private invalidate(): void {
+    this.generation += 1;
+    this.unlocking = undefined;
     this.current = null;
     this.keyPair?.clear();
     this.keyPair = null;
@@ -172,22 +183,33 @@ export class ZwapApi implements ZenonPort {
    */
   private async unlock(): Promise<ZenonAccount | null> {
     if (this.current !== null) return this.current;
-    this.unlocking ??= this.derive().finally(() => {
-      this.unlocking = undefined;
-    });
-    return this.unlocking;
+    const pending = this.unlocking ?? this.derive(this.generation);
+    this.unlocking = pending;
+    try {
+      return await pending;
+    } finally {
+      if (this.unlocking === pending) this.unlocking = undefined;
+    }
   }
 
-  private async derive(): Promise<ZenonAccount | null> {
+  private async derive(generation: number): Promise<ZenonAccount | null> {
     if (!(await this.keystore.exists())) return null;
     const keyPair = await this.keystore.loadKeyPair();
+    let account: ZenonAccount;
     try {
-      this.current = this.createAccount(keyPair);
+      account = this.createAccount(keyPair);
     } catch (error) {
       keyPair.clear();
       throw error;
     }
+    if (generation !== this.generation) {
+      // `clearWallet` landed while this derive was in flight. The seed is gone;
+      // installing this key pair would resurrect a wallet the user erased.
+      keyPair.clear();
+      return null;
+    }
     this.keyPair = keyPair;
-    return this.current;
+    this.current = account;
+    return account;
   }
 }

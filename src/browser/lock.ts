@@ -59,6 +59,25 @@ export async function withAccountLock<T>(
   );
 }
 
+/**
+ * Guards the encrypted keystore namespace. It is deliberately NOT the account
+ * lock: `KeystoreRepository` hands this runner to `EncryptedStorageDriver`,
+ * which acquires it again on every `get`/`set`, so a facade call that already
+ * held the account lock would deadlock on itself — Web Locks and the in-page
+ * fallback queue are both non-re-entrant.
+ */
+export async function withKeystoreLock<T>(
+  profile: string,
+  action: () => Promise<T>,
+  locks: LockPort | undefined = hasNativeWebLocks() ? navigator.locks : undefined
+): Promise<T> {
+  return requestLock(
+    `zwap-keystore-${profile}`,
+    action,
+    locks
+  );
+}
+
 export async function withOrderOutboxLock<T>(
   profile: string,
   action: () => Promise<T>,
