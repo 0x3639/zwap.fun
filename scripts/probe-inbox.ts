@@ -15,7 +15,7 @@ const wrapper = finalizeEvent({
   kind: 1059,
   created_at: now - 30,
   tags: [["p", recipient], ["expiration", String(now + 3_600)]],
-  content: "granola encrypted inbox capability probe"
+  content: "zwap encrypted inbox capability probe"
 }, wrapperKey);
 
 const result = await probeInboxRelayLive({

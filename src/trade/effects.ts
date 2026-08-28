@@ -771,7 +771,7 @@ export class ZwapCoordinatorEffects implements CoordinatorEffectPort {
       const taker = participant(session, "takerSessionPubkey");
       if (!proposalEventId) throw new Error("Reserve staging lacks proposal evidence");
       const takerCommitment = await this.commitment(
-        `granola-taker-v1:${session.sessionId}:${proposalEventId}:${taker}`
+        `zwap-taker-v1:${session.sessionId}:${proposalEventId}:${taker}`
       );
       const request: PublishReserveInput = {
         address: session.orderAddress,
@@ -803,12 +803,10 @@ export class ZwapCoordinatorEffects implements CoordinatorEffectPort {
         expectedRevision: session.reserveProjectionRevision,
         reservationId: session.reservationId,
         amount: session.terms.baseAmount,
-        // `FillOrderEvidence` still names these fields after Cashu token
-        // commitments; on Zenon the exact settlement evidence is the HTLC ID.
         evidence: {
           settlement_hash: settlementHash,
-          base_token_commitment: base,
-          quote_token_commitment: quote
+          base_htlc_id: base,
+          quote_htlc_id: quote
         }
       };
       progress = await this.orderApi.ensureFillStaged(request);
@@ -994,7 +992,7 @@ export class ZwapCoordinatorEffects implements CoordinatorEffectPort {
       nextTranscriptHash: string;
     }> => {
       const message: ZwapTradeMessage = {
-        schema: "granola/dm/v1",
+        schema: "zwap/dm/v1",
         deployment: deploymentFor(session.terms.chainId),
         type,
         message_id: this.entropy.messageId(),
@@ -1519,7 +1517,7 @@ export class ZwapCoordinatorEffects implements CoordinatorEffectPort {
       next.evidence.reserveProjectionRevision = body.reserve_revision;
       next.evidence.reservation.takerCommitment ??=
         await this.commitment(
-          `granola-taker-v1:${session.sessionId}:` +
+          `zwap-taker-v1:${session.sessionId}:` +
           `${session.evidence.reservation.proposalSealId ?? ""}:` +
           `${participant(session, "takerSessionPubkey")}`
         );

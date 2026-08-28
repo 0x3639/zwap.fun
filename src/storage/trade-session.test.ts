@@ -33,7 +33,7 @@ import {
   type TradeSessionExclusiveRunner
 } from "./trade-session.js";
 
-const STORAGE_KEY = "granola.trade-sessions.v2";
+const STORAGE_KEY = "zwap.trade-sessions.v2";
 
 function fixedKey(byte: number): Uint8Array {
   return new Uint8Array(32).fill(byte);
@@ -113,7 +113,7 @@ const seal = structuredClone(finalizeEvent({
 }, sessionSecret));
 
 const outboxMessage: ZwapTradeMessage = {
-  schema: "granola/dm/v1",
+  schema: "zwap/dm/v1",
   deployment: deploymentFor("1"),
   type: "base_lock",
   message_id: messageId,
@@ -377,7 +377,7 @@ describe("zwap trade session repository", () => {
     expect(await reloaded.list()).toEqual([candidate]);
     const decrypted = await new EncryptedStorageDriver(
       raw,
-      "granola-trade-sessions"
+      "zwap-trade-sessions"
     ).get(STORAGE_KEY);
     expect(decrypted).toEqual({
       schema: "zwap/trade-session-store/v1",
@@ -385,7 +385,7 @@ describe("zwap trade session repository", () => {
       takerStarts: [{ ...takerStartIntent, sessionId: candidate.sessionId }]
     });
     const rawText = JSON.stringify(
-      await raw.get(`granola-trade-sessions.data.${STORAGE_KEY}`)
+      await raw.get(`zwap-trade-sessions.data.${STORAGE_KEY}`)
     );
     expect(rawText).not.toContain(takerStartIntent.requestId);
     expect(rawText).not.toContain(candidate.privateState.nostrPrivateKey);
@@ -949,7 +949,7 @@ describe("zwap trade session repository", () => {
 
   it("fails closed on corrupt nested journals and unsupported schemas", async () => {
     const corruptions: unknown[] = [
-      { ...session, schema: "granola/trade-session/v2" },
+      { ...session, schema: "zwap/trade-session/v2" },
       { ...session, revision: -1 },
       {
         ...session,
@@ -1188,7 +1188,7 @@ describe("zwap trade session repository", () => {
       candidate.privateState.counterpartyAddress = candidate.privateState.localAddress;
     }, /settlement addresses must remain distinct/i],
     ["a leaked bearer key in the private state", (candidate: TradeSession) => {
-      (candidate.privateState as unknown as Record<string, unknown>).cashuPrivateKey =
+      (candidate.privateState as unknown as Record<string, unknown>).spendPrivateKey =
         "02".repeat(32);
     }, /private state contains missing or unknown fields/i],
     ["an unknown key in the expected lock", (candidate: TradeSession) => {
@@ -1211,15 +1211,15 @@ describe("zwap trade session repository", () => {
       candidate.privateState.legs.base.expected!.hashLockedAddress = "z1";
     }, /Expected Zenon lock is invalid/i],
     ["a foreign lock network", (candidate: TradeSession) => {
-      candidate.privateState.legs.base.expected!.binding.network = "cashu-testnet-v1";
+      candidate.privateState.legs.base.expected!.binding.network = "bitcoin-signet-v1";
     }, /Expected Zenon lock binding is invalid/i],
     ["a lock hash that leaves the session HTLC hash", (candidate: TradeSession) => {
       candidate.privateState.legs.base.expected!.hashLock = "1f".repeat(32);
       candidate.privateState.chainOperation!.artifact.expected.hashLock = "1f".repeat(32);
     }, /disagrees with the trade session|matching public commitment/i],
     ["an unknown trade terms key", (candidate: TradeSession) => {
-      (candidate.terms as unknown as Record<string, unknown>).baseMint =
-        "https://testnut.cashu.space";
+      (candidate.terms as unknown as Record<string, unknown>).baseIssuer =
+        "https://issuer.example";
     }, /Trade terms contains missing or unknown fields/i],
     ["a non-token-standard base asset", (candidate: TradeSession) => {
       candidate.terms.baseToken = "sat";
@@ -1228,7 +1228,7 @@ describe("zwap trade session repository", () => {
       (candidate.evidence.legs.base as unknown as Record<string, unknown>).htlcState =
         "SPENT";
     }, /Trade leg evidence is invalid/i],
-    ["a chain operation status from the Cashu journal", (candidate: TradeSession) => {
+    ["an unknown chain operation status", (candidate: TradeSession) => {
       (candidate.privateState.chainOperation as unknown as Record<string, unknown>)
         .status = "wallet_applied";
     }, /Chain operation metadata is invalid/i],

@@ -109,7 +109,7 @@ export async function startTradeSubscription(
       stopped = true;
       for (let index = 0; index < opened.length; index += 1) {
         try {
-          opened[index]!.close("granola trade subscription stopped");
+          opened[index]!.close("zwap trade subscription stopped");
         } catch {
           reportSafely(input.onError, {
             relay: relays[index]!,
@@ -184,7 +184,7 @@ export async function startTradeSubscription(
     if (!stopped) {
       for (const subscription of opened) {
         try {
-          subscription.close("granola trade subscription start failed");
+          subscription.close("zwap trade subscription start failed");
         } catch {
           // Best-effort cleanup continues for every already-opened relay.
         }

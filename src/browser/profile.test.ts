@@ -6,7 +6,7 @@ describe("browser wallet profiles", () => {
   it("uses a named profile so two test traders can remain isolated", () => {
     expect(profileFromLocation("https://example.test/?wallet=maker")).toBe("maker");
     expect(profileFromLocation("https://example.test/?wallet=taker-2")).toBe("taker-2");
-    expect(storageNameForProfile("maker")).toBe("granola-wallet-maker");
+    expect(storageNameForProfile("maker")).toBe("zwap-wallet-maker");
   });
 
   it("defaults predictably and rejects names that could create ambiguous storage", () => {

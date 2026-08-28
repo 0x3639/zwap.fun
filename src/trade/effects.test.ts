@@ -839,7 +839,7 @@ describe("ZwapCoordinatorEffects", () => {
       const session = boundSession("taker", addresses);
       const pendingOf = (used: AtomicSwapBody<"base_lock">): TradeSession => {
         const message: ZwapTradeMessage = {
-          schema: "granola/dm/v1",
+          schema: "zwap/dm/v1",
           deployment: NETWORK,
           type: "base_lock",
           message_id: "11111111-1111-4111-8111-111111111116",
@@ -1008,7 +1008,7 @@ describe("ZwapCoordinatorEffects", () => {
       delete choreography.participants.makerSessionPubkey;
       delete choreography.participants.makerAddress;
       const message: ZwapTradeMessage = {
-        schema: "granola/dm/v1",
+        schema: "zwap/dm/v1",
         deployment: NETWORK,
         type: "reserve_accept",
         message_id: "11111111-1111-4111-8111-111111111117",
@@ -1428,7 +1428,7 @@ describe("ZwapCoordinatorEffects", () => {
       session.evidence.legs.base.validationCommitment = "5b".repeat(32);
       session.privateState.outbox = {
         message: {
-          schema: "granola/dm/v1",
+          schema: "zwap/dm/v1",
           deployment: NETWORK,
           type: "base_lock",
           message_id: "11111111-1111-4111-8111-111111111112",
@@ -1530,7 +1530,7 @@ describe("ZwapCoordinatorEffects", () => {
         committedAt: null
       };
       const stagedEntry = {
-        schema: "granola/order-outbox/v3",
+        schema: "zwap/order-outbox/v3",
         status: "staged",
         intent: {
           operation: "reserve",
@@ -1592,7 +1592,7 @@ describe("ZwapCoordinatorEffects", () => {
       const projection = event(30078, "b2");
       projection.created_at = NOW + 1;
       const stagedEntry = {
-        schema: "granola/order-outbox/v3",
+        schema: "zwap/order-outbox/v3",
         status: "staged",
         intent: {
           operation: "reserve",

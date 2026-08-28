@@ -8,7 +8,7 @@ import {
 
 import type { StorageDriver } from "../storage/driver.js";
 
-const ORDER_KEYS_KEY = "granola.nostr.order-keys.v1";
+const ORDER_KEYS_KEY = "zwap.nostr.order-keys.v1";
 const HEX_SECRET = /^[0-9a-f]{64}$/;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 

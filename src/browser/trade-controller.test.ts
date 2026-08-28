@@ -14,6 +14,7 @@ import type {
   PublicTradeView,
   TradeSession
 } from "../trade/session.js";
+import { QSR_ZTS, ZNN_ZTS } from "../zenon/types.js";
 import type {
   StartTradeSubscriptionInput
 } from "../nostr/trade-subscription.js";
@@ -70,15 +71,12 @@ function view(revision = 0): PublicTradeView {
       messages: []
     },
     terms: {
-      baseMint: "https://testnut.cashu.space",
-      baseUnit: "sat",
-      baseKeyset: "00deadbeefcafeee",
+      chainId: "1",
+      baseToken: ZNN_ZTS,
       baseAmount: "1000",
-      quoteMint: "https://nofee.testnut.cashu.space",
-      quoteUnit: "usd",
-      quoteKeyset: "00deadbeefcafeff",
+      quoteToken: QSR_ZTS,
       quoteAmount: "20",
-      priceCentsPerBtc: "2000000"
+      price: "2000000"
     },
     plan: {
       anchor: 1_800_000_000,
@@ -92,7 +90,7 @@ function view(revision = 0): PublicTradeView {
     evidence: {
       makerPubkey: "66".repeat(32),
       commitments: [],
-      mintStates: [],
+      chainStates: [],
       reserveProjectionId: null,
       reserveProjectionRevision: null,
       fillProjectionId: null,
@@ -104,24 +102,18 @@ function view(revision = 0): PublicTradeView {
       },
       legs: {
         base: {
-          tokenCommitment: null,
+          htlcId: null,
           validationCommitment: null,
-          keysetId: "00deadbeefcafeee",
-          proofCount: null,
-          fee: null,
-          mintState: "UNKNOWN",
+          htlcState: "UNKNOWN",
           observedAt: null,
           spendCommitment: null,
           claimOperationCommitment: null,
           refundOperationCommitment: null
         },
         quote: {
-          tokenCommitment: null,
+          htlcId: null,
           validationCommitment: null,
-          keysetId: "00deadbeefcafeff",
-          proofCount: null,
-          fee: null,
-          mintState: "UNKNOWN",
+          htlcState: "UNKNOWN",
           observedAt: null,
           spendCommitment: null,
           claimOperationCommitment: null,
@@ -135,7 +127,7 @@ function view(revision = 0): PublicTradeView {
 function privateSession(): TradeSession {
   return {
     ...view(),
-    schema: "granola/trade-session/v2",
+    schema: "zwap/trade-session/v1",
     evidence: {
       ...view().evidence,
       reservation: {
@@ -148,8 +140,8 @@ function privateSession(): TradeSession {
       nostrPrivateKey: [...sessionKey].map((byte) =>
         byte.toString(16).padStart(2, "0")
       ).join(""),
-      cashuPrivateKey: "99".repeat(32),
-      refundPrivateKey: "aa".repeat(32),
+      localAddress: "z1qzal6c5s9rjnnxd2z7dvdhjxpmmj4fmw56a0mz",
+      counterpartyAddress: null,
       preimage: null,
       htlcHash: null,
       settlementTranscriptHash: null,
@@ -175,10 +167,10 @@ function privateSession(): TradeSession {
         accepted: []
       },
       outbox: null,
-      cashuOperation: null,
+      chainOperation: null,
       legs: {
-        base: { token: null, expected: null, observations: [] },
-        quote: { token: null, expected: null, observations: [] }
+        base: { htlcId: null, expected: null, observations: [] },
+        quote: { htlcId: null, expected: null, observations: [] }
       }
     }
   } as unknown as TradeSession;
@@ -533,7 +525,7 @@ describe("BrowserTradeController", () => {
       ]
     });
     expect(JSON.stringify(result)).not.toMatch(
-      /token|proof|preimage|private|secret|nostr|cashu/i
+      /token|htlc|preimage|private|secret|nostr/i
     );
   });
 

@@ -9,7 +9,7 @@ describe("encrypted private storage", () => {
     const encrypted = new EncryptedStorageDriver(raw, "trade-test");
     const secret = {
       preimage: "synthetic-preimage-that-must-not-be-plaintext",
-      token: "cashuBsynthetic-bearer-token",
+      token: "synthetic-bearer-token-that-must-not-be-plaintext",
       revision: 1
     };
 

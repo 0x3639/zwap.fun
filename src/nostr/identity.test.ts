@@ -32,9 +32,9 @@ describe("ephemeral maker order identity", () => {
 
   it("rejects corrupt order storage", async () => {
     const driver = new MemoryStorageDriver();
-    await driver.set("granola.nostr.order-keys.v1", { version: 1, keys: { [ORDER_A]: "bad" } });
+    await driver.set("zwap.nostr.order-keys.v1", { version: 1, keys: { [ORDER_A]: "bad" } });
     await expect(new MakerIdentity(driver).listOrderIds()).rejects.toThrow("Order key storage is corrupt");
-    await driver.set("granola.nostr.order-keys.v1", { version: 1, keys: {} });
+    await driver.set("zwap.nostr.order-keys.v1", { version: 1, keys: {} });
     await new MakerIdentity(driver).listOrderIds();
   });
 

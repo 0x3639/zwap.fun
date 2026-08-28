@@ -84,7 +84,7 @@ try {
 }
 
 console.log(JSON.stringify({
-  schema: "granola/order-publication-trace/v1",
+  schema: "zwap/order-publication-trace/v1",
   startedAt,
   completedAt: new Date().toISOString(),
   relays: PUBLIC_RELAYS,

@@ -40,7 +40,7 @@ const terms: ZwapTradeTerms = {
 
 async function proposal(overrides: Partial<ZwapTradeMessage> = {}): Promise<ZwapTradeMessage> {
   return {
-    schema: "granola/dm/v1",
+    schema: "zwap/dm/v1",
     deployment: "zenon-1-v1",
     type: "reserve_propose",
     message_id: "11111111-1111-4111-8111-111111111111",

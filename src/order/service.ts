@@ -34,7 +34,7 @@ export interface OrderRelayPort {
 }
 
 export interface StagedOrderPublication {
-  schema: "granola/order-publication/v1";
+  schema: "zwap/order-publication/v1";
   state: OrderState;
   projection: NostrEvent;
   receipts: RelayReceipt[];
@@ -194,7 +194,7 @@ export class NostrOrderService {
     );
     assertMaker(projection, maker);
     return {
-      schema: "granola/order-publication/v1",
+      schema: "zwap/order-publication/v1",
       state: structuredClone(state),
       projection,
       receipts: []
@@ -222,7 +222,7 @@ export class NostrOrderService {
     );
     assertMaker(projection, maker);
     return {
-      schema: "granola/order-publication/v1",
+      schema: "zwap/order-publication/v1",
       state: structuredClone(state),
       projection,
       receipts: []
@@ -235,8 +235,8 @@ export class NostrOrderService {
       this.verify
     );
     if (
-      entry.schema !== "granola/order-outbox/v3" ||
-      entry.publication.schema !== "granola/order-publication/v1" ||
+      entry.schema !== "zwap/order-outbox/v3" ||
+      entry.publication.schema !== "zwap/order-publication/v1" ||
       projection.address !== entry.intent.address ||
       projection.eventId !== entry.publication.projection.id ||
       projection.state.order_id !== entry.intent.orderId ||

@@ -28,8 +28,9 @@ export type OrderOperation =
 
 export interface FillOrderEvidence {
   settlement_hash: string;
-  base_token_commitment: string;
-  quote_token_commitment: string;
+  /** The exact settled HTLC on each leg — the public proof the swap landed. */
+  base_htlc_id: string;
+  quote_htlc_id: string;
 }
 
 export interface ReleaseOrderEvidence {

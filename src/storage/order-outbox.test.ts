@@ -55,7 +55,7 @@ async function publication(): Promise<StagedOrderPublication> {
     sig: "c".repeat(128)
   };
   return {
-    schema: "granola/order-publication/v1",
+    schema: "zwap/order-publication/v1",
     state: state(),
     projection,
     receipts: []
@@ -173,14 +173,14 @@ describe("OrderOutboxRepository", () => {
         receipts: []
       }
     }];
-    driver.data.set("granola.order-outbox.v3", corrupt);
+    driver.data.set("zwap.order-outbox.v3", corrupt);
 
     await expect(repository.list()).rejects.toThrow(/corrupt/i);
   });
 
   it("does not read records outside the active outbox namespace", async () => {
     const driver = new MemoryDriver();
-    driver.data.set("granola.order-outbox.unrecognized", [{ schema: "unrecognized" }]);
+    driver.data.set("zwap.order-outbox.unrecognized", [{ schema: "unrecognized" }]);
     const repository = new OrderOutboxRepository(driver, undefined, () => true);
 
     await expect(repository.list()).resolves.toEqual([]);

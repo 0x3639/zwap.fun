@@ -157,7 +157,7 @@ export class NostrToolsInboxRelayPort implements InboxRelayPort {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
-        subscription?.close("granola query complete");
+        subscription?.close("zwap query complete");
         connection.close();
         result();
       };
@@ -200,7 +200,7 @@ export class NostrToolsInboxRelayPort implements InboxRelayPort {
       throw error;
     }
     return {
-      close: (reason = "granola subscription closed") =>
+      close: (reason = "zwap subscription closed") =>
         closeConnection(reason, false)
     };
   }

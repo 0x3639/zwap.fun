@@ -530,7 +530,7 @@ export async function probeInboxRelayLive(input: {
       otherKeyExcluded: !otherEvents.some((event) => event.id === wrapper.id)
     };
     if (!result.listReadback || !result.recipientReadback || !result.otherKeyExcluded) {
-      throw new Error("Inbox relay failed the Granola recipient-only live probe");
+      throw new Error("Inbox relay failed the Zwap recipient-only live probe");
     }
     const verified = immutableSnapshot(result);
     verifiedInboxLiveProbes.add(verified);

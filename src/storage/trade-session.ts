@@ -19,7 +19,7 @@ import { CLAIM_CUTOFF_MARGIN, RESERVATION_GRACE_SECONDS } from "../trade/model.j
 import { EncryptedStorageDriver } from "./encrypted-storage.js";
 import type { StorageDriver } from "./driver.js";
 
-const TRADE_SESSIONS_KEY = "granola.trade-sessions.v2";
+const TRADE_SESSIONS_KEY = "zwap.trade-sessions.v2";
 const HEX_32 = /^[0-9a-f]{64}$/;
 const HEX_64 = /^[0-9a-f]{128}$/;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -402,7 +402,7 @@ function validateTranscript(
 function validateMessage(value: unknown): void {
   const message = object(value, "Trade outbox message");
   if (
-    message.schema !== "granola/dm/v1" ||
+    message.schema !== "zwap/dm/v1" ||
     typeof message.deployment !== "string" ||
     !/^zenon-[1-9]\d*-v1$/.test(message.deployment) ||
     typeof message.message_id !== "string" ||
@@ -1794,14 +1794,14 @@ async function withSharedLock<T>(
 const withDefaultTradeSessionLock: TradeSessionExclusiveRunner = async <T>(
   action: () => Promise<T>
 ): Promise<T> => withSharedLock(
-  "granola-trade-sessions-storage-write",
+  "zwap-trade-sessions-storage-write",
   action
 );
 
 const withDefaultTradeEncryptionLock: TradeSessionExclusiveRunner = async <T>(
   action: () => Promise<T>
 ): Promise<T> => withSharedLock(
-  "granola-trade-sessions-encryption-key-write",
+  "zwap-trade-sessions-encryption-key-write",
   action
 );
 
@@ -1819,7 +1819,7 @@ export class TradeSessionRepository {
       ? driver
       : new EncryptedStorageDriver(
         driver,
-        "granola-trade-sessions",
+        "zwap-trade-sessions",
         withDefaultTradeEncryptionLock
       );
     this.runExclusive = runExclusive;

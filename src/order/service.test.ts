@@ -84,7 +84,7 @@ function entry(
   operation: OrderOutboxEntry["intent"]["operation"] = "create"
 ): OrderOutboxEntry {
   return {
-    schema: "granola/order-outbox/v3",
+    schema: "zwap/order-outbox/v3",
     status: "staged",
     intent: {
       operation,
@@ -110,7 +110,7 @@ describe("NostrOrderService", () => {
     expect(signer.templates).toHaveLength(1);
     expect(signer.templates[0]?.kind).toBe(30078);
     expect(publication).toEqual({
-      schema: "granola/order-publication/v1",
+      schema: "zwap/order-publication/v1",
       state: open(),
       projection: expect.objectContaining({ kind: 30078 }),
       receipts: []

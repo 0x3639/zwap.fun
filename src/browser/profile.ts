@@ -11,5 +11,5 @@ export function profileFromLocation(href: string): string {
 
 export function storageNameForProfile(profile: string): string {
   if (!PROFILE_PATTERN.test(profile)) throw new Error("Invalid wallet profile");
-  return `granola-wallet-${profile}`;
+  return `zwap-wallet-${profile}`;
 }

@@ -79,7 +79,7 @@ describe("relay client", () => {
       relays: ["wss://one.example"],
       filter: {
         kinds: [30078],
-        "#t": ["granola-order"],
+        "#t": ["zwap-order"],
         "#m": ["d".repeat(64)],
         since: 1_699_000_000,
         limit: 500

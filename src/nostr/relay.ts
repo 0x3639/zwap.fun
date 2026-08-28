@@ -119,7 +119,7 @@ export class RelayClient {
     if (!Number.isSafeInteger(since) || since < 0) throw new Error("Query start must be a Unix timestamp");
     const filter: Filter = {
       kinds: [30078],
-      "#t": ["granola-order"],
+      "#t": ["zwap-order"],
       "#m": [market],
       since,
       limit: 500

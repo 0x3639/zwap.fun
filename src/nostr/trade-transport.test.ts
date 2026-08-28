@@ -1,7 +1,14 @@
 import { finalizeEvent, getPublicKey } from "nostr-tools";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
-import { createTradeRumor, termsHash, wrapTradeRumor, type GranolaTradeMessage } from "../trade/messages.js";
+import {
+  createTradeRumor,
+  deploymentFor,
+  termsHash,
+  wrapTradeRumor,
+  type ZwapTradeMessage
+} from "../trade/messages.js";
+import { QSR_ZTS, ZNN_ZTS } from "../zenon/types.js";
 import type { NostrEvent } from "../order/events.js";
 import {
   createInboxList,
@@ -395,19 +402,16 @@ describe("Nostr trade transport", () => {
     const maker = getPublicKey(makerKey);
     const taker = getPublicKey(takerKey);
     const tradeTerms = {
-      base_unit: "sat",
-      base_mint: "https://testnut.cashu.space",
-      base_keyset: "00ba2e3e5779e035",
-      quote_unit: "usd",
-      quote_mint: "https://nofee.testnut.cashu.space",
-      quote_keyset: "00ca2e3e5779e035",
+      chain_id: "1",
+      base_token: ZNN_ZTS,
+      quote_token: QSR_ZTS,
       base_amount: "20",
       quote_amount: "1",
-      price_cents_per_btc: "5000000"
+      price: "5000000"
     };
-    const message: GranolaTradeMessage = {
-      schema: "granola/dm/v1",
-      deployment: "cashu-testnet-v1",
+    const message: ZwapTradeMessage = {
+      schema: "zwap/dm/v1",
+      deployment: deploymentFor(tradeTerms.chain_id),
       type: "reserve_propose",
       message_id: "11111111-1111-4111-8111-111111111111",
       session_id: "11".repeat(32),
@@ -425,7 +429,7 @@ describe("Nostr trade transport", () => {
       expires_at: now + 300,
       terms_hash: await termsHash(tradeTerms),
       terms: tradeTerms,
-      body: { taker_cashu_pubkey: `02${"55".repeat(32)}` }
+      body: { taker_address: "z1qzal6c5s9rjnnxd2z7dvdhjxpmmj4fmw56a0mz" }
     };
     const rumor = await createTradeRumor(message, takerKey);
     const wrapped = wrapTradeRumor(rumor, takerKey, {

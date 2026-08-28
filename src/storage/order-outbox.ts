@@ -11,7 +11,7 @@ import type { StorageDriver } from "./driver.js";
 
 // The projection-only format stores the exact signed artifact required for
 // publication retries and local recovery.
-const OUTBOX_KEY = "granola.order-outbox.v3";
+const OUTBOX_KEY = "zwap.order-outbox.v3";
 const HEX_32 = /^[0-9a-f]{64}$/;
 const HEX_64 = /^[0-9a-f]{128}$/;
 
@@ -31,7 +31,7 @@ export interface OrderPublicationIntent {
 }
 
 export interface OrderOutboxEntry {
-  schema: "granola/order-outbox/v3";
+  schema: "zwap/order-outbox/v3";
   status: OrderPublicationStatus;
   intent: OrderPublicationIntent;
   publication: StagedOrderPublication;
@@ -169,7 +169,7 @@ function assertEntry(
   }
   const entry = value as Record<string, unknown>;
   if (
-    entry.schema !== "granola/order-outbox/v3" ||
+    entry.schema !== "zwap/order-outbox/v3" ||
     !["staged", "acknowledged", "committed"].includes(String(entry.status))
   ) {
     throw new Error("Order outbox storage is corrupt");
@@ -183,7 +183,7 @@ function assertEntry(
   const accepted = validateReceipts(publication.receipts);
   const status = entry.status as OrderPublicationStatus;
   if (
-    publication.schema !== "granola/order-publication/v1" ||
+    publication.schema !== "zwap/order-publication/v1" ||
     !same(publication.state, intent.state) ||
     !validProjection(publication.projection, verify) ||
     (status === "staged" ? accepted !== 0 : accepted < 1) ||
@@ -325,7 +325,7 @@ export class OrderOutboxRepository implements OrderOutboxPort {
         if (existing.status !== "committed") throw new OrderOutboxConflictError();
       }
       const entry: OrderOutboxEntry = {
-        schema: "granola/order-outbox/v3",
+        schema: "zwap/order-outbox/v3",
         status: "staged",
         intent: clone(intent),
         publication: await stage()

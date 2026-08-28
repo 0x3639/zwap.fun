@@ -133,7 +133,7 @@ async function proposal(
     price: PRICE
   };
   const message: ZwapTradeMessage = {
-    schema: "granola/dm/v1",
+    schema: "zwap/dm/v1",
     deployment: deploymentFor("1"),
     type: "reserve_propose",
     message_id: identifiers.messageId ?? "66666666-6666-4666-8666-666666666666",

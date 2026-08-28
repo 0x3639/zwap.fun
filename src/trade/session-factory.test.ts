@@ -121,7 +121,7 @@ async function wrappedProposal(
     price: "2000000"
   };
   const message: ZwapTradeMessage = {
-    schema: "granola/dm/v1",
+    schema: "zwap/dm/v1",
     deployment: deploymentFor(chainId),
     type: "reserve_propose",
     message_id: "66666666-6666-4666-8666-666666666666",
@@ -239,7 +239,7 @@ describe("trade session factory", () => {
         transcript: { nextSequence: "0", lastRumorId: null }
       }
     });
-    expect(JSON.stringify(await raw.get("factory-test.data.granola.trade-sessions.v2")))
+    expect(JSON.stringify(await raw.get("factory-test.data.zwap.trade-sessions.v2")))
       .not.toContain(session.privateState.nostrPrivateKey);
   });
 

@@ -219,7 +219,7 @@ async function message<T extends AtomicSwapMessageType>(
   };
   const includesTerms = type === "reserve_propose" || type === "reserve_accept";
   return {
-    schema: "granola/dm/v1",
+    schema: "zwap/dm/v1",
     deployment: "zenon-1-v1",
     type,
     message_id: ids[index] ?? "00000000-0000-4000-8000-00000000000b",

@@ -50,7 +50,7 @@ export interface ZwapTradeTerms {
 }
 
 export interface ZwapTradeMessage {
-  schema: "granola/dm/v1";
+  schema: "zwap/dm/v1";
   deployment: string;
   type: TradeMessageType;
   message_id: string;
@@ -319,7 +319,7 @@ export function deploymentFor(chainId: string): string {
 }
 
 async function assertMessage(value: unknown): Promise<ZwapTradeMessage> {
-  const message = record(value, "Granola message");
+  const message = record(value, "Zwap message");
   const hasTerms = Object.hasOwn(message, "terms");
   exactKeys(message, [
     "schema", "deployment", "type", "message_id", "session_id", "reservation_id",
@@ -328,16 +328,16 @@ async function assertMessage(value: unknown): Promise<ZwapTradeMessage> {
     "recipient_pubkey", "sequence", "previous_message_id",
     "previous_transcript_hash", "sent_at", "expires_at", "terms_hash",
     ...(hasTerms ? ["terms"] : []), "body"
-  ], "Granola message");
+  ], "Zwap message");
   if (
-    message.schema !== "granola/dm/v1" ||
+    message.schema !== "zwap/dm/v1" ||
     typeof message.deployment !== "string" ||
     !DEPLOYMENT.test(message.deployment)
   ) {
-    throw new Error("Unknown Granola message schema or deployment");
+    throw new Error("Unknown Zwap message schema or deployment");
   }
   if (!TRADE_MESSAGE_TYPES.includes(message.type as TradeMessageType)) {
-    throw new Error("Unknown Granola message type");
+    throw new Error("Unknown Zwap message type");
   }
   requiredString(message.message_id, "Message ID", UUID_V4);
   requiredString(message.session_id, "Session ID", HEX_32);
@@ -540,7 +540,7 @@ async function unwrapTradeMessageInternal(
   const recipient = getPublicKey(recipientSecretKey);
   const outer = parseSignedEvent(outerValue, "Outer event");
   if (utf8.encode(outer.content).length > 32 * 1024) {
-    throw new Error("Outer encoded payload exceeds the 32 KiB Granola limit");
+    throw new Error("Outer encoded payload exceeds the 32 KiB Zwap limit");
   }
   if (outer.kind !== 1059 || !verifyFresh(outer)) throw new Error("Outer event signature or kind is invalid");
   if (outer.pubkey === recipient) throw new Error("Outer one-time pubkey must differ from recipient");
@@ -588,9 +588,9 @@ async function unwrapTradeMessageInternal(
   try {
     parsed = JSON.parse(rumor.content);
   } catch (error) {
-    throw new Error("Granola plaintext is not valid JSON", { cause: error });
+    throw new Error("Zwap plaintext is not valid JSON", { cause: error });
   }
-  if (canonicalJson(parsed) !== rumor.content) throw new Error("Granola plaintext is not canonical JSON");
+  if (canonicalJson(parsed) !== rumor.content) throw new Error("Zwap plaintext is not canonical JSON");
   const message = await assertMessage(parsed);
 
   if (rumor.pubkey !== message.author_pubkey || seal.pubkey !== message.author_pubkey) {
@@ -630,7 +630,7 @@ async function unwrapTradeMessageInternal(
   assertRandomizedTimestamp(outer.created_at, rumor.created_at, "Wrapper");
   const expiryJitter = outerExpiration - message.expires_at;
   if (expiryJitter < 3600 || expiryJitter > 86_400 || expiryJitter % 3600 !== 0) {
-    throw new Error("Outer expiration jitter is outside Granola policy");
+    throw new Error("Outer expiration jitter is outside Zwap policy");
   }
 
   const sequence = BigInt(message.sequence);

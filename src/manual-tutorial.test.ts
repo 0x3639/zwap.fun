@@ -23,9 +23,9 @@ describe("manual testnet swap tutorial", () => {
   });
 
   it("links the human tutorial from the deployed static shell", () => {
-    expect(html).toContain(
-      "https://github.com/brenorb/granola/blob/main/docs/guides/manual-testnet-swap.md"
-    );
+    // TODO(Task 13): the shell still links the upstream repository. Assert the
+    // guide path only, so the organisation rename is Task 13's to make.
+    expect(html).toContain("/docs/guides/manual-testnet-swap.md");
     expect(html).toContain("Manual test tutorial");
     expect(html).toContain('id="order-settlement-hint"');
     expect(html).not.toContain('id="mint-form"');
@@ -53,6 +53,6 @@ describe("manual testnet swap tutorial", () => {
     expect(html).toContain('id="reset-profile"');
     expect(html).not.toContain('name="confirmation"');
     expect(html).not.toContain("DELETE TEST WALLET");
-    expect(html).not.toContain("RESET GRANOLA PROFILE");
+    expect(html).not.toContain("RESET ZWAP PROFILE");
   });
 });
