@@ -1,19 +1,16 @@
 import type {
-  TradeMintPreflight,
-  TradeSpendability
-} from "../cashu/client.js";
-import {
-  normalizeMintUrl,
-  type WalletPocket,
-  type WalletState
-} from "../core/wallet.js";
-import type {
   ExactMarket,
   OrderRecord,
   OrderSide
 } from "../order/model.js";
 import type { LoadedOrderBook } from "../order/service.js";
 import type { TakerStartIntent } from "../storage/trade-session.js";
+import {
+  reservedAmount,
+  type FundsReservationRepository
+} from "../zenon/funds-reservations.js";
+import type { BalanceView, MomentumView } from "../zenon/types.js";
+import { isTokenStandard, isZenonAddress } from "../zenon/validate.js";
 import {
   assertVerifiedInitialReserveProposal,
   type VerifiedInitialReserveProposal
@@ -41,16 +38,11 @@ export interface TradeOrderBookPort {
   loadBook(market: ExactMarket, now: number): Promise<LoadedOrderBook>;
 }
 
-export interface TradeMintPreflightPort {
-  inspectTradeMint(mintUrl: string, unit: string): Promise<TradeMintPreflight>;
-}
-
-export interface TradeWalletPort {
-  load(): Promise<WalletState>;
-}
-
-export interface TradeSpendabilityPort {
-  inspectTradeSpendability(pocket: WalletPocket): Promise<TradeSpendability>;
+/** The node reads a trade start needs: chain identity, clock and balances. */
+export interface TradeChainPort {
+  chainIdentifier(): Promise<number>;
+  frontierMomentum(): Promise<MomentumView>;
+  getBalances(address: string): Promise<BalanceView[]>;
 }
 
 export type { TakerStartIntent } from "../storage/trade-session.js";
@@ -84,13 +76,15 @@ export interface TradeSessionFactoryPort {
 export interface TradeApiOptions {
   coordinator: TradeCoordinatorApiPort;
   orders: TradeOrderBookPort;
-  cashu: TradeMintPreflightPort;
-  wallets: TradeWalletPort;
-  spendability: TradeSpendabilityPort;
+  chain: TradeChainPort;
+  reservations: Pick<FundsReservationRepository, "load">;
+  localAddress: () => string;
   sessions: TradeStartRepository;
   market: ExactMarket;
   now?: () => number;
   sessionFactory?: TradeSessionFactoryPort;
+  shortLockSeconds?: number;
+  longLockSeconds?: number;
 }
 
 export interface TakeOrderInput {
@@ -101,7 +95,6 @@ export interface TakeOrderInput {
   fillBaseAmount: string;
 }
 
-const KEYSET = /^[0-9a-f]{16,66}$/;
 const HEX_32 = /^[0-9a-f]{64}$/;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -111,130 +104,58 @@ const defaultSessionFactory: TradeSessionFactoryPort = {
 };
 
 function exactMarket(left: ExactMarket, right: ExactMarket): boolean {
-  return left.baseMint === right.baseMint &&
-    left.baseUnit === right.baseUnit &&
-    left.quoteMint === right.quoteMint &&
-    left.quoteUnit === right.quoteUnit;
+  return left.chainId === right.chainId &&
+    left.baseToken === right.baseToken &&
+    left.quoteToken === right.quoteToken;
 }
 
+/** Which leg the maker must fund on chain for its own published side. */
 function makerOfferedLeg(side: OrderSide): "base" | "quote" {
   return side === "sell" ? "base" : "quote";
 }
 
+/** Which leg the taker must fund on chain against that side. */
 function takerFundingLeg(side: OrderSide): "base" | "quote" {
   return side === "sell" ? "quote" : "base";
-}
-
-function proofAmount(value: string): bigint {
-  if (!/^[1-9]\d*$/.test(value)) {
-    throw new Error("Wallet contains a malformed proof amount");
-  }
-  return BigInt(value);
-}
-
-function exactPocket(
-  wallet: WalletState,
-  mintValue: string,
-  unit: string,
-  label: "base" | "quote"
-): WalletPocket {
-  const mintUrl = normalizeMintUrl(mintValue);
-  const proofs = wallet.pockets
-    .filter((pocket) =>
-      normalizeMintUrl(pocket.mintUrl) === mintUrl &&
-      pocket.unit === unit
-    )
-    .flatMap((pocket) => pocket.proofs)
-    .map((proof) => structuredClone(proof));
-  if (proofs.length === 0) {
-    throw new Error(`Wallet has no exact ${label} funding pocket`);
-  }
-  return { mintUrl, unit, proofs };
-}
-
-function assertFunding(
-  pocket: WalletPocket,
-  spendability: TradeSpendability,
-  targetAmount: string,
-  label: "base" | "quote"
-): void {
-  if (
-    !/^[1-9]\d*$/.test(targetAmount) ||
-    !/^[1-9]\d*$/.test(spendability.faceAmount) ||
-    !/^(0|[1-9]\d*)$/.test(spendability.spendableAmount) ||
-    !/^(0|[1-9]\d*)$/.test(spendability.inputFee) ||
-    spendability.mintUrl !== pocket.mintUrl ||
-    spendability.unit !== pocket.unit ||
-    spendability.proofCount !== pocket.proofs.length
-  ) {
-    throw new Error(`Exact ${label} spendability result is invalid`);
-  }
-  const face = pocket.proofs.reduce(
-    (sum, proof) => sum + proofAmount(proof.amount),
-    0n
-  );
-  const reportedFace = BigInt(spendability.faceAmount);
-  const spendable = BigInt(spendability.spendableAmount);
-  const fee = BigInt(spendability.inputFee);
-  if (
-    reportedFace !== face ||
-    spendable > face ||
-    face - spendable !== fee
-  ) {
-    throw new Error(`Exact ${label} spendability amount is inconsistent`);
-  }
-  if (spendable < BigInt(targetAmount)) {
-    throw new Error(`Exact ${label} funding cannot cover the amount and input fee`);
-  }
-}
-
-function assertPreflight(
-  result: TradeMintPreflight,
-  mintValue: string,
-  unit: string
-): TradeMintPreflight {
-  const mint = normalizeMintUrl(mintValue);
-  if (
-    result.mintUrl !== mint ||
-    result.unit !== unit ||
-    !KEYSET.test(result.keysetId) ||
-    !Number.isSafeInteger(result.inputFeePpk) ||
-    result.inputFeePpk < 0
-  ) {
-    throw new Error("Trade mint preflight does not match an exact usable market leg");
-  }
-  return result;
 }
 
 export class TradeApi {
   private readonly coordinator: TradeCoordinatorApiPort;
   private readonly orders: TradeOrderBookPort;
-  private readonly cashu: TradeMintPreflightPort;
-  private readonly wallets: TradeWalletPort;
-  private readonly spendability: TradeSpendabilityPort;
+  private readonly chain: TradeChainPort;
+  private readonly reservations: Pick<FundsReservationRepository, "load">;
+  private readonly localAddress: () => string;
   private readonly sessions: TradeStartRepository;
   private readonly market: ExactMarket;
   private readonly now: () => number;
   private readonly sessionFactory: TradeSessionFactoryPort;
+  private readonly shortLockSeconds: number | undefined;
+  private readonly longLockSeconds: number | undefined;
 
   constructor(options: TradeApiOptions) {
     this.coordinator = options.coordinator;
     this.orders = options.orders;
-    this.cashu = options.cashu;
-    this.wallets = options.wallets;
-    this.spendability = options.spendability;
+    this.chain = options.chain;
+    this.reservations = options.reservations;
+    this.localAddress = options.localAddress;
     this.sessions = options.sessions;
-    this.market = {
-      baseMint: normalizeMintUrl(options.market.baseMint),
-      baseUnit: options.market.baseUnit,
-      quoteMint: normalizeMintUrl(options.market.quoteMint),
-      quoteUnit: options.market.quoteUnit
-    };
-    if (!exactMarket(this.market, options.market)) {
-      throw new Error("Trade API market must use canonical mint URLs");
+    if (
+      !/^[1-9]\d*$/.test(options.market.chainId) ||
+      !isTokenStandard(options.market.baseToken) ||
+      !isTokenStandard(options.market.quoteToken) ||
+      options.market.baseToken === options.market.quoteToken
+    ) {
+      throw new Error("Trade API market must be a canonical Zenon token pair");
     }
+    this.market = {
+      chainId: options.market.chainId,
+      baseToken: options.market.baseToken,
+      quoteToken: options.market.quoteToken
+    };
     this.now = options.now ?? (() => Math.floor(Date.now() / 1_000));
     this.sessionFactory = options.sessionFactory ?? defaultSessionFactory;
+    this.shortLockSeconds = options.shortLockSeconds;
+    this.longLockSeconds = options.longLockSeconds;
   }
 
   async listTrades(): Promise<PublicTradeView[]> {
@@ -280,45 +201,10 @@ export class TradeApi {
       expectedOrderRevision: input.expectedRevision,
       market: selectedMarket,
       fillBaseAmount: input.fillBaseAmount,
-      clocks: {
-        localNow: currentTime,
-        baseMintNow: currentTime,
-        quoteMintNow: currentTime
-      }
+      clocks: await this.clocks(currentTime),
+      localAddress: this.settlementAddress()
     });
-    const wallet = await this.wallets.load();
-    const fundingLeg = takerFundingLeg(order.state.side);
-    const fundingMint = fundingLeg === "base"
-      ? session.terms.baseMint
-      : session.terms.quoteMint;
-    const fundingUnit = fundingLeg === "base"
-      ? session.terms.baseUnit
-      : session.terms.quoteUnit;
-    const fundingKeyset = fundingLeg === "base"
-      ? session.terms.baseKeyset
-      : session.terms.quoteKeyset;
-    const targetAmount = fundingLeg === "base"
-      ? session.terms.baseAmount
-      : session.terms.quoteAmount;
-    if (fundingKeyset !== (fundingLeg === "base"
-      ? selectedMarket.baseKeyset
-      : selectedMarket.quoteKeyset)) {
-      throw new Error(`Session ${fundingLeg} keyset changed after exact mint preflight`);
-    }
-    const fundingPocket = exactPocket(
-      wallet,
-      fundingMint,
-      fundingUnit,
-      fundingLeg
-    );
-    const spendability =
-      await this.spendability.inspectTradeSpendability(fundingPocket);
-    assertFunding(
-      fundingPocket,
-      spendability,
-      targetAmount,
-      fundingLeg
-    );
+    await this.assertFunded(session, takerFundingLeg(order.state.side));
     const persisted = await this.sessions.createTakerForRequest(intent, session);
     this.assertBoundTaker(persisted, intent);
     return publicTradeView(persisted);
@@ -345,45 +231,10 @@ export class TradeApi {
       order,
       proposal,
       market: selectedMarket,
-      clocks: {
-        localNow: currentTime,
-        baseMintNow: currentTime,
-        quoteMintNow: currentTime
-      }
+      clocks: await this.clocks(currentTime),
+      localAddress: this.settlementAddress()
     });
-    const wallet = await this.wallets.load();
-    const fundingLeg = makerOfferedLeg(order.state.side);
-    const fundingMint = fundingLeg === "base"
-      ? session.terms.baseMint
-      : session.terms.quoteMint;
-    const fundingUnit = fundingLeg === "base"
-      ? session.terms.baseUnit
-      : session.terms.quoteUnit;
-    const fundingKeyset = fundingLeg === "base"
-      ? session.terms.baseKeyset
-      : session.terms.quoteKeyset;
-    const targetAmount = fundingLeg === "base"
-      ? session.terms.baseAmount
-      : session.terms.quoteAmount;
-    if (fundingKeyset !== (fundingLeg === "base"
-      ? selectedMarket.baseKeyset
-      : selectedMarket.quoteKeyset)) {
-      throw new Error(`Session ${fundingLeg} keyset changed after exact mint preflight`);
-    }
-    const fundingPocket = exactPocket(
-      wallet,
-      fundingMint,
-      fundingUnit,
-      fundingLeg
-    );
-    const spendability =
-      await this.spendability.inspectTradeSpendability(fundingPocket);
-    assertFunding(
-      fundingPocket,
-      spendability,
-      targetAmount,
-      fundingLeg
-    );
+    await this.assertFunded(session, makerOfferedLeg(order.state.side));
     const persisted = await this.sessions.createMakerForOrder(session);
     this.assertBoundMaker(persisted, proposal);
     return publicTradeView(persisted);
@@ -397,6 +248,66 @@ export class TradeApi {
     return value;
   }
 
+  private settlementAddress(): string {
+    const address = this.localAddress();
+    if (!isZenonAddress(address)) {
+      throw new Error("Trade API settlement address is not a canonical Zenon address");
+    }
+    return address;
+  }
+
+  /**
+   * The settlement plan is anchored on the momentum clock, not the browser's:
+   * every locktime the counterparty will check is a chain timestamp.
+   */
+  private async clocks(localNow: number): Promise<{
+    localNow: number;
+    chainNow: number;
+    shortLockSeconds?: number;
+    longLockSeconds?: number;
+  }> {
+    const momentum = await this.chain.frontierMomentum();
+    if (!Number.isSafeInteger(momentum.timestamp) || momentum.timestamp < 0) {
+      throw new Error("Frontier momentum timestamp is not a Unix timestamp");
+    }
+    return {
+      localNow,
+      chainNow: momentum.timestamp,
+      ...(this.shortLockSeconds === undefined
+        ? {}
+        : { shortLockSeconds: this.shortLockSeconds }),
+      ...(this.longLockSeconds === undefined
+        ? {}
+        : { longLockSeconds: this.longLockSeconds })
+    };
+  }
+
+  /**
+   * Refuses to start a trade the account cannot actually settle. Funds already
+   * committed to other live sessions are subtracted before the comparison, so
+   * two concurrent trades cannot both claim the same balance.
+   */
+  private async assertFunded(
+    session: TradeSession,
+    leg: "base" | "quote"
+  ): Promise<void> {
+    const tokenStandard = leg === "base"
+      ? session.terms.baseToken
+      : session.terms.quoteToken;
+    const targetAmount = BigInt(
+      leg === "base" ? session.terms.baseAmount : session.terms.quoteAmount
+    );
+    const balances = await this.chain.getBalances(session.privateState.localAddress);
+    const entry = balances.find((item) => item.tokenStandard === tokenStandard);
+    const available = BigInt(entry?.balance ?? "0") -
+      reservedAmount(await this.reservations.load(), tokenStandard, session.sessionId);
+    if (available < targetAmount) {
+      throw new Error(
+        `Insufficient ${entry?.symbol ?? tokenStandard} balance for this trade`
+      );
+    }
+  }
+
   private assertBoundTaker(
     persisted: TradeSession,
     intent: TakerStartIntent
@@ -407,10 +318,9 @@ export class TradeApi {
       persisted.offeredProjectionId !== intent.expectedProjectionId ||
       persisted.offeredProjectionRevision !== intent.expectedRevision ||
       persisted.terms.baseAmount !== intent.fillBaseAmount ||
-      persisted.terms.baseMint !== this.market.baseMint ||
-      persisted.terms.baseUnit !== this.market.baseUnit ||
-      persisted.terms.quoteMint !== this.market.quoteMint ||
-      persisted.terms.quoteUnit !== this.market.quoteUnit
+      persisted.terms.chainId !== this.market.chainId ||
+      persisted.terms.baseToken !== this.market.baseToken ||
+      persisted.terms.quoteToken !== this.market.quoteToken
     ) {
       throw new Error("Durable taker request binding returned a conflicting session");
     }
@@ -472,21 +382,18 @@ export class TradeApi {
     }
     const state = record.state;
     const exactAssets = state.side === "sell"
-      ? state.offered.mint === this.market.baseMint &&
-        state.offered.unit === this.market.baseUnit &&
-        state.requested.unit === this.market.quoteUnit &&
-        state.requested.acceptable_mints.includes(this.market.quoteMint)
+      ? state.offered.token === this.market.baseToken &&
+        state.requested.token === this.market.quoteToken
       : state.side === "buy" &&
-        state.offered.mint === this.market.quoteMint &&
-        state.offered.unit === this.market.quoteUnit &&
-        state.requested.unit === this.market.baseUnit &&
-        state.requested.acceptable_mints.includes(this.market.baseMint);
+        state.offered.token === this.market.quoteToken &&
+        state.requested.token === this.market.baseToken;
     if (
       (state.side !== "sell" && state.side !== "buy") ||
       state.status !== "open" ||
       state.reservation !== null ||
-      state.base_unit !== this.market.baseUnit ||
-      state.quote_unit !== this.market.quoteUnit ||
+      state.chain_id !== this.market.chainId ||
+      state.base_token !== this.market.baseToken ||
+      state.quote_token !== this.market.quoteToken ||
       !exactAssets
     ) {
       throw new Error("Trade order does not match the exact configured market");
@@ -494,35 +401,26 @@ export class TradeApi {
     return structuredClone(record);
   }
 
+  /**
+   * Confirms the order and the node agree on which chain this trade settles on
+   * before any session key or HTLC material exists. A chain-ID mismatch here is
+   * the browser pointing at a different network than the order was published
+   * for, which no later check would catch as cheaply.
+   */
   private async preflightMarket(
     order: OrderRecord
   ): Promise<SessionMarketSelection> {
-    const baseRequest = order.state.side === "sell"
-      ? { mint: order.state.offered.mint, unit: order.state.offered.unit }
-      : { mint: this.market.baseMint, unit: order.state.requested.unit };
-    const quoteRequest = order.state.side === "sell"
-      ? { mint: this.market.quoteMint, unit: order.state.requested.unit }
-      : { mint: order.state.offered.mint, unit: order.state.offered.unit };
-    const [base, quote] = await Promise.all([
-      this.cashu.inspectTradeMint(baseRequest.mint, baseRequest.unit),
-      this.cashu.inspectTradeMint(quoteRequest.mint, quoteRequest.unit)
-    ]);
-    const exactBase = assertPreflight(base, baseRequest.mint, baseRequest.unit);
-    const exactQuote = assertPreflight(quote, quoteRequest.mint, quoteRequest.unit);
-    if (exactBase.mintUrl !== this.market.baseMint ||
-        exactBase.unit !== this.market.baseUnit ||
-        exactQuote.mintUrl !== this.market.quoteMint ||
-        exactQuote.unit !== this.market.quoteUnit) {
-      throw new Error("Trade mint preflight does not match the exact configured market");
+    if (order.state.chain_id !== this.market.chainId) {
+      throw new Error("Trade order chain does not match the configured market");
+    }
+    const chainId = await this.chain.chainIdentifier();
+    if (String(chainId) !== this.market.chainId) {
+      throw new Error("Connected Zenon node is on a different chain than this market");
     }
     return {
-      baseMint: exactBase.mintUrl,
-      baseUnit: exactBase.unit,
-      baseKeyset: exactBase.keysetId,
-      quoteMint: exactQuote.mintUrl,
-      quoteUnit: exactQuote.unit,
-      quoteKeyset: exactQuote.keysetId
+      chainId: this.market.chainId,
+      baseToken: this.market.baseToken,
+      quoteToken: this.market.quoteToken
     };
   }
-
 }

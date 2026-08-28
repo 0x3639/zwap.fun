@@ -1,21 +1,22 @@
-import { createHTLCHash, getPubKeyFromPrivKey } from "@cashu/cashu-ts";
 import { getPublicKey } from "nostr-tools/pure";
 import { describe, expect, it, vi } from "vitest";
 
-import type {
-  TradeMintPreflight,
-  TradeSpendability
-} from "../cashu/client.js";
 import { createOrderState, type ExactMarket, type OrderRecord } from "../order/model.js";
 import type { LoadedOrderBook } from "../order/service.js";
-import type { WalletState } from "../core/wallet.js";
+import { MemoryStorageDriver } from "../storage/driver.js";
+import { createHtlcMaterial } from "../zenon/htlc-material.js";
+import { FakeZenonNode } from "../zenon/fake-node.js";
+import { FundsReservationRepository } from "../zenon/funds-reservations.js";
+import { QSR_ZTS, ZNN_ZTS } from "../zenon/types.js";
+import { ATOMIC_SWAP_BODY_SCHEMA } from "../trade/atomic-messages.js";
 import {
   createTradeRumor,
+  deploymentFor,
   termsHash,
   unwrapInitialReserveProposal,
   wrapTradeRumor,
-  type GranolaTradeMessage,
-  type VerifiedInitialReserveProposal
+  type VerifiedInitialReserveProposal,
+  type ZwapTradeMessage
 } from "../trade/messages.js";
 import {
   createMakerSession,
@@ -32,10 +33,6 @@ import {
 } from "./trade-api.js";
 
 const now = 1_800_000_000;
-const baseMint = "https://testnut.cashu.space";
-const quoteMint = "https://nofee.testnut.cashu.space";
-const baseKeyset = "00deadbeefcafeee";
-const quoteKeyset = "00deadbeefcafeff";
 const orderId = "11111111-1111-4111-8111-111111111111";
 const sessionId = "22".repeat(32);
 const reservationId = "33333333-3333-4333-8333-333333333333";
@@ -47,11 +44,15 @@ const makerOrderSecret = Uint8Array.from(
 const maker = getPublicKey(makerOrderSecret);
 
 const market: ExactMarket = {
-  baseUnit: "sat",
-  baseMint,
-  quoteUnit: "usd",
-  quoteMint
+  chainId: "1",
+  baseToken: ZNN_ZTS,
+  quoteToken: QSR_ZTS
 };
+
+/** ZNN per fill: 1000 base at price 2000000 settles for 20 QSR. */
+const BASE_AMOUNT = "1000";
+const QUOTE_AMOUNT = "20";
+const PRICE = "2000000";
 
 function hexKey(last: number): string {
   const bytes = new Uint8Array(32);
@@ -63,23 +64,12 @@ function bytes(hex: string): Uint8Array {
   return Uint8Array.from(hex.match(/../g) ?? [], (part) => Number.parseInt(part, 16));
 }
 
-function cashuPubkey(privateKey: string): string {
-  return [...getPubKeyFromPrivKey(bytes(privateKey))]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
 function entropy(offset = 0): SessionFactoryEntropy {
-  const keys = {
-    nostr: hexKey(1 + offset),
-    cashu: hexKey(2 + offset),
-    refund: hexKey(3 + offset)
-  };
   return {
     sessionId: () => sessionId,
     reservationId: () => reservationId,
-    privateKey: (purpose) => keys[purpose],
-    htlcMaterial: () => createHTLCHash("ab".repeat(32))
+    privateKey: () => hexKey(1 + offset),
+    htlcMaterial: () => createHtlcMaterial()
   };
 }
 
@@ -89,12 +79,11 @@ function order(overrides: Partial<OrderRecord> = {}): OrderRecord {
     createdAt: now - 100,
     expiresAt: now + 9 * 86_400,
     side: "sell",
-    baseUnit: "sat",
-    quoteUnit: "usd",
-    offered: { unit: "sat", mint: baseMint },
-    requested: { unit: "usd", acceptableMints: [quoteMint] },
-    amount: "1000",
-    priceCentsPerBtc: "2000000"
+    chainId: "1",
+    baseToken: ZNN_ZTS,
+    quoteToken: QSR_ZTS,
+    amount: BASE_AMOUNT,
+    price: PRICE
   });
   return {
     address: `30078:${maker}:zwap:order:v1:${orderId}`,
@@ -106,36 +95,45 @@ function order(overrides: Partial<OrderRecord> = {}): OrderRecord {
   };
 }
 
+function bidOrder(): OrderRecord {
+  return order({
+    state: createOrderState({
+      orderId,
+      createdAt: now - 100,
+      expiresAt: now + 9 * 86_400,
+      side: "buy",
+      chainId: "1",
+      baseToken: ZNN_ZTS,
+      quoteToken: QSR_ZTS,
+      amount: BASE_AMOUNT,
+      price: PRICE
+    })
+  });
+}
+
 async function proposal(
+  takerAddress: string,
   current = order(),
-  identifiers: {
-    sessionId?: string;
-    reservationId?: string;
-    messageId?: string;
-    entropyOffset?: number;
-  } = {}
+  identifiers: { entropyOffset?: number } = {}
 ): Promise<VerifiedInitialReserveProposal> {
   const takerEntropy = entropy(identifiers.entropyOffset ?? 0);
   const takerSecret = bytes(takerEntropy.privateKey("nostr"));
   const terms = {
-    base_unit: "sat",
-    base_mint: baseMint,
-    base_keyset: baseKeyset,
-    quote_unit: "usd",
-    quote_mint: quoteMint,
-    quote_keyset: quoteKeyset,
-    base_amount: "1000",
-    quote_amount: "20",
-    price_cents_per_btc: "2000000"
+    maker_side: current.state.side,
+    chain_id: "1",
+    base_token: ZNN_ZTS,
+    quote_token: QSR_ZTS,
+    base_amount: BASE_AMOUNT,
+    quote_amount: QUOTE_AMOUNT,
+    price: PRICE
   };
-  const message: GranolaTradeMessage = {
+  const message: ZwapTradeMessage = {
     schema: "granola/dm/v1",
-    deployment: "cashu-testnet-v1",
+    deployment: deploymentFor("1"),
     type: "reserve_propose",
-    message_id: identifiers.messageId ??
-      "66666666-6666-4666-8666-666666666666",
-    session_id: identifiers.sessionId ?? sessionId,
-    reservation_id: identifiers.reservationId ?? reservationId,
+    message_id: "66666666-6666-4666-8666-666666666666",
+    session_id: sessionId,
+    reservation_id: reservationId,
     order_address: current.address,
     order_projection_id: current.eventId,
     order_revision: "0",
@@ -150,11 +148,10 @@ async function proposal(
     terms_hash: await termsHash(terms),
     terms,
     body: {
-      schema: "granola/atomic-swap-body/v1",
+      schema: ATOMIC_SWAP_BODY_SCHEMA,
       taker_session_pubkey: getPublicKey(takerSecret),
-      taker_cashu_pubkey: cashuPubkey(takerEntropy.privateKey("cashu")),
-      taker_refund_pubkey: cashuPubkey(takerEntropy.privateKey("refund")),
-      fill_amount: "1000"
+      taker_address: takerAddress,
+      fill_amount: BASE_AMOUNT
     }
   };
   const rumor = await createTradeRumor(message, takerSecret);
@@ -196,19 +193,6 @@ class BookPort {
       rejected: 0
     };
   });
-}
-
-class MintPort {
-  readonly inspectTradeMint = vi.fn(async (
-    mintUrl: string,
-    unit: string
-  ): Promise<TradeMintPreflight> => ({
-    mintUrl,
-    unit,
-    keysetId: mintUrl === baseMint ? baseKeyset : quoteKeyset,
-    inputFeePpk: 0,
-    supportsDleq: true
-  }));
 }
 
 class SessionRepository {
@@ -280,67 +264,6 @@ class SessionRepository {
   }
 }
 
-function walletWithProofs(
-  mintUrl: string,
-  unit: string,
-  proofs: Array<{ amount: string; id?: string }>
-): WalletState {
-  return {
-    version: 1,
-    revision: 1,
-    pockets: [{
-      mintUrl,
-      unit,
-      proofs: proofs.map((proof, index) => ({
-        amount: proof.amount,
-        id: proof.id ?? (unit === "sat" ? baseKeyset : quoteKeyset),
-        secret: `${unit}-secret-${index}`,
-        C: "02".repeat(33)
-      }))
-    }]
-  };
-}
-
-function wallet(mintUrl: string, unit: string, amount: string): WalletState {
-  return walletWithProofs(mintUrl, unit, [{ amount }]);
-}
-
-function bidOrder(): OrderRecord {
-  return order({
-    state: createOrderState({
-      orderId,
-      createdAt: now - 100,
-      expiresAt: now + 9 * 86_400,
-      side: "buy",
-      baseUnit: "sat",
-      quoteUnit: "usd",
-      offered: { unit: "usd", mint: quoteMint },
-      requested: { unit: "sat", acceptableMints: [baseMint] },
-      amount: "1000",
-      priceCentsPerBtc: "2000000"
-    })
-  });
-}
-
-class SpendPort {
-  fee = "0";
-  readonly inspectTradeSpendability = vi.fn(async (
-    pocket: WalletState["pockets"][number]
-  ): Promise<TradeSpendability> => {
-    const face = pocket.proofs
-      .reduce((sum, proof) => sum + BigInt(proof.amount), 0n);
-    const fee = BigInt(this.fee);
-    return {
-      mintUrl: pocket.mintUrl,
-      unit: pocket.unit,
-      faceAmount: face.toString(),
-      spendableAmount: (face - fee).toString(),
-      inputFee: this.fee,
-      proofCount: pocket.proofs.length
-    };
-  });
-}
-
 function factory(): TradeSessionFactoryPort {
   return {
     createTaker: (input) => createTakerSession(input, entropy()),
@@ -348,17 +271,40 @@ function factory(): TradeSessionFactoryPort {
   };
 }
 
-function options(overrides: Partial<TradeApiOptions> = {}): {
+interface Fixture {
   api: TradeApi;
   books: BookPort;
-  mints: MintPort;
   sessions: SessionRepository;
-  spendability: SpendPort;
-} {
+  node: FakeZenonNode;
+  reservations: FundsReservationRepository;
+  localAddress: string;
+  counterpartyAddress: string;
+  chainIdentifier: ReturnType<typeof vi.fn>;
+  frontierMomentum: ReturnType<typeof vi.fn>;
+}
+
+function options(setup: {
+  overrides?: Partial<TradeApiOptions>;
+  balances?: Array<{ tokenStandard: string; amount: string }>;
+  chainId?: number;
+  momentumTimestamp?: number;
+} = {}): Fixture {
   const books = new BookPort();
-  const mints = new MintPort();
   const sessions = new SessionRepository();
-  const spendability = new SpendPort();
+  const node = new FakeZenonNode({
+    chainId: setup.chainId ?? 1,
+    now: () => setup.momentumTimestamp ?? now
+  });
+  const localAddress = node.createAddress("local");
+  const counterpartyAddress = node.createAddress("counterparty");
+  for (const funding of setup.balances ?? [
+    { tokenStandard: QSR_ZTS, amount: QUOTE_AMOUNT }
+  ]) {
+    node.fund(localAddress, funding.tokenStandard, funding.amount);
+  }
+  const reservations = new FundsReservationRepository(new MemoryStorageDriver());
+  const chainIdentifier = vi.fn(() => node.chainIdentifier());
+  const frontierMomentum = vi.fn(() => node.frontierMomentum());
   const coordinator = {
     list: vi.fn(async (): Promise<PublicTradeView[]> => []),
     get: vi.fn(async (): Promise<PublicTradeView | undefined> => undefined),
@@ -369,45 +315,54 @@ function options(overrides: Partial<TradeApiOptions> = {}): {
   const settings: TradeApiOptions = {
     coordinator,
     orders: books,
-    cashu: mints,
-    wallets: { load: async () => wallet(quoteMint, "usd", "20") },
-    spendability,
+    chain: {
+      chainIdentifier,
+      frontierMomentum,
+      getBalances: (address) => node.getBalances(address)
+    },
+    reservations,
+    localAddress: () => localAddress,
     sessions,
     market,
     now: () => now,
     sessionFactory: factory(),
-    ...overrides
+    ...setup.overrides
   };
   return {
     api: new TradeApi(settings),
     books,
-    mints,
     sessions,
-    spendability
+    node,
+    reservations,
+    localAddress,
+    counterpartyAddress,
+    chainIdentifier,
+    frontierMomentum
   };
 }
 
 describe("trade start API", () => {
   it("delegates list/get/advance through redacted coordinator views", async () => {
+    const fixture = options();
     const session = await createTakerSession({
       order: order(),
       expectedOrderProjectionId: order().eventId,
       expectedOrderRevision: "0",
-      market: {
-        ...market,
-        baseKeyset,
-        quoteKeyset
-      },
-      fillBaseAmount: "1000",
-      clocks: { localNow: now, baseMintNow: now, quoteMintNow: now }
+      market,
+      fillBaseAmount: BASE_AMOUNT,
+      clocks: { localNow: now, chainNow: now },
+      localAddress: fixture.localAddress
     }, entropy());
     const view = publicTradeView(session);
-    const coordinator = {
-      list: vi.fn(async () => [view]),
-      get: vi.fn(async () => view),
-      advance: vi.fn(async () => view)
-    };
-    const { api } = options({ coordinator });
+    const { api } = options({
+      overrides: {
+        coordinator: {
+          list: vi.fn(async () => [view]),
+          get: vi.fn(async () => view),
+          advance: vi.fn(async () => view)
+        }
+      }
+    });
 
     await expect(api.listTrades()).resolves.toEqual([view]);
     await expect(api.getTrade(session.sessionId)).resolves.toEqual(view);
@@ -416,7 +371,7 @@ describe("trade start API", () => {
       .not.toContain(session.privateState.nostrPrivateKey);
   });
 
-  it("starts a taker session only after exact market preflight and quote balance", async () => {
+  it("starts a taker session bound to the local address and momentum-anchored locktimes", async () => {
     let selectedMarket: SessionMarketSelection | undefined;
     const capturingFactory: TradeSessionFactoryPort = {
       ...factory(),
@@ -425,220 +380,245 @@ describe("trade start API", () => {
         return createTakerSession(input, entropy());
       }
     };
-    const { api, mints, sessions } = options({ sessionFactory: capturingFactory });
+    const momentumTimestamp = now + 30;
+    const fixture = options({
+      overrides: { sessionFactory: capturingFactory },
+      momentumTimestamp
+    });
     const current = order();
 
-    const view = await api.takeOrder({
+    const view = await fixture.api.takeOrder({
       requestId,
       address: current.address,
       expectedProjectionId: current.eventId,
       expectedRevision: "0",
-      fillBaseAmount: "1000"
+      fillBaseAmount: BASE_AMOUNT
     });
 
-    expect(mints.inspectTradeMint.mock.calls).toEqual([
-      [baseMint, "sat"],
-      [quoteMint, "usd"]
-    ]);
-    expect(selectedMarket).toEqual({ ...market, baseKeyset, quoteKeyset });
-    expect(sessions.createTakerForRequest).toHaveBeenCalledWith(
+    expect(fixture.chainIdentifier).toHaveBeenCalledOnce();
+    expect(selectedMarket).toEqual(market);
+    expect(fixture.sessions.createTakerForRequest).toHaveBeenCalledWith(
       {
         requestId,
         address: current.address,
         expectedProjectionId: current.eventId,
         expectedRevision: "0",
-        fillBaseAmount: "1000"
+        fillBaseAmount: BASE_AMOUNT
       },
       expect.objectContaining({ revision: 0, role: "taker" })
     );
     expect(view.terms).toMatchObject({
-      baseAmount: "1000",
-      quoteAmount: "20",
-      baseKeyset,
-      quoteKeyset
+      chainId: "1",
+      baseToken: ZNN_ZTS,
+      baseAmount: BASE_AMOUNT,
+      quoteToken: QSR_ZTS,
+      quoteAmount: QUOTE_AMOUNT
     });
+    // Anchored on the momentum clock, which leads the local clock here.
+    expect(view.plan).toMatchObject({
+      anchor: momentumTimestamp,
+      shortLocktime: momentumTimestamp + 1_800,
+      longLocktime: momentumTimestamp + 3_600
+    });
+    expect(fixture.sessions.values.get(sessionId)?.privateState.localAddress)
+      .toBe(fixture.localAddress);
     expect(JSON.stringify(view)).not.toContain("privateState");
   });
 
-  it("starts a seller session against a buy-side bid and checks base funding", async () => {
-    const { api, books, mints, spendability } = options({
-      wallets: { load: async () => wallet(baseMint, "sat", "1000") }
+  it("honours configured lock durations", async () => {
+    const fixture = options({
+      overrides: { shortLockSeconds: 900, longLockSeconds: 2_400 }
     });
-    const current = bidOrder();
-    books.current = current;
+    const current = order();
 
-    const view = await api.takeOrder({
-      requestId: "99999999-9999-4999-8999-999999999999",
+    const view = await fixture.api.takeOrder({
+      requestId,
       address: current.address,
       expectedProjectionId: current.eventId,
       expectedRevision: "0",
-      fillBaseAmount: "1000"
+      fillBaseAmount: BASE_AMOUNT
     });
 
-    expect(mints.inspectTradeMint.mock.calls).toEqual([
-      [baseMint, "sat"],
-      [quoteMint, "usd"]
-    ]);
-    expect(spendability.inspectTradeSpendability).toHaveBeenCalledWith(
-      expect.objectContaining({ mintUrl: baseMint, unit: "sat" })
-    );
-    expect(view).toMatchObject({
-      role: "taker",
-      orderSide: "buy",
-      terms: { baseAmount: "1000", quoteAmount: "20" }
+    expect(view.plan).toMatchObject({
+      anchor: now,
+      shortLocktime: now + 900,
+      longLocktime: now + 2_400
     });
   });
 
-  it("rejects missing, stale, unverified, and non-sell orders before preflight", async () => {
-    const cases: Array<[string, OrderRecord | null, {
+  it("starts a seller session against a buy-side bid and checks base funding", async () => {
+    const fixture = options({
+      balances: [{ tokenStandard: ZNN_ZTS, amount: BASE_AMOUNT }]
+    });
+    fixture.books.current = bidOrder();
+
+    const view = await fixture.api.takeOrder({
+      requestId: "99999999-9999-4999-8999-999999999999",
+      address: fixture.books.current.address,
+      expectedProjectionId: fixture.books.current.eventId,
+      expectedRevision: "0",
+      fillBaseAmount: BASE_AMOUNT
+    });
+
+    expect(view).toMatchObject({
+      role: "taker",
+      orderSide: "buy",
+      terms: { baseAmount: BASE_AMOUNT, quoteAmount: QUOTE_AMOUNT }
+    });
+  });
+
+  it("rejects a market whose chain the connected node does not serve", async () => {
+    const fixture = options({ chainId: 7 });
+    const current = order();
+
+    await expect(fixture.api.takeOrder({
+      requestId,
+      address: current.address,
+      expectedProjectionId: current.eventId,
+      expectedRevision: "0",
+      fillBaseAmount: BASE_AMOUNT
+    })).rejects.toThrow(/different chain/i);
+    expect(fixture.sessions.createTakerForRequest).not.toHaveBeenCalled();
+  });
+
+  it("rejects an order published for another chain before touching the node", async () => {
+    const fixture = options();
+    const current = order();
+    fixture.books.current = order({
+      state: { ...current.state, chain_id: "2" }
+    });
+
+    await expect(fixture.api.takeOrder({
+      requestId,
+      address: current.address,
+      expectedProjectionId: current.eventId,
+      expectedRevision: "0",
+      fillBaseAmount: BASE_AMOUNT
+    })).rejects.toThrow(/does not match the exact configured market/i);
+    expect(fixture.chainIdentifier).not.toHaveBeenCalled();
+  });
+
+  it("rejects missing, stale, unverified and reserved orders before preflight", async () => {
+    const cases: Array<[OrderRecord | null, {
       address: string;
       expectedProjectionId: string;
       expectedRevision: string;
     }]> = [
-      ["missing", null, {
+      [null, {
         address: order().address,
         expectedProjectionId: order().eventId,
         expectedRevision: "0"
       }],
-      ["stale", order(), {
+      [order(), {
         address: order().address,
         expectedProjectionId: "99".repeat(32),
         expectedRevision: "0"
       }],
-      ["unverified", order({ verified: false }), {
+      [order({ verified: false }), {
         address: order().address,
         expectedProjectionId: order().eventId,
         expectedRevision: "0"
       }],
-      ["non-sell", order({
-        state: { ...order().state, side: "buy" }
-      }), {
+      [order({ state: { ...order().state, status: "canceled" } }), {
         address: order().address,
         expectedProjectionId: order().eventId,
         expectedRevision: "0"
       }]
     ];
-    for (const [, current, request] of cases) {
-      const { api, books, mints, sessions } = options();
-      books.current = current;
-      await expect(api.takeOrder({
+    for (const [current, request] of cases) {
+      const fixture = options();
+      fixture.books.current = current;
+      await expect(fixture.api.takeOrder({
         requestId,
         ...request,
-        fillBaseAmount: "1000"
-      }))
-        .rejects.toThrow();
-      expect(mints.inspectTradeMint).not.toHaveBeenCalled();
-      expect(sessions.save).not.toHaveBeenCalled();
-    }
-  });
-
-  it("blocks mint capability, response mismatch, and unusable keysets before save", async () => {
-    const blockers = [
-      () => {
-        throw new Error("Trade mint does not support required NUT-11");
-      },
-      async (mintUrl: string, unit: string): Promise<TradeMintPreflight> => ({
-        mintUrl: mintUrl === baseMint ? "https://wrong.example" : mintUrl,
-        unit,
-        keysetId: baseKeyset,
-        inputFeePpk: 0,
-        supportsDleq: true
-      }),
-      async (mintUrl: string, unit: string): Promise<TradeMintPreflight> => ({
-        mintUrl,
-        unit,
-        keysetId: "not-a-keyset",
-        inputFeePpk: 0,
-        supportsDleq: true
-      })
-    ];
-    for (const blocker of blockers) {
-      const mints = new MintPort();
-      mints.inspectTradeMint.mockImplementation(blocker);
-      const { api, sessions } = options({ cashu: mints });
-      await expect(api.takeOrder({
-        requestId,
-        address: order().address,
-        expectedProjectionId: order().eventId,
-        expectedRevision: "0",
-        fillBaseAmount: "1000"
+        fillBaseAmount: BASE_AMOUNT
       })).rejects.toThrow();
-      expect(sessions.save).not.toHaveBeenCalled();
+      expect(fixture.chainIdentifier).not.toHaveBeenCalled();
+      expect(fixture.sessions.save).not.toHaveBeenCalled();
     }
   });
 
-  it("runs both preflights but blocks an insufficient exact quote pocket", async () => {
-    const { api, mints, sessions } = options({
-      wallets: { load: async () => wallet(quoteMint, "usd", "19") }
+  it("rejects an insufficient quote balance by token symbol", async () => {
+    const fixture = options({
+      balances: [{ tokenStandard: QSR_ZTS, amount: "19" }]
     });
-    await expect(api.takeOrder({
+
+    await expect(fixture.api.takeOrder({
       requestId,
       address: order().address,
       expectedProjectionId: order().eventId,
       expectedRevision: "0",
-      fillBaseAmount: "1000"
-    })).rejects.toThrow(/quote.*fund/i);
-    expect(mints.inspectTradeMint).toHaveBeenCalledTimes(2);
-    expect(sessions.save).not.toHaveBeenCalled();
-    expect(sessions.createTakerForRequest).not.toHaveBeenCalled();
+      fillBaseAmount: BASE_AMOUNT
+    })).rejects.toThrow("Insufficient QSR balance for this trade");
+    expect(fixture.sessions.createTakerForRequest).not.toHaveBeenCalled();
   });
 
-  it("uses exact mixed-keyset proof selection and nonzero fees for taker funding", async () => {
-    const spendable = new SpendPort();
-    spendable.fee = "1";
-    const enough = options({
-      wallets: {
-        load: async () => walletWithProofs(quoteMint, "usd", [
-          { amount: "10", id: "00aaaaaaaaaaaaaaaa" },
-          { amount: "11", id: quoteKeyset }
-        ])
-      },
-      spendability: spendable
+  it("names the token standard when the account holds none of the funding token", async () => {
+    const fixture = options({
+      balances: [{ tokenStandard: ZNN_ZTS, amount: BASE_AMOUNT }]
     });
-    await expect(enough.api.takeOrder({
+
+    await expect(fixture.api.takeOrder({
       requestId,
       address: order().address,
       expectedProjectionId: order().eventId,
       expectedRevision: "0",
-      fillBaseAmount: "1000"
+      fillBaseAmount: BASE_AMOUNT
+    })).rejects.toThrow(`Insufficient ${QSR_ZTS} balance for this trade`);
+  });
+
+  it("subtracts funds already reserved by other live sessions", async () => {
+    const fixture = options({
+      balances: [{ tokenStandard: QSR_ZTS, amount: "25" }]
+    });
+    const state = await fixture.reservations.load();
+    await fixture.reservations.reserve(state.revision, {
+      sessionId: "another-session",
+      tokenStandard: QSR_ZTS,
+      amount: "10",
+      reservedAt: now - 5
+    });
+
+    await expect(fixture.api.takeOrder({
+      requestId,
+      address: order().address,
+      expectedProjectionId: order().eventId,
+      expectedRevision: "0",
+      fillBaseAmount: BASE_AMOUNT
+    })).rejects.toThrow("Insufficient QSR balance for this trade");
+  });
+
+  it("ignores this session's own reservation when re-checking funding", async () => {
+    const fixture = options({
+      balances: [{ tokenStandard: QSR_ZTS, amount: QUOTE_AMOUNT }]
+    });
+    const state = await fixture.reservations.load();
+    await fixture.reservations.reserve(state.revision, {
+      sessionId,
+      tokenStandard: QSR_ZTS,
+      amount: QUOTE_AMOUNT,
+      reservedAt: now - 5
+    });
+
+    await expect(fixture.api.takeOrder({
+      requestId,
+      address: order().address,
+      expectedProjectionId: order().eventId,
+      expectedRevision: "0",
+      fillBaseAmount: BASE_AMOUNT
     })).resolves.toMatchObject({ role: "taker" });
-    expect(spendable.inspectTradeSpendability.mock.calls[0]?.[0].proofs
-      .map((proof) => proof.id)).toEqual([
-      "00aaaaaaaaaaaaaaaa",
-      quoteKeyset
-    ]);
-
-    const shortSelector = new SpendPort();
-    shortSelector.fee = "1";
-    const short = options({
-      wallets: {
-        load: async () => walletWithProofs(quoteMint, "usd", [
-          { amount: "10", id: "00aaaaaaaaaaaaaaaa" },
-          { amount: "10", id: quoteKeyset }
-        ])
-      },
-      spendability: shortSelector
-    });
-    await expect(short.api.takeOrder({
-      requestId,
-      address: order().address,
-      expectedProjectionId: order().eventId,
-      expectedRevision: "0",
-      fillBaseAmount: "1000"
-    })).rejects.toThrow(/quote.*fund/i);
-    expect(short.sessions.createTakerForRequest).not.toHaveBeenCalled();
   });
 
-  it("starts a maker session only from a verified inbox proposal after base balance preflight", async () => {
-    const verified = await proposal();
-    const { api, mints, sessions } = options({
-      wallets: { load: async () => wallet(baseMint, "sat", "1000") }
+  it("starts a maker session from a verified proposal after base balance preflight", async () => {
+    const fixture = options({
+      balances: [{ tokenStandard: ZNN_ZTS, amount: BASE_AMOUNT }]
     });
+    const verified = await proposal(fixture.counterpartyAddress);
 
-    const view = await api.acceptReserveProposal(verified);
+    const view = await fixture.api.acceptReserveProposal(verified);
 
-    expect(mints.inspectTradeMint).toHaveBeenCalledTimes(2);
-    expect(sessions.createMakerForOrder).toHaveBeenCalledWith(
+    expect(fixture.chainIdentifier).toHaveBeenCalledOnce();
+    expect(fixture.sessions.createMakerForOrder).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId,
         reservationId,
@@ -646,90 +626,49 @@ describe("trade start API", () => {
         role: "maker"
       })
     );
+    expect(view.terms).toMatchObject({
+      baseToken: ZNN_ZTS,
+      baseAmount: BASE_AMOUNT,
+      quoteToken: QSR_ZTS,
+      quoteAmount: QUOTE_AMOUNT
+    });
     expect(JSON.stringify(view)).not.toContain(verified.wrapper.content);
     expect(JSON.stringify(view)).not.toContain("privateState");
   });
 
   it("returns the existing maker session for an exact proposal retry", async () => {
-    const verified = await proposal();
-    const { api, sessions, mints } = options({
-      wallets: { load: async () => wallet(baseMint, "sat", "1000") }
+    const fixture = options({
+      balances: [{ tokenStandard: ZNN_ZTS, amount: BASE_AMOUNT }]
     });
+    const verified = await proposal(fixture.counterpartyAddress);
 
-    const first = await api.acceptReserveProposal(verified);
-    const retried = await api.acceptReserveProposal(verified);
+    const first = await fixture.api.acceptReserveProposal(verified);
+    const retried = await fixture.api.acceptReserveProposal(verified);
 
     expect(retried).toEqual(first);
-    expect(sessions.createMakerForOrder).toHaveBeenCalledOnce();
-    expect(mints.inspectTradeMint).toHaveBeenCalledTimes(2);
+    expect(fixture.sessions.createMakerForOrder).toHaveBeenCalledOnce();
+    expect(fixture.chainIdentifier).toHaveBeenCalledOnce();
   });
 
-  it("allows only one taker to create a maker session for an AON order", async () => {
-    const firstProposal = await proposal();
-    const secondProposal = await proposal(order(), {
-      sessionId: "77".repeat(32),
-      reservationId: "77777777-7777-4777-8777-777777777777",
-      messageId: "88888888-8888-4888-8888-888888888888",
-      entropyOffset: 12
-    });
-    const { api, sessions } = options({
-      wallets: { load: async () => wallet(baseMint, "sat", "2000") }
-    });
-
-    await expect(api.acceptReserveProposal(firstProposal)).resolves.toBeDefined();
-    await expect(api.acceptReserveProposal(secondProposal))
-      .rejects.toThrow(/already being taken/i);
-    expect(sessions.values).toHaveProperty("size", 1);
-  });
-
-  it("rejects unverified proposals and insufficient maker base balance without save", async () => {
-    const unverified = structuredClone(await proposal()) as VerifiedInitialReserveProposal;
+  it("rejects unverified proposals and an insufficient maker base balance", async () => {
     const first = options({
-      wallets: { load: async () => wallet(baseMint, "sat", "1000") }
+      balances: [{ tokenStandard: ZNN_ZTS, amount: BASE_AMOUNT }]
     });
+    const unverified = structuredClone(
+      await proposal(first.counterpartyAddress)
+    ) as VerifiedInitialReserveProposal;
     await expect(first.api.acceptReserveProposal(unverified))
       .rejects.toThrow(/verified initial reserve proposal/i);
-    expect(first.mints.inspectTradeMint).not.toHaveBeenCalled();
+    expect(first.chainIdentifier).not.toHaveBeenCalled();
     expect(first.sessions.save).not.toHaveBeenCalled();
 
     const second = options({
-      wallets: { load: async () => wallet(baseMint, "sat", "999") }
+      balances: [{ tokenStandard: ZNN_ZTS, amount: "999" }]
     });
-    await expect(second.api.acceptReserveProposal(await proposal()))
-      .rejects.toThrow(/base.*fund/i);
-    expect(second.mints.inspectTradeMint).toHaveBeenCalledTimes(2);
-    expect(second.sessions.save).not.toHaveBeenCalled();
-  });
-
-  it("uses exact mixed-keyset proof selection and nonzero fees for maker funding", async () => {
-    const spendable = new SpendPort();
-    spendable.fee = "1";
-    const enough = options({
-      wallets: {
-        load: async () => walletWithProofs(baseMint, "sat", [
-          { amount: "600", id: "00bbbbbbbbbbbbbbbb" },
-          { amount: "401", id: baseKeyset }
-        ])
-      },
-      spendability: spendable
-    });
-    await expect(enough.api.acceptReserveProposal(await proposal()))
-      .resolves.toMatchObject({ role: "maker" });
-
-    const shortSelector = new SpendPort();
-    shortSelector.fee = "1";
-    const short = options({
-      wallets: {
-        load: async () => walletWithProofs(baseMint, "sat", [
-          { amount: "600", id: "00bbbbbbbbbbbbbbbb" },
-          { amount: "400", id: baseKeyset }
-        ])
-      },
-      spendability: shortSelector
-    });
-    await expect(short.api.acceptReserveProposal(await proposal()))
-      .rejects.toThrow(/base.*fund/i);
-    expect(short.sessions.save).not.toHaveBeenCalled();
+    await expect(second.api.acceptReserveProposal(
+      await proposal(second.counterpartyAddress)
+    )).rejects.toThrow("Insufficient ZNN balance for this trade");
+    expect(second.sessions.createMakerForOrder).not.toHaveBeenCalled();
   });
 
   it("converges sequential and raced request retries despite fresh taker session IDs", async () => {
@@ -739,7 +678,7 @@ describe("trade start API", () => {
       address: current.address,
       expectedProjectionId: current.eventId,
       expectedRevision: "0",
-      fillBaseAmount: "1000"
+      fillBaseAmount: BASE_AMOUNT
     };
     let generated = 0;
     const generatedIds: string[] = [];
@@ -755,7 +694,7 @@ describe("trade start API", () => {
         });
       }
     };
-    const exact = options({ sessionFactory: randomFactory });
+    const exact = options({ overrides: { sessionFactory: randomFactory } });
     const first = await exact.api.takeOrder(request);
     await expect(exact.api.takeOrder(request)).resolves.toEqual(first);
     expect(generatedIds).toHaveLength(1);
@@ -778,40 +717,71 @@ describe("trade start API", () => {
       .rejects.toThrow(/request ID conflicts/i);
   });
 
-  it("resolves a durable request binding before stale order and moved-funding checks", async () => {
+  it("resolves a durable request binding before stale order and balance checks", async () => {
     const current = order();
     const request = {
       requestId,
       address: current.address,
       expectedProjectionId: current.eventId,
       expectedRevision: "0",
-      fillBaseAmount: "1000"
+      fillBaseAmount: BASE_AMOUNT
     };
-    let currentWallet = wallet(quoteMint, "usd", "20");
-    const fixture = options({
-      wallets: { load: async () => currentWallet }
-    });
+    const fixture = options();
     const first = await fixture.api.takeOrder(request);
     const bookCalls = fixture.books.loadBook.mock.calls.length;
-    const mintCalls = fixture.mints.inspectTradeMint.mock.calls.length;
-    const spendCalls =
-      fixture.spendability.inspectTradeSpendability.mock.calls.length;
+    const chainCalls = fixture.chainIdentifier.mock.calls.length;
 
     fixture.books.current = order({
       eventId: "99".repeat(32),
       state: {
         ...current.state,
         status: "reserved",
-        reserved_amount: "1000",
+        reserved_amount: BASE_AMOUNT,
         remaining_amount: "0"
       }
     });
-    currentWallet = { version: 1, revision: 2, pockets: [] };
+    const state = await fixture.reservations.load();
+    await fixture.reservations.reserve(state.revision, {
+      sessionId: "drains-the-balance",
+      tokenStandard: QSR_ZTS,
+      amount: QUOTE_AMOUNT,
+      reservedAt: now
+    });
 
     await expect(fixture.api.takeOrder(request)).resolves.toEqual(first);
     expect(fixture.books.loadBook).toHaveBeenCalledTimes(bookCalls);
-    expect(fixture.mints.inspectTradeMint).toHaveBeenCalledTimes(mintCalls);
-    expect(fixture.spendability.inspectTradeSpendability)
-      .toHaveBeenCalledTimes(spendCalls);
+    expect(fixture.chainIdentifier).toHaveBeenCalledTimes(chainCalls);
+  });
+
+  it("rejects a non-canonical configured market and a non-Zenon local address", () => {
+    const fixture = options();
+    expect(() => new TradeApi({
+      coordinator: {
+        list: async () => [],
+        get: async () => undefined,
+        advance: async () => { throw new Error("no"); }
+      },
+      orders: fixture.books,
+      chain: {
+        chainIdentifier: async () => 1,
+        frontierMomentum: () => fixture.node.frontierMomentum(),
+        getBalances: async () => []
+      },
+      reservations: fixture.reservations,
+      localAddress: () => fixture.localAddress,
+      sessions: fixture.sessions,
+      market: { chainId: "1", baseToken: ZNN_ZTS, quoteToken: ZNN_ZTS }
+    })).toThrow(/canonical Zenon token pair/i);
+
+    const badAddress = options({
+      overrides: { localAddress: () => "not-an-address" }
+    });
+    return expect(badAddress.api.takeOrder({
+      requestId,
+      address: order().address,
+      expectedProjectionId: order().eventId,
+      expectedRevision: "0",
+      fillBaseAmount: BASE_AMOUNT
+    })).rejects.toThrow(/canonical Zenon address/i);
   });
 });
