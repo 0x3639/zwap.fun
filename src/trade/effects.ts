@@ -1,7 +1,3 @@
-import {
-  getPubKeyFromPrivKey,
-  verifyHTLCHash
-} from "@cashu/cashu-ts";
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
 
 import type {
@@ -10,18 +6,6 @@ import type {
   PublishReleaseInput,
   PublishReserveInput
 } from "../api/order-api.js";
-import type {
-  CashuTradeClient,
-  CompletedHtlcSpend,
-  CompletedLock,
-  PreparedTradeOperation
-} from "../cashu/trade-client.js";
-import type { ExpectedHtlcLock } from "../cashu/htlc.js";
-import {
-  unreservedPocket,
-  type ProofReservationState
-} from "../core/proof-reservations.js";
-import type { WalletState } from "../core/wallet.js";
 import type {
   DiscoveredTradeInbox,
   NostrTradeTransport
@@ -33,12 +17,27 @@ import type {
   OrderOutboxPort,
   OrderPublicationStatus
 } from "../storage/order-outbox.js";
-import type { ProofReservationRepository } from "../storage/proof-reservation-repository.js";
-import type { WalletRepository } from "../storage/wallet-repository.js";
+import {
+  reservedAmount,
+  type FundsReservationRepository
+} from "../zenon/funds-reservations.js";
+import {
+  HtlcValidationError,
+  type ExpectedZenonLock
+} from "../zenon/htlc.js";
+import { verifyHtlcMaterial } from "../zenon/htlc-material.js";
+import {
+  ZenonTradeError,
+  type PreparedChainOperation,
+  type ZenonTradeClient
+} from "../zenon/trade-client.js";
+import type { ZenonNodePort } from "../zenon/types.js";
 import {
   advanceAtomicSwapChoreography,
   validateAtomicSwapMessage,
+  ATOMIC_SWAP_BODY_SCHEMA,
   type AtomicSwapBody,
+  type AtomicSwapErrorCode,
   type AtomicSwapMessageType
 } from "./atomic-messages.js";
 import type {
@@ -51,29 +50,100 @@ import type {
 } from "./coordinator.js";
 import {
   createTradeRumor,
+  deploymentFor,
   termsHash,
   transcriptHash,
   unwrapReserveAcceptance,
   unwrapTradeMessage,
   wrapTradeRumor,
-  type GranolaTradeMessage,
-  type GranolaTradeTerms,
   type OpenedTradeMessage,
-  type WrappedTradeRumor
+  type WrappedTradeRumor,
+  type ZwapTradeMessage,
+  type ZwapTradeTerms
 } from "./messages.js";
+import { advanceTrade } from "./model.js";
 import type {
-  CashuOperationResult,
-  PersistedMintState,
+  ChainOperationResult,
   TradeSession
 } from "./session.js";
-import {
-  reconcileExactProofOutputs,
-  reconcileProofReplacement
-} from "./wallet-reconcile.js";
 import { verifyEvent } from "nostr-tools/pure";
 import { parseProjectionEvent } from "../order/events.js";
 
-type WithWalletLock = <T>(action: () => Promise<T>) => Promise<T>;
+type WithAccountLock = <T>(action: () => Promise<T>) => Promise<T>;
+
+/**
+ * A chain or node failure translated into the atomic-swap error vocabulary the
+ * counterparty understands. The original failure is kept as `cause` so nothing
+ * is lost when the coordinator surfaces it.
+ */
+export class ZwapChainEffectError extends Error {
+  constructor(
+    readonly code: AtomicSwapErrorCode,
+    readonly retryable: boolean,
+    override readonly cause: unknown,
+    message: string
+  ) {
+    super(message);
+    this.name = "ZwapChainEffectError";
+  }
+}
+
+const PLASMA_PATTERN = /plasma|pow/i;
+const NETWORK_PATTERN = /network|timeout|ECONN|socket/i;
+
+/**
+ * Maps a Zenon failure onto an atomic-swap error code. `reclaimed` marks the
+ * one case where a missing HTLC is terminal rather than "keep polling": the leg
+ * was already observed as `RECLAIMED`.
+ */
+export function classifyChainError(
+  error: unknown,
+  options: { reclaimed?: boolean } = {}
+): { code: AtomicSwapErrorCode; retryable: boolean } {
+  const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof ZenonTradeError && error.code === "insufficient-balance") {
+    return { code: "chain_rejected", retryable: false };
+  }
+  if (error instanceof HtlcValidationError) {
+    return { code: "terms_mismatch", retryable: false };
+  }
+  if (error instanceof ZenonTradeError && error.code === "htlc-missing") {
+    return { code: "htlc_state_invalid", retryable: options.reclaimed !== true };
+  }
+  if (PLASMA_PATTERN.test(message)) {
+    return { code: "plasma_unavailable", retryable: true };
+  }
+  if (
+    (error instanceof Error && error.name === "ZnnClientException") ||
+    NETWORK_PATTERN.test(message)
+  ) {
+    return { code: "node_unavailable", retryable: true };
+  }
+  if (error instanceof ZenonTradeError) {
+    return { code: "chain_rejected", retryable: false };
+  }
+  return { code: "internal_error", retryable: false };
+}
+
+async function onChain<T>(
+  action: () => Promise<T>,
+  options: { reclaimed?: boolean } = {}
+): Promise<T> {
+  try {
+    return await action();
+  } catch (error) {
+    if (error instanceof ZwapChainEffectError) throw error;
+    const { code, retryable } = classifyChainError(error, options);
+    throw new ZwapChainEffectError(
+      code,
+      retryable,
+      error,
+      `Zenon settlement effect failed (${code}): ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+}
 
 export interface CoordinatorMakerIdentity {
   publicKey(orderId?: string): Promise<string>;
@@ -103,7 +173,7 @@ export interface CoordinatorOrderReadPort {
   ): Promise<PublishedOrderProjection>;
 }
 
-export interface GranolaCoordinatorEffectsOptions {
+export interface ZwapCoordinatorEffectsOptions {
   orderApi: Pick<
     OrderApi,
     | "ensureReserveStaged"
@@ -123,22 +193,24 @@ export interface GranolaCoordinatorEffectsOptions {
     | "send"
     | "read"
   >;
-  cashu: Pick<
-    CashuTradeClient,
-    | "prepareOutgoingLock"
-    | "completeOutgoingLock"
+  chain: Pick<
+    ZenonTradeClient,
+    | "address"
+    | "prepareLock"
+    | "completeLock"
     | "validateIncomingLock"
     | "prepareClaim"
     | "completeClaim"
     | "prepareRefund"
     | "completeRefund"
-    | "observeSpentInternal"
+    | "observe"
   >;
-  wallet: Pick<WalletRepository, "load" | "save">;
-  reservations: Pick<ProofReservationRepository, "load" | "reserve" | "release">;
+  node: Pick<ZenonNodePort, "getBalances">;
+  reservations: Pick<FundsReservationRepository, "load" | "reserve" | "release">;
   makerIdentity: CoordinatorMakerIdentity;
   discoveryRelays: readonly string[];
-  withWalletLock: WithWalletLock;
+  withAccountLock: WithAccountLock;
+  network: string;
   entropy?: CoordinatorEffectsEntropy;
   commitment?: (value: string) => Promise<string>;
 }
@@ -151,9 +223,9 @@ const EXTERNAL_ACTIONS = new Set<CoordinatorAction["kind"]>([
   "verify_inbox_registration",
   "deliver_outbox",
   "validate_incoming",
-  "reserve_cashu_inputs",
-  "execute_cashu_operation",
-  "reconcile_wallet",
+  "reserve_funds",
+  "execute_chain_operation",
+  "reconcile_account",
   "stage_reserve_propose",
   "stage_order_reserve",
   "stage_reserve_accept",
@@ -201,19 +273,6 @@ function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    const encoded = JSON.stringify(value);
-    if (encoded === undefined) throw new Error("Coordinator value is not canonical");
-    return encoded;
-  }
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  return `{${Object.entries(value as Record<string, unknown>)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
-    .join(",")}}`;
-}
-
 function bytes(hex: string, label: string): Uint8Array {
   if (!HEX_32.test(hex)) throw new Error(`${label} is not a 32-byte key`);
   return Uint8Array.from(hex.match(/../g) ?? [], (part) => Number.parseInt(part, 16));
@@ -254,28 +313,24 @@ function orderId(session: TradeSession): string {
   return id;
 }
 
-function granolaTerms(session: TradeSession): GranolaTradeTerms {
+function zwapTerms(session: TradeSession): ZwapTradeTerms {
   return {
     ...(session.terms.makerSide === undefined
       ? {}
       : { maker_side: session.terms.makerSide }),
-    base_unit: session.terms.baseUnit,
-    base_mint: session.terms.baseMint,
-    base_keyset: session.terms.baseKeyset,
-    quote_unit: session.terms.quoteUnit,
-    quote_mint: session.terms.quoteMint,
-    quote_keyset: session.terms.quoteKeyset,
+    chain_id: session.terms.chainId,
+    base_token: session.terms.baseToken,
+    quote_token: session.terms.quoteToken,
     base_amount: session.terms.baseAmount,
     quote_amount: session.terms.quoteAmount,
-    price_cents_per_btc: session.terms.priceCentsPerBtc
+    price: session.terms.price
   };
 }
 
 function participant(
   session: TradeSession,
   field: "makerSessionPubkey" | "takerSessionPubkey" |
-    "makerCashuPubkey" | "takerCashuPubkey" |
-    "makerRefundPubkey" | "takerRefundPubkey"
+    "makerAddress" | "takerAddress"
 ): string {
   const value = session.privateState.transcript.choreography.participants[field];
   if (!value) throw new Error(`Trade participant ${field} is not checkpointed`);
@@ -286,18 +341,6 @@ function localNostrPubkey(session: TradeSession): string {
   const key = bytes(session.privateState.nostrPrivateKey, "Trade Nostr private key");
   try {
     return getPublicKey(key);
-  } finally {
-    key.fill(0);
-  }
-}
-
-function localCashuPubkey(session: TradeSession, kind: "cashu" | "refund"): string {
-  const privateKey = kind === "cashu"
-    ? session.privateState.cashuPrivateKey
-    : session.privateState.refundPrivateKey;
-  const key = bytes(privateKey, `Trade ${kind} private key`);
-  try {
-    return hex(getPubKeyFromPrivKey(key));
   } finally {
     key.fill(0);
   }
@@ -315,44 +358,50 @@ function slotLeg(session: TradeSession, slot: ProtocolSlot): "base" | "quote" {
   return makerOffersBase(session) ? "quote" : "base";
 }
 
-function expectedLock(session: TradeSession, slot: ProtocolSlot): ExpectedHtlcLock {
+/**
+ * Builds the exact HTLC terms both sides must agree on for one protocol slot.
+ *
+ * The maker always funds the `base` slot (long locktime) and the taker the
+ * `quote` slot (short locktime); which *market* leg that is depends on the
+ * maker's order side. Locktimes are therefore keyed off the slot — the same
+ * convention `coordinator-plan.lockReady`, the durable validator and
+ * `atomic-messages.assertLockTerms` use — while the token and amount are keyed
+ * off the leg.
+ */
+function expectedLock(
+  session: TradeSession,
+  slot: ProtocolSlot,
+  network: string
+): ExpectedZenonLock {
   const leg = slotLeg(session, slot);
-  const transcriptHash = session.privateState.settlementTranscriptHash;
-  const hash = session.privateState.htlcHash;
-  if (!transcriptHash || !hash) {
-    throw new Error("Trade lock requires checkpointed settlement and HTLC hashes");
+  const p = session.privateState;
+  if (!p.htlcHash || !p.settlementTranscriptHash || !p.counterpartyAddress) {
+    throw new Error("Settlement terms are not bound yet");
   }
-  const makerOfferSlot = slot === "base";
-  const receiverPubkey = makerOfferSlot
-    ? participant(session, "takerCashuPubkey")
-    : participant(session, "makerCashuPubkey");
-  const refundPubkey = makerOfferSlot
-    ? participant(session, "makerRefundPubkey")
-    : participant(session, "takerRefundPubkey");
-  const locktime = makerOfferSlot ? session.plan.longLocktime : session.plan.shortLocktime;
+  const makerLocksThisLeg = (leg === "base") === makerOffersBase(session);
+  const localIsLocker = (session.role === "maker") === makerLocksThisLeg;
+  const timeLockedAddress = localIsLocker ? p.localAddress : p.counterpartyAddress;
+  const hashLockedAddress = localIsLocker ? p.counterpartyAddress : p.localAddress;
   return {
-    mintUrl: leg === "base" ? session.terms.baseMint : session.terms.quoteMint,
-    unit: leg === "base" ? session.terms.baseUnit : session.terms.quoteUnit,
+    leg,
+    chainId: session.terms.chainId,
+    tokenStandard: leg === "base" ? session.terms.baseToken : session.terms.quoteToken,
+    amount: leg === "base" ? session.terms.baseAmount : session.terms.quoteAmount,
+    hashLock: p.htlcHash,
+    hashType: 1,
+    keyMaxSize: 32,
+    hashLockedAddress,
+    timeLockedAddress,
+    expirationTime: slot === "base"
+      ? session.plan.longLocktime
+      : session.plan.shortLocktime,
     binding: {
       protocolVersion: "1",
-      network: "cashu-testnet-v1",
+      network,
       orderId: orderId(session),
-      reservationId: session.reservationId,
       sessionId: session.sessionId,
-      direction: leg,
-      transcriptHash
-    },
-    amount: leg === "base" ? session.terms.baseAmount : session.terms.quoteAmount,
-    hash,
-    receiverPubkey,
-    refundPubkey,
-    locktime,
-    leg,
-    refundHorizon: locktime + session.plan.refundGuardSeconds,
-    deadlines: {
-      short: session.plan.shortLocktime,
-      long: session.plan.longLocktime,
-      minimumGap: session.plan.longLocktime - session.plan.shortLocktime
+      reservationId: session.reservationId,
+      transcriptHash: p.settlementTranscriptHash
     }
   };
 }
@@ -367,27 +416,25 @@ function completedLockBody(
   const expected = privateLeg.expected;
   const htlcHash = session.privateState.htlcHash;
   if (
-    !privateLeg.token ||
+    !privateLeg.htlcId ||
     !expected ||
-    !evidence.tokenCommitment ||
+    !evidence.htlcId ||
     !evidence.validationCommitment ||
     !htlcHash
   ) {
-    throw new Error(`${leg} lock lacks completed Cashu evidence`);
+    throw new Error(`${leg} lock lacks completed on-chain evidence`);
   }
   return {
-    schema: "granola/atomic-swap-body/v1",
-    cashu_token: privateLeg.token,
-    token_commitment: evidence.tokenCommitment,
+    schema: ATOMIC_SWAP_BODY_SCHEMA,
+    htlc_id: evidence.htlcId,
     validation_commitment: evidence.validationCommitment,
     settlement_hash: htlcHash,
-    mint: expected.mintUrl,
-    unit: expected.unit,
-    keyset: evidence.keysetId,
+    chain_id: expected.chainId,
+    token_standard: expected.tokenStandard,
     amount: expected.amount,
-    receiver_cashu_pubkey: expected.receiverPubkey,
-    refund_cashu_pubkey: expected.refundPubkey,
-    locktime: expected.locktime
+    hash_locked_address: expected.hashLockedAddress,
+    time_locked_address: expected.timeLockedAddress,
+    expiration_time: expected.expirationTime
   };
 }
 
@@ -464,77 +511,39 @@ function exactPendingPublication(
   };
 }
 
-function cashuResult(
-  operation: PreparedTradeOperation,
-  completed: CompletedLock | CompletedHtlcSpend
-): CashuOperationResult {
-  const proofs = (
-    "lockedToken" in completed ? completed.change.proofs : completed.pocket.proofs
-  ).map((proof): CashuOperationResult["proofs"][number] => {
-    const base = {
-      amount: proof.amount,
-      id: proof.id,
-      secret: proof.secret,
-      C: proof.C
-    };
-    if (proof.dleq === undefined) return base;
-    const dleq = proof.dleq as { e?: unknown; s?: unknown; r?: unknown };
-    if (
-      typeof dleq.e !== "string" ||
-      typeof dleq.s !== "string" ||
-      typeof dleq.r !== "string"
-    ) throw new Error("Completed Cashu proof contains invalid DLEQ evidence");
-    return { ...base, dleq: { e: dleq.e, s: dleq.s, r: dleq.r } };
-  });
-  if ("lockedToken" in completed) {
-    return {
-      walletMutation: "replace",
-      mintUrl: completed.change.mintUrl,
-      unit: completed.change.unit,
-      proofs,
-      lockedToken: completed.lockedToken,
-      amount: completed.summary.amount,
-      proofCount: completed.summary.proofCount
-    };
-  }
-  return {
-    walletMutation: "receive",
-    mintUrl: completed.pocket.mintUrl,
-    unit: completed.pocket.unit,
-    proofs,
-    lockedToken: null,
-    amount: completed.summary.amount,
-    proofCount: completed.summary.proofCount
-  };
-}
-
-export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
-  private readonly orderApi: GranolaCoordinatorEffectsOptions["orderApi"];
-  private readonly orderOutbox: GranolaCoordinatorEffectsOptions["orderOutbox"];
+export class ZwapCoordinatorEffects implements CoordinatorEffectPort {
+  private readonly orderApi: ZwapCoordinatorEffectsOptions["orderApi"];
+  private readonly orderOutbox: ZwapCoordinatorEffectsOptions["orderOutbox"];
   private readonly orderReader: CoordinatorOrderReadPort;
-  private readonly nostr: GranolaCoordinatorEffectsOptions["nostr"];
-  private readonly cashu: GranolaCoordinatorEffectsOptions["cashu"];
-  private readonly wallet: GranolaCoordinatorEffectsOptions["wallet"];
-  private readonly reservations: GranolaCoordinatorEffectsOptions["reservations"];
+  private readonly nostr: ZwapCoordinatorEffectsOptions["nostr"];
+  private readonly chain: ZwapCoordinatorEffectsOptions["chain"];
+  private readonly node: ZwapCoordinatorEffectsOptions["node"];
+  private readonly reservations: ZwapCoordinatorEffectsOptions["reservations"];
   private readonly makerIdentity: CoordinatorMakerIdentity;
   private readonly discoveryRelays: string[];
-  private readonly withWalletLock: WithWalletLock;
+  private readonly withAccountLock: WithAccountLock;
+  private readonly network: string;
   private readonly entropy: CoordinatorEffectsEntropy;
   private readonly commitment: (value: string) => Promise<string>;
 
-  constructor(options: GranolaCoordinatorEffectsOptions) {
+  constructor(options: ZwapCoordinatorEffectsOptions) {
     this.orderApi = options.orderApi;
     this.orderOutbox = options.orderOutbox;
     this.orderReader = options.orderReader;
     this.nostr = options.nostr;
-    this.cashu = options.cashu;
-    this.wallet = options.wallet;
+    this.chain = options.chain;
+    this.node = options.node;
     this.reservations = options.reservations;
     this.makerIdentity = options.makerIdentity;
     this.discoveryRelays = [...options.discoveryRelays];
-    this.withWalletLock = options.withWalletLock;
+    this.withAccountLock = options.withAccountLock;
+    this.network = options.network;
     this.entropy = options.entropy ?? defaultEntropy;
     this.commitment = options.commitment ?? sha256;
+  }
+
+  private expectedLock(session: TradeSession, slot: ProtocolSlot): ExpectedZenonLock {
+    return expectedLock(session, slot, this.network);
   }
 
   classify(action: CoordinatorAction): "local" | "external" {
@@ -546,35 +555,21 @@ export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
     session: TradeSession
   ): Promise<unknown> {
     if (!action.kind.startsWith("prepare_")) return null;
-    return this.withWalletLock(async () => {
-      const wallet = await this.wallet.load();
+    return this.withAccountLock(async () => {
       const reservations = await this.reservations.load();
       const slot = action.kind.includes("base") ? "base" : "quote";
       const leg = slotLeg(session, slot);
+      const expected = this.expectedLock(session, slot);
       if (action.kind.endsWith("_lock")) {
-        const pocket = unreservedPocket(
-          wallet,
-          reservations,
-          leg === "base" ? session.terms.baseMint : session.terms.quoteMint,
-          leg === "base" ? session.terms.baseUnit : session.terms.quoteUnit
-        );
         return {
-          walletRevision: wallet.revision,
           reservationRevision: reservations.revision,
-          inputCommitment: await this.commitment(canonicalJson(
-            pocket.proofs.map(({ amount, id, secret, C }) => ({ amount, id, secret, C }))
-          )),
-          expected: expectedLock(session, slot)
+          address: this.chain.address(),
+          expected
         };
       }
-      const privateLeg = session.privateState.legs[leg];
-      if (!privateLeg.token) throw new Error("Cashu spend preparation lacks its locked token");
-      return {
-        walletRevision: wallet.revision,
-        reservationRevision: reservations.revision,
-        tokenCommitment: session.evidence.legs[leg].tokenCommitment,
-        expected: expectedLock(session, slot)
-      };
+      const htlcId = session.privateState.legs[leg].htlcId;
+      if (!htlcId) throw new Error("Chain spend preparation lacks its HTLC ID");
+      return { reservationRevision: reservations.revision, htlcId, expected };
     });
   }
 
@@ -607,13 +602,13 @@ export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
         return this.commitOutbox(session, now);
       case "commit_incoming":
         return this.commitIncoming(session, now);
-      case "clear_cashu_operation": {
-        const operation = session.privateState.cashuOperation;
-        if (operation?.status !== "wallet_applied") {
-          throw new Error("Cashu operation is not reconciled");
+      case "clear_chain_operation": {
+        const operation = session.privateState.chainOperation;
+        if (operation?.status !== "account_applied") {
+          throw new Error("Chain operation is not reconciled");
         }
         const next = bump(session, now);
-        next.privateState.cashuOperation = null;
+        next.privateState.chainOperation = null;
         return next;
       }
       case "enter_recovery": {
@@ -621,12 +616,12 @@ export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
         next.privateState.transcript.choreography.phase = "refunding";
         if (
           session.role === "maker" &&
-          session.privateState.legs[slotLeg(session, "base")].token !== null
+          session.privateState.legs[slotLeg(session, "base")].htlcId !== null
         ) {
           next.phase = "waiting_base_refund";
         } else if (
           session.role === "taker" &&
-          session.privateState.legs[slotLeg(session, "quote")].token !== null
+          session.privateState.legs[slotLeg(session, "quote")].htlcId !== null
         ) {
           next.phase = "waiting_quote_refund";
         } else {
@@ -668,19 +663,19 @@ export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
         return this.pollInbox(input.session, input.now);
       case "validate_incoming":
         return this.validateIncoming(input.session, input.now);
-      case "reserve_cashu_inputs":
-        return this.reserveCashuInputs(input.session, input.now);
+      case "reserve_funds":
+        return this.reserveFunds(input.session, input.now);
       case "prepare_base_lock":
       case "prepare_quote_lock":
       case "prepare_base_claim":
       case "prepare_quote_claim":
       case "prepare_base_refund":
       case "prepare_quote_refund":
-        return this.prepareCashu(input.session, input.action.kind, input.now);
-      case "execute_cashu_operation":
-        return this.executeCashu(input.session, input.now);
-      case "reconcile_wallet":
-        return this.reconcileWallet(input.session, input.now);
+        return this.prepareChain(input.session, input.action.kind, input.now);
+      case "execute_chain_operation":
+        return this.executeChain(input.session, input.now);
+      case "reconcile_account":
+        return this.reconcileAccount(input.session, input.now);
       case "observe_base":
       case "observe_quote":
         return this.observeLeg(
@@ -779,8 +774,8 @@ export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
       progress = await this.orderApi.ensureReserveStaged(request);
     } else if (action === "stage_order_fill") {
       const settlementHash = session.privateState.htlcHash;
-      const base = session.evidence.legs.base.tokenCommitment;
-      const quote = session.evidence.legs.quote.tokenCommitment;
+      const base = session.evidence.legs.base.htlcId;
+      const quote = session.evidence.legs.quote.htlcId;
       if (
         !session.reserveProjectionId ||
         !session.reserveProjectionRevision ||
@@ -796,6 +791,8 @@ export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
         expectedRevision: session.reserveProjectionRevision,
         reservationId: session.reservationId,
         amount: session.terms.baseAmount,
+        // `FillOrderEvidence` still names these fields after Cashu token
+        // commitments; on Zenon the exact settlement evidence is the HTLC ID.
         evidence: {
           settlement_hash: settlementHash,
           base_token_commitment: base,
@@ -972,21 +969,21 @@ export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
     } finally {
       requesterKey.fill(0);
     }
-    const terms = granolaTerms(session);
+    const terms = zwapTerms(session);
     const hash = await termsHash(terms);
     const body = await this.outgoingBody(session, type, now);
     const expiresAt = Math.min(session.plan.reservationExpiresAt, now + 3_600);
     if (expiresAt <= now) throw new Error("Trade message deadline has passed");
 
     const stageWithKey = async (authorKey: Uint8Array): Promise<{
-      message: GranolaTradeMessage;
+      message: ZwapTradeMessage;
       wrapped: WrappedTradeRumor;
       nextChoreography: TradeSession["privateState"]["transcript"]["choreography"];
       nextTranscriptHash: string;
     }> => {
-      const message: GranolaTradeMessage = {
+      const message: ZwapTradeMessage = {
         schema: "granola/dm/v1",
-        deployment: "cashu-testnet-v1",
+        deployment: deploymentFor(session.terms.chainId),
         type,
         message_id: this.entropy.messageId(),
         session_id: session.sessionId,
@@ -1093,18 +1090,15 @@ export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
     type: AtomicSwapMessageType,
     now: number
   ): Promise<AtomicSwapBody> {
-    const schema = "granola/atomic-swap-body/v1" as const;
+    const schema = ATOMIC_SWAP_BODY_SCHEMA;
     const transcript = session.privateState.transcript;
     const htlcHash = session.privateState.htlcHash;
-    const base = session.evidence.legs.base;
-    const quote = session.evidence.legs.quote;
     switch (type) {
       case "reserve_propose":
         return {
           schema,
           taker_session_pubkey: localNostrPubkey(session),
-          taker_cashu_pubkey: localCashuPubkey(session, "cashu"),
-          taker_refund_pubkey: localCashuPubkey(session, "refund"),
+          taker_address: session.privateState.localAddress,
           fill_amount: session.terms.baseAmount
         };
       case "reserve_accept":
@@ -1119,8 +1113,7 @@ export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
           schema,
           taker_session_pubkey: participant(session, "takerSessionPubkey"),
           maker_session_pubkey: localNostrPubkey(session),
-          maker_cashu_pubkey: localCashuPubkey(session, "cashu"),
-          maker_refund_pubkey: localCashuPubkey(session, "refund"),
+          maker_address: session.privateState.localAddress,
           reserve_projection_id: session.reserveProjectionId,
           reserve_revision: session.reserveProjectionRevision,
           settlement_hash: htlcHash,
@@ -1155,14 +1148,14 @@ export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
         const leg = slotLeg(session, slot);
         const evidence = session.evidence.legs[leg];
         if (!transcript.lastMessageId || !transcript.lastTranscriptHash ||
-          !evidence.tokenCommitment || !evidence.validationCommitment || !htlcHash) {
+          !evidence.htlcId || !evidence.validationCommitment || !htlcHash) {
           throw new Error(`${slot} lock acknowledgement lacks exact evidence`);
         }
         return {
           schema,
           lock_message_id: transcript.lastMessageId,
           lock_transcript_hash: transcript.lastTranscriptHash,
-          token_commitment: evidence.tokenCommitment,
+          htlc_id: evidence.htlcId,
           validation_commitment: evidence.validationCommitment,
           settlement_hash: htlcHash
         };
@@ -1170,12 +1163,12 @@ export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
       case "claim_notice":
         const paymentLeg = slotLeg(session, "quote");
         const payment = session.evidence.legs[paymentLeg];
-        if (!payment.tokenCommitment || !payment.claimOperationCommitment || !htlcHash) {
+        if (!payment.htlcId || !payment.claimOperationCommitment || !htlcHash) {
           throw new Error("Claim notice lacks quote claim evidence");
         }
         return {
           schema,
-          quote_token_commitment: payment.tokenCommitment,
+          quote_htlc_id: payment.htlcId,
           claim_operation_commitment: payment.claimOperationCommitment,
           settlement_hash: htlcHash,
           claimed_at: now
@@ -1185,14 +1178,14 @@ export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
         const takerPaymentLeg = slotLeg(session, "quote");
         const makerOffer = session.evidence.legs[makerOfferLeg];
         const takerPayment = session.evidence.legs[takerPaymentLeg];
-        if (!makerOffer.tokenCommitment || !takerPayment.tokenCommitment ||
+        if (!makerOffer.htlcId || !takerPayment.htlcId ||
           !makerOffer.spendCommitment || !takerPayment.spendCommitment || !htlcHash) {
           throw new Error("Fill request lacks independently observed spends");
         }
         return {
           schema,
-          base_token_commitment: makerOffer.tokenCommitment,
-          quote_token_commitment: takerPayment.tokenCommitment,
+          base_htlc_id: makerOffer.htlcId,
+          quote_htlc_id: takerPayment.htlcId,
           base_spend_commitment: makerOffer.spendCommitment,
           quote_spend_commitment: takerPayment.spendCommitment,
           settlement_hash: htlcHash
@@ -1201,15 +1194,15 @@ export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
         const settledOffer = session.evidence.legs[slotLeg(session, "base")];
         const settledPayment = session.evidence.legs[slotLeg(session, "quote")];
         if (!session.fillProjectionId || !session.fillProjectionRevision ||
-          !settledOffer.tokenCommitment || !settledPayment.tokenCommitment || !htlcHash) {
+          !settledOffer.htlcId || !settledPayment.htlcId || !htlcHash) {
           throw new Error("Settlement acknowledgement lacks the committed fill");
         }
         return {
           schema,
           fill_projection_id: session.fillProjectionId,
           fill_revision: session.fillProjectionRevision,
-          base_token_commitment: settledOffer.tokenCommitment,
-          quote_token_commitment: settledPayment.tokenCommitment,
+          base_htlc_id: settledOffer.htlcId,
+          quote_htlc_id: settledPayment.htlcId,
           settlement_hash: htlcHash
         };
       default:
@@ -1304,7 +1297,7 @@ export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
     const transcript = session.privateState.transcript;
     const key = bytes(session.privateState.nostrPrivateKey, "Trade Nostr private key");
     try {
-      const expectedTermsHash = await termsHash(granolaTerms(session));
+      const expectedTermsHash = await termsHash(zwapTerms(session));
       if (
         session.role === "taker" &&
         transcript.choreography.phase === "awaiting_reserve_accept"
@@ -1403,11 +1396,16 @@ export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
             reservationExpiresAt: acceptance.reservation_expires_at,
             refundGuardSeconds: 60 as const
           };
-      const expected = expectedLock({
+      // The maker's settlement address only arrives with the acceptance, so the
+      // expected lock is derived from the state this message is about to commit.
+      const counterpartyAddress = acceptance?.maker_address ??
+        session.privateState.counterpartyAddress;
+      const expected = this.expectedLock({
         ...session,
         plan: acceptedPlan,
         privateState: {
           ...session.privateState,
+          counterpartyAddress,
           htlcHash: session.privateState.htlcHash ?? body.settlement_hash,
           transcript: {
             ...session.privateState.transcript,
@@ -1415,37 +1413,39 @@ export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
           }
         }
       }, slot);
-      const summary = await this.cashu.validateIncomingLock(body.cashu_token, expected);
+      const summary = await onChain(() =>
+        this.chain.validateIncomingLock(body.htlc_id, expected));
       if (
-        summary.commitment !== body.validation_commitment ||
-        summary.keysetId !== body.keyset ||
-        summary.amount !== body.amount
-      ) throw new Error("Incoming Cashu validation differs from the signed lock body");
+        summary.validationCommitment !== body.validation_commitment ||
+        body.amount !== expected.amount ||
+        body.chain_id !== expected.chainId
+      ) {
+        throw new ZwapChainEffectError(
+          "terms_mismatch",
+          false,
+          null,
+          "Incoming HTLC validation differs from the signed lock body"
+        );
+      }
+      next.privateState.counterpartyAddress = counterpartyAddress;
       next.privateState.htlcHash ??= body.settlement_hash;
       if (!next.evidence.commitments.includes(body.settlement_hash)) {
         next.evidence.commitments.push(body.settlement_hash);
       }
       next.privateState.legs[leg] = {
         ...next.privateState.legs[leg],
-        token: body.cashu_token,
+        htlcId: body.htlc_id,
         expected,
         observations: [
           ...next.privateState.legs[leg].observations,
-          {
-            observedAt: now,
-            state: "UNSPENT",
-            proofCount: summary.proofCount,
-            witnessCommitment: null
-          }
+          { observedAt: now, state: "LOCKED", witnessCommitment: null }
         ]
       };
       next.evidence.legs[leg] = {
         ...next.evidence.legs[leg],
-        tokenCommitment: body.token_commitment,
+        htlcId: body.htlc_id,
         validationCommitment: body.validation_commitment,
-        proofCount: summary.proofCount,
-        fee: summary.fee,
-        mintState: "UNSPENT",
+        htlcState: "LOCKED",
         observedAt: now
       };
     }
@@ -1511,6 +1511,7 @@ export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
           `${session.evidence.reservation.proposalSealId ?? ""}:` +
           `${participant(session, "takerSessionPubkey")}`
         );
+      next.privateState.counterpartyAddress = body.maker_address;
       next.privateState.htlcHash = body.settlement_hash;
       if (!next.evidence.commitments.includes(body.settlement_hash)) {
         next.evidence.commitments.push(body.settlement_hash);
@@ -1572,7 +1573,7 @@ export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
     return next;
   }
 
-  private async prepareCashu(
+  private async prepareChain(
     session: TradeSession,
     action:
       | "prepare_base_lock" | "prepare_quote_lock"
@@ -1580,184 +1581,173 @@ export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
       | "prepare_base_refund" | "prepare_quote_refund",
     now: number
   ): Promise<TradeSession> {
-    const slot = action.includes("base") ? "base" : "quote";
+    const slot: ProtocolSlot = action.includes("base") ? "base" : "quote";
     const leg = slotLeg(session, slot);
-    const expected = expectedLock(session, slot);
-    return this.withWalletLock(async () => {
-      const walletBefore = await this.wallet.load();
-      const reservations = await this.reservations.load();
-      let artifact: PreparedTradeOperation;
-      if (action.endsWith("_lock")) {
-        const pocket = unreservedPocket(
-          walletBefore,
-          reservations,
-          expected.mintUrl,
-          expected.unit
-        );
-        artifact = await this.cashu.prepareOutgoingLock({ pocket, expected, now });
-      } else {
-        const token = session.privateState.legs[leg].token;
-        if (!token) throw new Error("Cashu spend preparation lacks its locked token");
+    const expected = this.expectedLock(session, slot);
+    return this.withAccountLock(async () => {
+      const artifact = await onChain(async (): Promise<PreparedChainOperation> => {
+        if (action.endsWith("_lock")) {
+          // Reserved funds belong to other in-flight sessions; this session's
+          // own reservation (a retry of the same lock) must not count twice.
+          const reservations = await this.reservations.load();
+          const balances = await this.node.getBalances(this.chain.address());
+          const balance = BigInt(
+            balances.find(({ tokenStandard }) => tokenStandard === expected.tokenStandard)
+              ?.balance ?? "0"
+          );
+          const available = balance -
+            reservedAmount(reservations, expected.tokenStandard, session.sessionId);
+          if (available < BigInt(expected.amount)) {
+            throw new ZenonTradeError("insufficient-balance");
+          }
+          return this.chain.prepareLock({ expected, now });
+        }
+        const htlcId = session.privateState.legs[leg].htlcId;
+        if (!htlcId) throw new Error("Chain spend preparation lacks its HTLC ID");
         if (action.endsWith("_claim")) {
           const preimage = session.privateState.preimage;
-          if (!preimage) throw new Error("Cashu claim lacks its preimage");
-          artifact = await this.cashu.prepareClaim({
-            token,
+          if (!preimage) throw new Error("Chain claim lacks its preimage");
+          return this.chain.prepareClaim({
+            htlcId,
             expected,
             preimage,
-            settlementPrivateKey: session.privateState.cashuPrivateKey,
             now,
             claimCutoff: slot === "base"
               ? session.plan.takerClaimCutoff
               : session.plan.makerClaimCutoff
           });
-        } else {
-          artifact = await this.cashu.prepareRefund({
-            token,
-            expected,
-            refundPrivateKey: session.privateState.refundPrivateKey,
-            locktime: expected.locktime,
-            now,
-            expiryGrace: session.plan.refundGuardSeconds
-          });
         }
-      }
-      const walletAfter = await this.wallet.load();
-      if (canonicalJson(walletAfter) !== canonicalJson(walletBefore)) {
-        throw new Error("Cashu preparation mutated the wallet before checkpointing");
-      }
+        return this.chain.prepareRefund({
+          htlcId,
+          expected,
+          now,
+          expiryGrace: session.plan.refundGuardSeconds
+        });
+      });
       const next = bump(session, now);
       next.privateState.legs[leg].expected = expected;
-      next.privateState.cashuOperation = {
+      next.privateState.chainOperation = {
         operationId: this.entropy.operationId(),
         leg,
         kind: artifact.kind,
         status: "prepared",
         preparedAt: now,
-        inputsReserved: false,
+        // Only a lock moves this account's own funds, so only a lock needs a
+        // reservation; claims and refunds go straight to execution.
+        fundsReserved: artifact.kind !== "lock",
         artifact,
         result: null
       };
       if (artifact.kind === "claim") {
-        next.evidence.legs[leg].claimOperationCommitment =
-          artifact.operationCommitment;
+        next.evidence.legs[leg].claimOperationCommitment = artifact.operationCommitment;
       } else if (artifact.kind === "refund") {
-        next.evidence.legs[leg].refundOperationCommitment =
-          artifact.operationCommitment;
+        next.evidence.legs[leg].refundOperationCommitment = artifact.operationCommitment;
       }
       return next;
     });
   }
 
-  private async reserveCashuInputs(
+  private async reserveFunds(
     session: TradeSession,
     now: number
   ): Promise<TradeSession> {
-    const operation = session.privateState.cashuOperation;
-    if (!operation || operation.status !== "prepared" || operation.inputsReserved) {
-      throw new Error("Cashu inputs are not awaiting reservation");
+    const operation = session.privateState.chainOperation;
+    if (!operation || operation.status !== "prepared" || operation.fundsReserved) {
+      throw new Error("Chain funds are not awaiting reservation");
     }
-    await this.withWalletLock(async () => {
+    await this.withAccountLock(async () => {
       const reservations = await this.reservations.load();
+      if (reservations.reservations.some(({ sessionId }) => sessionId === session.sessionId)) {
+        return;
+      }
       await this.reservations.reserve(reservations.revision, {
         sessionId: session.sessionId,
-        mintUrl: operation.artifact.mintUrl,
-        unit: operation.artifact.unit,
-        proofSecrets: operation.artifact.spentSecrets,
+        tokenStandard: operation.artifact.tokenStandard,
+        amount: operation.artifact.amount,
         reservedAt: operation.preparedAt
       });
     });
     const next = bump(session, now);
-    next.privateState.cashuOperation!.inputsReserved = true;
+    next.privateState.chainOperation!.fundsReserved = true;
     return next;
   }
 
-  private async executeCashu(
+  private async executeChain(
     session: TradeSession,
     now: number
   ): Promise<TradeSession> {
-    const operation = session.privateState.cashuOperation;
-    if (!operation || operation.status !== "prepared" || !operation.inputsReserved) {
-      throw new Error("Cashu operation is not checkpointed for execution");
+    const operation = session.privateState.chainOperation;
+    if (!operation || operation.status !== "prepared" || !operation.fundsReserved) {
+      throw new Error("Chain operation is not checkpointed for execution");
     }
-    let completed: CompletedLock | CompletedHtlcSpend;
-    if (operation.kind === "outgoing-lock") {
-      completed = await this.cashu.completeOutgoingLock(
-        operation.artifact,
-        operation.artifact.expected
-      );
-    } else if (operation.kind === "claim") {
-      completed = await this.cashu.completeClaim(
-        operation.artifact,
-        session.privateState.cashuPrivateKey,
-        operation.artifact.expected
-      );
-    } else {
-      completed = await this.cashu.completeRefund(
-        operation.artifact,
-        session.privateState.refundPrivateKey,
-        operation.artifact.expected
-      );
-    }
+    const leg = operation.leg;
+    const artifact = operation.artifact;
     const next = bump(session, now);
-    next.privateState.cashuOperation = {
-      ...clone(operation),
-      status: "completed",
-      result: cashuResult(operation.artifact, completed)
-    };
-    if ("lockedToken" in completed) {
-      const leg = operation.leg;
-      const tokenCommitment = await this.commitment(completed.lockedToken);
-      next.privateState.legs[leg].token = completed.lockedToken;
+    let result: ChainOperationResult;
+    if (operation.kind === "lock") {
+      const completed = await onChain(() => this.chain.completeLock(artifact));
+      next.privateState.legs[leg].htlcId = completed.htlcId;
       next.privateState.legs[leg].observations.push({
         observedAt: now,
-        state: "UNSPENT",
-        proofCount: completed.summary.proofCount,
+        state: "LOCKED",
         witnessCommitment: null
       });
       next.evidence.legs[leg] = {
         ...next.evidence.legs[leg],
-        tokenCommitment,
-        validationCommitment: completed.summary.commitment,
-        proofCount: completed.summary.proofCount,
-        fee: completed.summary.fee,
-        mintState: "UNSPENT",
+        htlcId: completed.htlcId,
+        validationCommitment: completed.summary.validationCommitment,
+        htlcState: "LOCKED",
         observedAt: now
       };
+      result = {
+        blockHash: completed.blockHash,
+        htlcId: completed.htlcId,
+        tokenStandard: artifact.tokenStandard,
+        amount: artifact.amount
+      };
+    } else {
+      const completed = operation.kind === "claim"
+        ? await onChain(() => {
+            const preimage = session.privateState.preimage;
+            if (!preimage) throw new Error("Chain claim lacks its preimage");
+            return this.chain.completeClaim(artifact, preimage);
+          })
+        : await onChain(() => this.chain.completeRefund(artifact));
+      result = {
+        blockHash: completed.blockHash,
+        htlcId: completed.htlcId,
+        tokenStandard: artifact.tokenStandard,
+        amount: artifact.amount
+      };
     }
+    next.privateState.chainOperation = {
+      ...clone(operation),
+      status: "completed",
+      result
+    };
     return next;
   }
 
-  private async reconcileWallet(
+  private async reconcileAccount(
     session: TradeSession,
     now: number
   ): Promise<TradeSession> {
-    const operation = session.privateState.cashuOperation;
+    const operation = session.privateState.chainOperation;
     if (!operation || operation.status !== "completed" || operation.result === null) {
-      throw new Error("Cashu result is not checkpointed for reconciliation");
+      throw new Error("Chain result is not checkpointed for reconciliation");
     }
-    await this.withWalletLock(async () => {
-      const wallet = await this.wallet.load();
-      const output = {
-        mintUrl: operation.result!.mintUrl,
-        unit: operation.result!.unit,
-        proofs: clone(operation.result!.proofs)
-      };
-      const reconciled = operation.result!.walletMutation === "replace"
-        ? reconcileProofReplacement(wallet, {
-            ...output,
-            spentSecrets: operation.artifact.spentSecrets
-          })
-        : reconcileExactProofOutputs(wallet, output);
-      if (reconciled !== wallet) await this.wallet.save(reconciled);
+    await this.withAccountLock(async () => {
+      if (!operation.fundsReserved || operation.kind !== "lock") return;
       const reservations = await this.reservations.load();
+      if (!reservations.reservations.some(({ sessionId }) => sessionId === session.sessionId)) {
+        return;
+      }
       await this.reservations.release(reservations.revision, {
-        sessionId: session.sessionId,
-        proofSecrets: operation.artifact.spentSecrets
+        sessionId: session.sessionId
       });
     });
     const next = bump(session, now);
-    next.privateState.cashuOperation!.status = "wallet_applied";
+    next.privateState.chainOperation!.status = "account_applied";
     return next;
   }
 
@@ -1768,43 +1758,73 @@ export class GranolaCoordinatorEffects implements CoordinatorEffectPort {
   ): Promise<TradeSession> {
     const privateLeg = session.privateState.legs[leg];
     const evidence = session.evidence.legs[leg];
-    if (!privateLeg.token || !privateLeg.expected || !evidence.tokenCommitment) {
-      throw new Error(`Trade ${leg} leg lacks its exact locked token`);
+    const expected = privateLeg.expected;
+    if (!privateLeg.htlcId || !expected || !evidence.htlcId) {
+      throw new Error(`Trade ${leg} leg lacks its exact on-chain HTLC`);
     }
-    const observed = await this.cashu.observeSpentInternal(
-      privateLeg.token,
-      privateLeg.expected,
-      evidence.tokenCommitment
-    );
-    let witnessCommitment: string | null = null;
-    if (observed.status === "SPENT") {
-      if (!verifyHTLCHash(observed.preimage, privateLeg.expected.hash)) {
-        throw new Error("Observed Cashu preimage does not match the locked hash");
-      }
-      witnessCommitment = await this.commitment(
-        `granola-spend-v1:${leg}:${observed.preimage}`
+    let observed;
+    try {
+      observed = await onChain(
+        () => this.chain.observe(privateLeg.htlcId!, expected),
+        { reclaimed: evidence.htlcState === "RECLAIMED" }
       );
+    } catch (error) {
+      // An HTLC that exists but no longer matches the agreed terms is a
+      // contradiction, not a retryable failure: freeze the session.
+      if (
+        error instanceof ZwapChainEffectError &&
+        error.code === "terms_mismatch" &&
+        error.cause instanceof HtlcValidationError &&
+        session.phase !== "filled" &&
+        session.phase !== "released"
+      ) {
+        return this.freezeOnContradiction(session, leg, error.cause.code, now);
+      }
+      throw error;
     }
     const next = bump(session, now);
     next.privateState.legs[leg].observations.push({
       observedAt: now,
-      state: observed.status as PersistedMintState,
-      proofCount: observed.proofCount,
-      witnessCommitment
+      state: observed.state,
+      witnessCommitment: observed.witnessCommitment
     });
     next.evidence.legs[leg] = {
       ...next.evidence.legs[leg],
-      mintState: observed.status,
+      htlcState: observed.state,
       observedAt: now,
-      proofCount: observed.proofCount,
-      spendCommitment: witnessCommitment
+      spendCommitment: observed.witnessCommitment
     };
-    if (
-      observed.status === "SPENT" &&
-      session.role === "taker" &&
-      leg === slotLeg(session, "quote")
-    ) {
-      next.privateState.preimage = observed.preimage;
+    if (observed.state === "UNLOCKED") {
+      const preimage = observed.preimage;
+      if (preimage === null || !(await verifyHtlcMaterial(preimage, expected.hashLock))) {
+        throw new ZwapChainEffectError(
+          "witness_invalid",
+          false,
+          null,
+          "Observed Zenon preimage does not match the locked hash"
+        );
+      }
+      // The taker only ever learns the preimage from the chain: the maker's
+      // unlock of the quote leg reveals it. It never arrives in a DM.
+      if (session.role === "taker" && leg === slotLeg(session, "quote")) {
+        next.privateState.preimage = preimage;
+      }
+    }
+    return next;
+  }
+
+  private freezeOnContradiction(
+    session: TradeSession,
+    leg: "base" | "quote",
+    code: string,
+    now: number
+  ): TradeSession {
+    const next = bump(session, now);
+    next.phase = advanceTrade(session.phase, "contradiction_detected");
+    next.privateState.transcript.choreography.phase = "failed";
+    const marker = `terms_mismatch:${leg}:${code}`;
+    if (!next.evidence.chainStates.includes(marker)) {
+      next.evidence.chainStates.push(marker);
     }
     return next;
   }

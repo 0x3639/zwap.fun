@@ -2,12 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import { finalizeEvent, getPublicKey, verifyEvent } from "nostr-tools/pure";
 
 import type { OrderApi } from "../api/order-api.js";
-import type {
-  CompletedLock,
-  PreparedTradeOperation,
-  CashuTradeClient
-} from "../cashu/trade-client.js";
-import type { WalletState } from "../core/wallet.js";
 import type { NostrTradeTransport } from "../nostr/trade-transport.js";
 import {
   createProjectionTemplate,
@@ -19,21 +13,54 @@ import {
   fillOrder,
   reserveOrder
 } from "../order/model.js";
+import { MemoryStorageDriver } from "../storage/driver.js";
 import type { OrderOutboxEntry, OrderOutboxPort } from "../storage/order-outbox.js";
-import type { ProofReservationRepository } from "../storage/proof-reservation-repository.js";
-import type { WalletRepository } from "../storage/wallet-repository.js";
+import { FakeZenonNode } from "../zenon/fake-node.js";
+import { FundsReservationRepository } from "../zenon/funds-reservations.js";
+import { hexToBytes, sha256Hex } from "../zenon/hex.js";
+import {
+  fakeUnlockDecoder,
+  HtlcValidationError,
+  type ExpectedZenonLock
+} from "../zenon/htlc.js";
+import { ZenonTradeClient, ZenonTradeError } from "../zenon/trade-client.js";
+import { QSR_ZTS, ZNN_ZTS } from "../zenon/types.js";
+import type { AtomicSwapBody, AtomicSwapChoreography } from "./atomic-messages.js";
 import type { CoordinatorAction } from "./coordinator-plan.js";
 import {
-  GranolaCoordinatorEffects,
+  classifyChainError,
+  ZwapChainEffectError,
+  ZwapCoordinatorEffects,
   type CoordinatorOrderReadPort,
   type PublishedOrderProjection
 } from "./effects.js";
+import { termsHash, type ZwapTradeMessage, type ZwapTradeTerms } from "./messages.js";
 import type { TradeSession } from "./session.js";
+import {
+  FIXTURE_MAKER_PUBKEY,
+  FIXTURE_ORDER_ADDRESS,
+  FIXTURE_ORDER_ID,
+  FIXTURE_RESERVATION_ID,
+  FIXTURE_SESSION_ID,
+  FIXTURE_SESSION_PUBKEY,
+  sessionFixture,
+  type DeepPartial
+} from "./test-fixtures.js";
 
 const NOW = 1_800_000_100;
-const SESSION_ID = "11".repeat(32);
-const ORDER_ID = "22222222-2222-4222-8222-222222222222";
-const MAKER = "22".repeat(32);
+const NETWORK = "zenon-1-v1";
+const ANCHOR = NOW - 100;
+const SHORT_LOCKTIME = NOW + 500;
+const MAKER_CLAIM_CUTOFF = NOW + 380;
+const LONG_LOCKTIME = NOW + 1_100;
+const TAKER_CLAIM_CUTOFF = NOW + 980;
+const RESERVATION_EXPIRES_AT = NOW + 1_700;
+const REFUND_GUARD_SECONDS = 60;
+
+const PREIMAGE = "04".repeat(32);
+const HTLC_HASH = await sha256Hex(hexToBytes(PREIMAGE));
+const SETTLEMENT_TRANSCRIPT_HASH = "77".repeat(32);
+
 const DISCOVERY_RELAYS = [
   "wss://discovery-one.example",
   "wss://discovery-two.example"
@@ -41,45 +68,323 @@ const DISCOVERY_RELAYS = [
 const INBOX_RELAYS = ["wss://inbox.example"];
 const ORDER_SIGNING_KEY = new Uint8Array(32).fill(12);
 
+/** The counterparty's session key: the fixture's own key is the local side. */
+const COUNTERPARTY_PUBKEY = getPublicKey(new Uint8Array(32).fill(3));
+const RESERVE_PROJECTION_ID = "34".repeat(32);
+const LAST_MESSAGE_ID = "11111111-1111-4111-8111-111111111111";
+const LAST_TRANSCRIPT_HASH = "78".repeat(32);
+
+const TERMS: ZwapTradeTerms = {
+  maker_side: "sell",
+  chain_id: "1",
+  base_token: ZNN_ZTS,
+  quote_token: QSR_ZTS,
+  base_amount: "20",
+  quote_amount: "1",
+  price: "5000000"
+};
+const TERMS_HASH = await termsHash(TERMS);
+
 function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
-function event(
-  kind: number,
-  idByte: string,
-  tags: string[][] = []
-): NostrEvent {
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Deep-merges two fixture patches the same way `sessionFixture` merges one. */
+function merge(base: unknown, patch: unknown): unknown {
+  if (!isPlainObject(patch) || !isPlainObject(base)) return patch;
+  const merged: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(patch)) {
+    merged[key] = Object.hasOwn(base, key) ? merge(base[key], value) : value;
+  }
+  return merged;
+}
+
+function event(kind: number, idByte: string, tags: string[][] = []): NostrEvent {
   return {
     kind,
     created_at: NOW - 100,
     tags,
     content: "",
     id: idByte.repeat(32),
-    pubkey: MAKER,
+    pubkey: FIXTURE_MAKER_PUBKEY,
     sig: "ee".repeat(64)
   };
+}
+
+/**
+ * The exact HTLC terms for one protocol slot, restated independently of
+ * `effects.ts`. The suite's order is sell-side, so slot and leg coincide: the
+ * maker funds `base` (long locktime, taker hash-locked) and the taker funds
+ * `quote` (short locktime, maker hash-locked).
+ */
+function expectedFor(
+  slot: "base" | "quote",
+  addresses: { maker: string; taker: string }
+): ExpectedZenonLock {
+  return {
+    leg: slot,
+    chainId: "1",
+    tokenStandard: slot === "base" ? ZNN_ZTS : QSR_ZTS,
+    amount: slot === "base" ? "20" : "1",
+    hashLock: HTLC_HASH,
+    hashType: 1,
+    keyMaxSize: 32,
+    hashLockedAddress: slot === "base" ? addresses.taker : addresses.maker,
+    timeLockedAddress: slot === "base" ? addresses.maker : addresses.taker,
+    expirationTime: slot === "base" ? LONG_LOCKTIME : SHORT_LOCKTIME,
+    binding: {
+      protocolVersion: "1",
+      network: NETWORK,
+      orderId: FIXTURE_ORDER_ID,
+      sessionId: FIXTURE_SESSION_ID,
+      reservationId: FIXTURE_RESERVATION_ID,
+      transcriptHash: SETTLEMENT_TRANSCRIPT_HASH
+    }
+  };
+}
+
+function boundSession(
+  role: "maker" | "taker",
+  addresses: { maker: string; taker: string },
+  overrides: DeepPartial<TradeSession> = {}
+): TradeSession {
+  const local = role === "maker" ? addresses.maker : addresses.taker;
+  const counterparty = role === "maker" ? addresses.taker : addresses.maker;
+  return sessionFixture(merge({
+    revision: 4,
+    role,
+    phase: "reserved",
+    createdAt: NOW - 200,
+    updatedAt: NOW - 10,
+    reserveProjectionId: RESERVE_PROJECTION_ID,
+    reserveProjectionRevision: "1",
+    plan: {
+      anchor: ANCHOR,
+      shortLocktime: SHORT_LOCKTIME,
+      makerClaimCutoff: MAKER_CLAIM_CUTOFF,
+      longLocktime: LONG_LOCKTIME,
+      takerClaimCutoff: TAKER_CLAIM_CUTOFF,
+      reservationExpiresAt: RESERVATION_EXPIRES_AT,
+      refundGuardSeconds: REFUND_GUARD_SECONDS
+    },
+    evidence: {
+      commitments: [HTLC_HASH],
+      reserveProjectionId: RESERVE_PROJECTION_ID,
+      reserveProjectionRevision: "1",
+      reservation: {
+        proposalSealId: "35".repeat(32),
+        takerCommitment: "36".repeat(32)
+      }
+    },
+    privateState: {
+      localAddress: local,
+      counterpartyAddress: counterparty,
+      htlcHash: HTLC_HASH,
+      settlementTranscriptHash: SETTLEMENT_TRANSCRIPT_HASH,
+      inbox: {
+        quorum: 2,
+        discoveryRelays: [...DISCOVERY_RELAYS],
+        inboxRelays: [...INBOX_RELAYS]
+      },
+      transcript: {
+        choreography: {
+          phase: "awaiting_base_lock",
+          deployment: NETWORK,
+          sessionId: FIXTURE_SESSION_ID,
+          reservationId: FIXTURE_RESERVATION_ID,
+          orderAddress: FIXTURE_ORDER_ADDRESS,
+          orderProjectionId: RESERVE_PROJECTION_ID,
+          orderRevision: "1",
+          termsHash: TERMS_HASH,
+          terms: clone(TERMS),
+          lastMessageId: LAST_MESSAGE_ID,
+          settlementHash: HTLC_HASH,
+          reserveProjectionId: RESERVE_PROJECTION_ID,
+          reserveProjectionRevision: "1",
+          shortLocktime: SHORT_LOCKTIME,
+          longLocktime: LONG_LOCKTIME,
+          participants: {
+            makerOrderPubkey: FIXTURE_MAKER_PUBKEY,
+            makerSessionPubkey: role === "maker"
+              ? FIXTURE_SESSION_PUBKEY
+              : COUNTERPARTY_PUBKEY,
+            takerSessionPubkey: role === "maker"
+              ? COUNTERPARTY_PUBKEY
+              : FIXTURE_SESSION_PUBKEY,
+            makerAddress: addresses.maker,
+            takerAddress: addresses.taker
+          },
+          refundedLegs: []
+        },
+        nextSequence: "3",
+        lastRumorId: "90".repeat(32),
+        lastMessageId: LAST_MESSAGE_ID,
+        lastTranscriptHash: LAST_TRANSCRIPT_HASH
+      }
+    },
+  }, overrides) as DeepPartial<TradeSession>);
+}
+
+interface Participant {
+  effects: ZwapCoordinatorEffects;
+  chain: ZenonTradeClient;
+  reservations: FundsReservationRepository;
+  address: string;
+  accountLocks: () => number;
+  orderApi: {
+    ensureReserveStaged: ReturnType<typeof vi.fn>;
+    ensureFillStaged: ReturnType<typeof vi.fn>;
+    ensureReleaseStaged: ReturnType<typeof vi.fn>;
+    publishNextStage: ReturnType<typeof vi.fn>;
+  };
+  orderOutbox: { load: ReturnType<typeof vi.fn> };
+  orderReader: {
+    loadPublishedProjection: ReturnType<typeof vi.fn>;
+    loadLatestPublishedProjection: ReturnType<typeof vi.fn>;
+  };
+  nostr: {
+    send: ReturnType<typeof vi.fn>;
+    read: ReturnType<typeof vi.fn>;
+    discoverInbox: ReturnType<typeof vi.fn>;
+  };
+}
+
+interface Harness {
+  node: FakeZenonNode;
+  clock: { now: number };
+  addresses: { maker: string; taker: string };
+  maker: Participant;
+  taker: Participant;
+}
+
+function harness(
+  options: { makerBalance?: string; takerBalance?: string } = {}
+): Harness {
+  const clock = { now: NOW };
+  const node = new FakeZenonNode({ chainId: 1, now: () => clock.now });
+  const addresses = {
+    maker: node.createAddress("maker"),
+    taker: node.createAddress("taker")
+  };
+  node.fund(addresses.maker, ZNN_ZTS, options.makerBalance ?? "20");
+  node.fund(addresses.taker, QSR_ZTS, options.takerBalance ?? "1");
+
+  const participant = (address: string): Participant => {
+    const chain = new ZenonTradeClient({
+      node,
+      signer: node.signer(address),
+      decodeUnlock: fakeUnlockDecoder,
+      now: () => clock.now
+    });
+    const reservations = new FundsReservationRepository(new MemoryStorageDriver());
+    const orderApi = {
+      ensureReserveStaged: vi.fn(),
+      ensureFillStaged: vi.fn(),
+      ensureReleaseStaged: vi.fn(),
+      publishNextStage: vi.fn(),
+      clearAcknowledgedOrderPublication: vi.fn(),
+      pruneCommittedOrderPublication: vi.fn()
+    };
+    const orderOutbox = { load: vi.fn() };
+    const orderReader = {
+      loadPublishedProjection: vi.fn(),
+      loadLatestPublishedProjection: vi.fn()
+    };
+    const nostr = {
+      createRegistration: vi.fn(),
+      publishRegistration: vi.fn(),
+      discoverInbox: vi.fn(),
+      send: vi.fn(),
+      read: vi.fn()
+    };
+    let accountLocks = 0;
+    const effects = new ZwapCoordinatorEffects({
+      orderApi: orderApi as unknown as OrderApi,
+      orderOutbox: orderOutbox as unknown as OrderOutboxPort,
+      orderReader: orderReader as unknown as CoordinatorOrderReadPort,
+      nostr: nostr as unknown as NostrTradeTransport,
+      chain,
+      node,
+      reservations,
+      makerIdentity: {
+        publicKey: async () => FIXTURE_MAKER_PUBKEY,
+        useSecretKey: async (action) => action(new Uint8Array(32).fill(9))
+      },
+      discoveryRelays: DISCOVERY_RELAYS,
+      withAccountLock: async <T>(action: () => Promise<T>): Promise<T> => {
+        accountLocks += 1;
+        return action();
+      },
+      network: NETWORK,
+      entropy: {
+        messageId: () => "11111111-1111-4111-8111-111111111113",
+        operationId: () => "11111111-1111-4111-8111-111111111114",
+        ephemeralSecretKey: () => new Uint8Array(32).fill(7),
+        nonce: () => new Uint8Array(32).fill(8),
+        randomizedTimestamp: (now: number) => now - 1,
+        outerExpiration: (expiration: number) => expiration + 3_600
+      },
+      commitment: async () => "ab".repeat(32)
+    });
+    return {
+      effects,
+      chain,
+      reservations,
+      address,
+      accountLocks: () => accountLocks,
+      orderApi,
+      orderOutbox,
+      orderReader,
+      nostr
+    };
+  };
+
+  return {
+    node,
+    clock,
+    addresses,
+    maker: participant(addresses.maker),
+    taker: participant(addresses.taker)
+  };
+}
+
+function externalInput(action: CoordinatorAction, session: TradeSession) {
+  return {
+    action,
+    session: clone(session),
+    now: NOW,
+    revision: session.revision,
+    fingerprint: `${action.kind}:fixed-test-fingerprint`
+  };
+}
+
+function externalInputAt(
+  action: CoordinatorAction,
+  session: TradeSession,
+  now: number
+) {
+  return { ...externalInput(action, session), now };
 }
 
 async function publishedFill(): Promise<PublishedOrderProjection> {
   const maker = getPublicKey(ORDER_SIGNING_KEY);
   const initial = createOrderState({
-    orderId: ORDER_ID,
+    orderId: FIXTURE_ORDER_ID,
     createdAt: NOW - 200,
     expiresAt: NOW + 2_000,
     side: "sell",
-    baseUnit: "sat",
-    quoteUnit: "usd",
-    offered: { unit: "sat", mint: "https://testnut.cashu.space" },
-    requested: {
-      unit: "usd",
-      acceptableMints: ["https://nofee.testnut.cashu.space"]
-    },
+    chainId: "1",
+    baseToken: ZNN_ZTS,
+    quoteToken: QSR_ZTS,
     amount: "20",
-    priceCentsPerBtc: "5000000"
+    price: "5000000"
   });
   const reserved = reserveOrder(initial, {
-    reservationId: "11111111-1111-4111-8111-111111111111",
+    reservationId: FIXTURE_RESERVATION_ID,
     amount: "20",
     acceptedAt: NOW - 150,
     expiresAt: NOW + 1_700,
@@ -95,467 +400,17 @@ async function publishedFill(): Promise<PublishedOrderProjection> {
     ORDER_SIGNING_KEY
   );
   const record = await parseProjectionEvent(projection, verifyEvent);
-  return {
-    eventId: projection.id,
-    revision: filled.revision,
-    projection,
-    record
-  };
+  return { eventId: projection.id, revision: filled.revision, projection, record };
 }
 
-function preparedOperation(): PreparedTradeOperation {
-  return {
-    version: 1,
-    kind: "outgoing-lock",
-    mintUrl: "https://testnut.cashu.space",
-    unit: "sat",
-    preview: {
-      amount: "20",
-      fees: "0",
-      keysetId: "base-keyset",
-      inputs: [],
-      keepOutputs: [],
-      sendOutputs: []
-    },
-    spentSecrets: ["proof-unreserved"],
-    expected: {
-      mintUrl: "https://testnut.cashu.space",
-      unit: "sat",
-      amount: "20",
-      hash: "44".repeat(32),
-      receiverPubkey: "55".repeat(32),
-      refundPubkey: "66".repeat(32),
-      locktime: NOW + 1_100,
-      leg: "base",
-      refundHorizon: NOW + 1_160,
-      deadlines: {
-        short: NOW + 500,
-        long: NOW + 1_100,
-        minimumGap: 600
-      },
-      binding: {
-        protocolVersion: "1",
-        network: "cashu-testnet-v1",
-        orderId: ORDER_ID,
-        reservationId: "11111111-1111-4111-8111-111111111111",
-        sessionId: SESSION_ID,
-        direction: "base",
-        transcriptHash: "77".repeat(32)
-      }
-    },
-    operationCommitment: "88".repeat(32)
-  };
-}
-
-function baseSession(): TradeSession {
-  const inboxEvent = event(10050, "07", [["relay", INBOX_RELAYS[0]!]]);
-  return {
-    schema: "granola/trade-session/v2",
-    revision: 4,
-    sessionId: SESSION_ID,
-    reservationId: "11111111-1111-4111-8111-111111111111",
-    role: "maker",
-    phase: "base_locked",
-    orderAddress: `30078:${MAKER}:zwap:order:v1:${ORDER_ID}`,
-    offeredProjectionId: "33".repeat(32),
-    offeredProjectionRevision: "0",
-    reserveProjectionId: "34".repeat(32),
-    reserveProjectionRevision: "1",
-    fillProjectionId: null,
-    fillProjectionRevision: null,
-    pendingOrderPublication: null,
-    createdAt: NOW - 100,
-    updatedAt: NOW - 10,
-    terms: {
-      baseMint: "https://testnut.cashu.space",
-      baseUnit: "sat",
-      baseKeyset: "base-keyset",
-      baseAmount: "20",
-      quoteMint: "https://nofee.testnut.cashu.space",
-      quoteUnit: "usd",
-      quoteKeyset: "quote-keyset",
-      quoteAmount: "1",
-      priceCentsPerBtc: "5000000"
-    },
-    plan: {
-      anchor: NOW - 100,
-      shortLocktime: NOW + 500,
-      makerClaimCutoff: NOW + 380,
-      longLocktime: NOW + 1_100,
-      takerClaimCutoff: NOW + 980,
-      reservationExpiresAt: NOW + 1_700,
-      refundGuardSeconds: 60
-    },
-    evidence: {
-      makerPubkey: MAKER,
-      commitments: [],
-      mintStates: [],
-      reserveProjectionId: "34".repeat(32),
-      reserveProjectionRevision: "1",
-      fillProjectionId: null,
-      fillProjectionRevision: null,
-      reservation: {
-        proposalSealId: "35".repeat(32),
-        takerCommitment: "36".repeat(32),
-        abortSeal: null
-      },
-      legs: {
-        base: {
-          tokenCommitment: null,
-          validationCommitment: null,
-          keysetId: "base-keyset",
-          proofCount: null,
-          fee: null,
-          mintState: "UNKNOWN",
-          observedAt: null,
-          spendCommitment: null,
-          claimOperationCommitment: null,
-          refundOperationCommitment: null
-        },
-        quote: {
-          tokenCommitment: null,
-          validationCommitment: null,
-          keysetId: "quote-keyset",
-          proofCount: null,
-          fee: null,
-          mintState: "UNKNOWN",
-          observedAt: null,
-          spendCommitment: null,
-          claimOperationCommitment: null,
-          refundOperationCommitment: null
-        }
-      }
-    },
-    privateState: {
-      nostrPrivateKey: "01".repeat(32),
-      cashuPrivateKey: "02".repeat(32),
-      refundPrivateKey: "03".repeat(32),
-      preimage: "04".repeat(32),
-      htlcHash: "44".repeat(32),
-      settlementTranscriptHash: "77".repeat(32),
-      inbox: {
-        status: "registered",
-        quorum: 2,
-        event: inboxEvent,
-        discoveryRelays: [...DISCOVERY_RELAYS],
-        inboxRelays: [...INBOX_RELAYS],
-        receipts: DISCOVERY_RELAYS.map((relay) => ({
-          relay,
-          ok: true,
-          message: "stored"
-        })),
-        readbacks: DISCOVERY_RELAYS.map((relay) => ({
-          relay,
-          found: true,
-          event: inboxEvent,
-          observedAt: NOW - 90
-        })),
-        stagedAt: NOW - 100,
-        acknowledgedAt: NOW - 90,
-        registeredAt: NOW - 90
-      },
-      pendingIncoming: null,
-      transcript: {
-        choreography: {
-          phase: "awaiting_base_lock",
-          participants: {
-            makerOrderPubkey: MAKER,
-            makerSessionPubkey: "55".repeat(32),
-            takerSessionPubkey: "56".repeat(32),
-            makerCashuPubkey: "57".repeat(32),
-            takerCashuPubkey: "55".repeat(32),
-            makerRefundPubkey: "66".repeat(32),
-            takerRefundPubkey: "58".repeat(32)
-          },
-          refundedLegs: []
-        },
-        nextSequence: "3",
-        lastRumorId: "90".repeat(32),
-        lastMessageId: "91".repeat(32),
-        lastTranscriptHash: "77".repeat(32),
-        accepted: []
-      },
-      outbox: null,
-      cashuOperation: null,
-      legs: {
-        base: {
-          token: null,
-          expected: preparedOperation().expected,
-          observations: []
-        },
-        quote: { token: null, expected: null, observations: [] }
-      }
-    }
-  };
-}
-
-function stagedDeliverySession(): TradeSession {
-  const current = baseSession();
-  current.privateState.outbox = {
-    message: {
-      schema: "granola/dm/v1",
-      deployment: "cashu-testnet-v1",
-      type: "base_lock",
-      message_id: "11111111-1111-4111-8111-111111111112",
-      session_id: current.sessionId,
-      reservation_id: current.reservationId,
-      order_address: current.orderAddress,
-      order_projection_id: current.reserveProjectionId!,
-      order_revision: current.reserveProjectionRevision!,
-      maker_order_pubkey: MAKER,
-      author_pubkey: "55".repeat(32),
-      recipient_pubkey: "56".repeat(32),
-      sequence: "3",
-      previous_message_id: "91".repeat(32),
-      previous_transcript_hash: "77".repeat(32),
-      sent_at: NOW - 10,
-      expires_at: NOW + 300,
-      terms_hash: "92".repeat(32),
-      body: {
-        schema: "granola/atomic-swap-body/v1",
-        cashu_token: "cashuBprivate",
-        token_commitment: "93".repeat(32),
-        validation_commitment: "98".repeat(32),
-        settlement_hash: "44".repeat(32),
-        mint: current.terms.baseMint,
-        unit: current.terms.baseUnit,
-        keyset: current.terms.baseKeyset,
-        amount: current.terms.baseAmount,
-        receiver_cashu_pubkey: "55".repeat(32),
-        refund_cashu_pubkey: "66".repeat(32),
-        locktime: current.plan.longLocktime
-      }
-    },
-    rumor: {
-      kind: 14,
-      created_at: NOW - 10,
-      tags: [["p", "56".repeat(32)]],
-      content: "encrypted-rumor",
-      id: "94".repeat(32),
-      pubkey: "55".repeat(32)
-    },
-    seal: event(13, "95"),
-    wrapper: event(1059, "96", [["p", "56".repeat(32)]]),
-    recipientInboxListId: "97".repeat(32),
-    recipientRelays: ["wss://recipient.example"],
-    receipts: [],
-    nextChoreography: {
-      phase: "awaiting_base_lock_ack",
-      participants: clone(current.privateState.transcript.choreography.participants),
-      refundedLegs: []
-    },
-    status: "staged"
-  };
-  return current;
-}
-
-function stagedOrderSession(): TradeSession {
-  const current = baseSession();
-  current.pendingOrderPublication = {
-    operation: "reserve",
-    orderId: ORDER_ID,
-    projection: event(30078, "a2"),
-    receipts: [],
-    status: "staged",
-    stagedAt: NOW - 10,
-    acknowledgedAt: null,
-    committedAt: null
-  };
-  return current;
-}
-
-function walletState(): WalletState {
-  return {
-    version: 1,
-    revision: 7,
-    pockets: [{
-      mintUrl: "https://testnut.cashu.space",
-      unit: "sat",
-      proofs: [{
-        amount: "8",
-        id: "base-keyset",
-        secret: "proof-reserved",
-        C: "point-reserved"
-      }, {
-        amount: "32",
-        id: "base-keyset",
-        secret: "proof-unreserved",
-        C: "point-unreserved"
-      }]
-    }]
-  };
-}
-
-interface Harness {
-  effects: GranolaCoordinatorEffects;
-  orderApi: {
-    ensureReserveStaged: ReturnType<typeof vi.fn>;
-    publishNextStage: ReturnType<typeof vi.fn>;
-  };
-  orderOutbox: {
-    load: ReturnType<typeof vi.fn>;
-  };
-  orderReader: {
-    loadPublishedProjection: ReturnType<typeof vi.fn>;
-    loadLatestPublishedProjection: ReturnType<typeof vi.fn>;
-  };
-  nostr: {
-    send: ReturnType<typeof vi.fn>;
-    read: ReturnType<typeof vi.fn>;
-  };
-  cashu: {
-    prepareOutgoingLock: ReturnType<typeof vi.fn>;
-    completeOutgoingLock: ReturnType<typeof vi.fn>;
-  };
-  wallet: {
-    load: ReturnType<typeof vi.fn>;
-    save: ReturnType<typeof vi.fn>;
-  };
-  reservations: {
-    load: ReturnType<typeof vi.fn>;
-    reserve: ReturnType<typeof vi.fn>;
-    release: ReturnType<typeof vi.fn>;
-  };
-  withWalletLock: ReturnType<typeof vi.fn>;
-}
-
-function harness(): Harness {
-  const orderApi = {
-    ensureReserveStaged: vi.fn(),
-    publishNextStage: vi.fn()
-  };
-  const orderOutbox = {
-    load: vi.fn(),
-    list: vi.fn(),
-    ensureStaged: vi.fn(),
-    recordProgress: vi.fn(),
-    loadAcknowledged: vi.fn(),
-    clearAcknowledged: vi.fn(),
-    pruneCommitted: vi.fn()
-  };
-  const orderReader = {
-    loadPublishedProjection: vi.fn(),
-    loadLatestPublishedProjection: vi.fn()
-  };
-  const nostr = {
-    createRegistration: vi.fn(),
-    publishRegistration: vi.fn(),
-    discoverInbox: vi.fn(),
-    send: vi.fn(),
-    read: vi.fn()
-  };
-  const cashu = {
-    prepareOutgoingLock: vi.fn(),
-    completeOutgoingLock: vi.fn(),
-    validateIncomingLock: vi.fn(),
-    prepareClaim: vi.fn(),
-    completeClaim: vi.fn(),
-    prepareRefund: vi.fn(),
-    completeRefund: vi.fn(),
-    checkToken: vi.fn()
-  };
-  const wallet = {
-    load: vi.fn(),
-    save: vi.fn()
-  };
-  const reservations = {
-    load: vi.fn(),
-    reserve: vi.fn(),
-    release: vi.fn()
-  };
-  const withWalletLock = vi.fn(async (action: () => Promise<unknown>) =>
-    action()
-  );
-  const effects = new GranolaCoordinatorEffects({
-    orderApi: orderApi as unknown as OrderApi,
-    orderOutbox: orderOutbox as unknown as OrderOutboxPort,
-    orderReader: orderReader as unknown as CoordinatorOrderReadPort,
-    nostr: nostr as unknown as NostrTradeTransport,
-    cashu: cashu as unknown as CashuTradeClient,
-    wallet: wallet as unknown as WalletRepository,
-    reservations: reservations as unknown as ProofReservationRepository,
-    makerIdentity: {
-      publicKey: async () => MAKER,
-      useSecretKey: async (action) => action(new Uint8Array(32).fill(9))
-    },
-    discoveryRelays: DISCOVERY_RELAYS,
-    withWalletLock: withWalletLock as unknown as
-      <T>(action: () => Promise<T>) => Promise<T>,
-    entropy: {
-      messageId: () => "11111111-1111-4111-8111-111111111113",
-      operationId: () => "11111111-1111-4111-8111-111111111114",
-      ephemeralSecretKey: () => new Uint8Array(32).fill(7),
-      nonce: () => new Uint8Array(32).fill(8),
-      randomizedTimestamp: (now: number) => now - 1,
-      outerExpiration: (expiration: number) => expiration + 3_600
-    },
-    commitment: async () => "ab".repeat(32)
-  });
-  return {
-    effects,
-    orderApi,
-    orderOutbox,
-    orderReader,
-    nostr,
-    cashu,
-    wallet,
-    reservations,
-    withWalletLock
-  };
-}
-
-function externalInput(
-  action: CoordinatorAction,
-  session: TradeSession
-) {
-  return {
-    action,
-    session: clone(session),
-    now: NOW,
-    revision: session.revision,
-    fingerprint: `${action.kind}:fixed-test-fingerprint`
-  };
-}
-
-async function takerAwaitingFillVerification(): Promise<{
-  session: TradeSession;
-  publication: PublishedOrderProjection;
-}> {
-  const publication = await publishedFill();
-  const current = baseSession();
-  current.role = "taker";
-  current.phase = "quote_locked";
-  current.orderAddress =
-    `30078:${publication.projection.pubkey}:zwap:order:v1:${ORDER_ID}`;
-  current.offeredProjectionId = "31".repeat(32);
-  current.offeredProjectionRevision = "0";
-  current.reserveProjectionId = "32".repeat(32);
-  current.reserveProjectionRevision = "1";
-  current.fillProjectionId = null;
-  current.fillProjectionRevision = null;
-  current.pendingOrderPublication = null;
-  current.evidence.makerPubkey = publication.projection.pubkey;
-  current.evidence.reserveProjectionId = current.reserveProjectionId;
-  current.evidence.reserveProjectionRevision = current.reserveProjectionRevision;
-  current.evidence.fillProjectionId = null;
-  current.evidence.fillProjectionRevision = null;
-  current.evidence.legs.base.tokenCommitment = "45".repeat(32);
-  current.evidence.legs.quote.tokenCommitment = "46".repeat(32);
-  current.privateState.outbox = null;
-  current.privateState.cashuOperation = null;
-  current.privateState.htlcHash = "44".repeat(32);
-  current.privateState.transcript.choreography.phase = "settling";
-  return { session: current, publication };
-}
-
-describe("GranolaCoordinatorEffects", () => {
+describe("ZwapCoordinatorEffects", () => {
   it("classifies every planner action at an explicit I/O boundary", () => {
-    const { effects } = harness();
+    const { maker } = harness();
     const local = [
       "stage_inbox_registration",
       "commit_outbox",
       "commit_incoming",
-      "clear_cashu_operation",
+      "clear_chain_operation",
       "enter_recovery",
       "none"
     ] satisfies CoordinatorAction["kind"][];
@@ -567,9 +422,9 @@ describe("GranolaCoordinatorEffects", () => {
       "verify_inbox_registration",
       "deliver_outbox",
       "validate_incoming",
-      "reserve_cashu_inputs",
-      "execute_cashu_operation",
-      "reconcile_wallet",
+      "reserve_funds",
+      "execute_chain_operation",
+      "reconcile_account",
       "stage_reserve_propose",
       "stage_order_reserve",
       "stage_reserve_accept",
@@ -599,397 +454,927 @@ describe("GranolaCoordinatorEffects", () => {
     expect(new Set(allKinds).size).toBe(allKinds.length);
     expect(allKinds).toHaveLength(39);
     for (const kind of local) {
-      expect(effects.classify({ kind } as CoordinatorAction), kind).toBe("local");
+      expect(maker.effects.classify({ kind } as CoordinatorAction), kind).toBe("local");
     }
     for (const kind of external) {
-      expect(effects.classify({ kind } as CoordinatorAction), kind).toBe("external");
+      expect(maker.effects.classify({ kind } as CoordinatorAction), kind).toBe("external");
     }
   });
 
-  it("retries the exact persisted Nostr wrapper and only records its receipts", async () => {
-    const { effects, nostr } = harness();
-    const current = stagedDeliverySession();
-    const receipts = [{
-      relay: current.privateState.outbox!.recipientRelays[0]!,
-      ok: true,
-      message: "stored"
-    }];
-    const sentKeys: Uint8Array[] = [];
-    nostr.send.mockImplementation(async (
-      _wrapper: NostrEvent,
-      _relays: string[],
-      secretKey: Uint8Array
-    ) => {
-      sentKeys.push(Uint8Array.from(secretKey));
-      return receipts;
-    });
-
-    const first = await effects.performExternal(
-      externalInput({ kind: "deliver_outbox" }, current)
-    );
-    const retry = await effects.performExternal(
-      externalInput({ kind: "deliver_outbox" }, current)
-    );
-
-    expect(nostr.send).toHaveBeenCalledTimes(2);
-    for (const [wrapper, relays] of nostr.send.mock.calls) {
-      expect(wrapper).toEqual(current.privateState.outbox!.wrapper);
-      expect(relays).toEqual(current.privateState.outbox!.recipientRelays);
+  describe("classifyChainError", () => {
+    class ZnnClientException extends Error {
+      constructor(message: string) {
+        super(message);
+        this.name = "ZnnClientException";
+      }
     }
-    expect(sentKeys).toEqual([
-      new Uint8Array(32).fill(1),
-      new Uint8Array(32).fill(1)
-    ]);
-    expect(first.privateState.outbox).toEqual({
-      ...current.privateState.outbox,
-      receipts,
-      status: "acknowledged"
-    });
-    expect(retry).toEqual(first);
-    expect(first.revision).toBe(current.revision + 1);
-    expect(first.updatedAt).toBe(NOW);
-  });
 
-  it("uses the shared order outbox as retry authority and never republishes an acknowledged stage", async () => {
-    const { effects, orderApi, orderOutbox } = harness();
-    const current = stagedOrderSession();
-    const stagedEntry = {
-      schema: "granola/order-outbox/v3",
-      status: "staged",
-      intent: {
-        operation: "reserve",
-        orderId: ORDER_ID,
-        address: current.orderAddress,
-        createdAt: NOW - 10
-      },
-      publication: {
-        state: { revision: "1" },
-        projection: current.pendingOrderPublication!.projection,
-        receipts: []
-      }
-    } as unknown as OrderOutboxEntry;
-    const acknowledgedEntry = clone(stagedEntry);
-    acknowledgedEntry.status = "acknowledged";
-    acknowledgedEntry.publication.receipts = [{
-      relay: "wss://orders.example",
-      ok: true,
-      message: "stored"
-    }];
-    let durableEntry = stagedEntry;
-    orderOutbox.load.mockImplementation(async () => clone(durableEntry));
-    orderApi.publishNextStage.mockImplementation(async () => {
-      durableEntry = acknowledgedEntry;
-      return {
-        orderId: ORDER_ID,
-        makerPubkey: MAKER,
-        projectionId: current.pendingOrderPublication!.projection.id,
-        revision: "1",
-        receipts: clone(acknowledgedEntry.publication.receipts),
-        status: "acknowledged"
-      };
+    it("maps every Zenon failure onto the atomic-swap error vocabulary", () => {
+      expect(classifyChainError(new ZenonTradeError("insufficient-balance")))
+        .toEqual({ code: "chain_rejected", retryable: false });
+      expect(classifyChainError(new HtlcValidationError("htlc-amount")))
+        .toEqual({ code: "terms_mismatch", retryable: false });
+      expect(classifyChainError(new Error("not enough plasma for this block")))
+        .toEqual({ code: "plasma_unavailable", retryable: true });
+      expect(classifyChainError(new Error("PoW link generation failed")))
+        .toEqual({ code: "plasma_unavailable", retryable: true });
+      expect(classifyChainError(new ZnnClientException("closed")))
+        .toEqual({ code: "node_unavailable", retryable: true });
+      expect(classifyChainError(new Error("socket hang up")))
+        .toEqual({ code: "node_unavailable", retryable: true });
+      expect(classifyChainError(new Error("request timeout")))
+        .toEqual({ code: "node_unavailable", retryable: true });
+      expect(classifyChainError(new ZenonTradeError("claim-cutoff")))
+        .toEqual({ code: "chain_rejected", retryable: false });
+      expect(classifyChainError(new Error("something else")))
+        .toEqual({ code: "internal_error", retryable: false });
     });
 
-    const first = await effects.performExternal(
-      externalInput({ kind: "publish_order_projection" }, current)
-    );
-    const retry = await effects.performExternal(
-      externalInput({ kind: "publish_order_projection" }, current)
-    );
-
-    expect(orderApi.publishNextStage).toHaveBeenCalledTimes(1);
-    expect(orderApi.publishNextStage).toHaveBeenCalledWith(ORDER_ID);
-    expect(first.pendingOrderPublication?.projection)
-      .toEqual(current.pendingOrderPublication!.projection);
-    expect(first.pendingOrderPublication?.receipts)
-      .toEqual(acknowledgedEntry.publication.receipts);
-    expect(first.pendingOrderPublication?.status)
-      .toBe("acknowledged");
-    expect(retry).toEqual(first);
-  });
-
-  it("advances the session clock when order staging crosses a wall-clock second", async () => {
-    const { effects, orderApi, orderOutbox } = harness();
-    const current = baseSession();
-    current.phase = "negotiating";
-    current.reserveProjectionId = null;
-    current.evidence.reserveProjectionId = null;
-    current.evidence.reservation.takerCommitment = null;
-    current.privateState.transcript.choreography.phase =
-      "awaiting_reserve_accept";
-    const projection = event(30078, "b2");
-    projection.created_at = NOW + 1;
-    const stagedEntry = {
-      schema: "granola/order-outbox/v3",
-      status: "staged",
-      intent: {
-        operation: "reserve",
-        orderId: ORDER_ID,
-        address: current.orderAddress,
-        createdAt: NOW + 1,
-        state: {
-          reservation: { taker_commitment: "bc".repeat(32) }
-        }
-      },
-      publication: {
-        state: {
-          revision: "1",
-          reservation: { taker_commitment: "bc".repeat(32) }
-        },
-        projection,
-        receipts: []
-      }
-    } as unknown as OrderOutboxEntry;
-    orderApi.ensureReserveStaged.mockResolvedValue({ orderId: ORDER_ID });
-    orderOutbox.load.mockResolvedValue(stagedEntry);
-
-    const staged = await effects.performExternal(
-      externalInput({ kind: "stage_order_reserve" }, current)
-    );
-
-    expect(staged.pendingOrderPublication?.stagedAt).toBe(NOW + 1);
-    expect(staged.updatedAt).toBe(NOW + 1);
-  });
-
-  it("prepares from an unreserved wallet snapshot under the wallet lock without mutating storage", async () => {
-    const {
-      effects,
-      cashu,
-      wallet,
-      reservations,
-      withWalletLock
-    } = harness();
-    const current = baseSession();
-    const artifact = preparedOperation();
-    wallet.load.mockResolvedValue(walletState());
-    reservations.load.mockResolvedValue({
-      version: 1,
-      revision: 3,
-      reservations: [{
-        proofSecret: "proof-reserved",
-        sessionId: "99".repeat(32),
-        mintUrl: current.terms.baseMint,
-        unit: current.terms.baseUnit,
-        reservedAt: NOW - 20
-      }]
-    });
-    cashu.prepareOutgoingLock.mockResolvedValue(artifact);
-
-    const prepared = await effects.performExternal(
-      externalInput({ kind: "prepare_base_lock" }, current)
-    );
-
-    expect(withWalletLock).toHaveBeenCalledTimes(1);
-    expect(cashu.prepareOutgoingLock).toHaveBeenCalledWith({
-      pocket: {
-        mintUrl: current.terms.baseMint,
-        unit: current.terms.baseUnit,
-        proofs: [walletState().pockets[0]!.proofs[1]!]
-      },
-      expected: current.privateState.legs.base.expected,
-      now: NOW
-    });
-    expect(prepared.privateState.cashuOperation).toEqual({
-      operationId: "11111111-1111-4111-8111-111111111114",
-      leg: "base",
-      kind: "outgoing-lock",
-      status: "prepared",
-      preparedAt: NOW,
-      inputsReserved: false,
-      artifact,
-      result: null
-    });
-    expect(wallet.save).not.toHaveBeenCalled();
-    expect(reservations.reserve).not.toHaveBeenCalled();
-    expect(reservations.release).not.toHaveBeenCalled();
-  });
-
-  it("reserves the persisted Cashu inputs before executing the exact prepared artifact on retry", async () => {
-    const {
-      effects,
-      cashu,
-      wallet,
-      reservations,
-      withWalletLock
-    } = harness();
-    const prepared = baseSession();
-    prepared.privateState.cashuOperation = {
-      operationId: "11111111-1111-4111-8111-111111111114",
-      leg: "base",
-      kind: "outgoing-lock",
-      status: "prepared",
-      preparedAt: NOW - 1,
-      inputsReserved: false,
-      artifact: preparedOperation(),
-      result: null
-    };
-    reservations.load.mockResolvedValue({
-      version: 1,
-      revision: 3,
-      reservations: []
-    });
-    reservations.reserve.mockResolvedValue({
-      version: 1,
-      revision: 4,
-      reservations: preparedOperation().spentSecrets.map((proofSecret) => ({
-        proofSecret,
-        sessionId: prepared.sessionId,
-        mintUrl: prepared.terms.baseMint,
-        unit: prepared.terms.baseUnit,
-        reservedAt: prepared.privateState.cashuOperation!.preparedAt
-      }))
-    });
-
-    const reserved = await effects.performExternal(
-      externalInput({ kind: "reserve_cashu_inputs" }, prepared)
-    );
-
-    expect(withWalletLock).toHaveBeenCalledTimes(1);
-    expect(reservations.reserve).toHaveBeenCalledWith(3, {
-      sessionId: prepared.sessionId,
-      mintUrl: prepared.terms.baseMint,
-      unit: prepared.terms.baseUnit,
-      proofSecrets: preparedOperation().spentSecrets,
-      reservedAt: prepared.privateState.cashuOperation.preparedAt
-    });
-    expect(reserved.privateState.cashuOperation?.inputsReserved).toBe(true);
-    expect(wallet.save).not.toHaveBeenCalled();
-
-    const completedLock: CompletedLock = {
-      change: {
-        mintUrl: prepared.terms.baseMint,
-        unit: prepared.terms.baseUnit,
-        proofs: [{
-          amount: "12",
-          id: "base-keyset",
-          secret: "change-proof",
-          C: "change-point"
-        }]
-      },
-      lockedToken: "cashuBlocked",
-      summary: {
-        mintUrl: prepared.terms.baseMint,
-        unit: prepared.terms.baseUnit,
-        amount: prepared.terms.baseAmount,
-        proofCount: 1,
-        fee: "0",
-        keysetId: "base-keyset",
-        locktime: prepared.plan.longLocktime,
-        hash: prepared.privateState.htlcHash!,
-        receiverPubkey: "55".repeat(32),
-        refundPubkey: "66".repeat(32),
-        commitment: "89".repeat(32)
-      }
-    } as CompletedLock;
-    cashu.completeOutgoingLock.mockResolvedValue(completedLock);
-
-    const first = await effects.performExternal(
-      externalInput({ kind: "execute_cashu_operation" }, reserved)
-    );
-    const retry = await effects.performExternal(
-      externalInput({ kind: "execute_cashu_operation" }, reserved)
-    );
-
-    expect(cashu.completeOutgoingLock).toHaveBeenCalledTimes(2);
-    for (const [artifact, expected] of cashu.completeOutgoingLock.mock.calls) {
-      expect(artifact).toEqual(reserved.privateState.cashuOperation!.artifact);
-      expect(expected).toEqual(reserved.privateState.legs.base.expected);
-    }
-    expect(first.privateState.cashuOperation?.status).toBe("completed");
-    expect(first.privateState.cashuOperation?.artifact)
-      .toEqual(reserved.privateState.cashuOperation!.artifact);
-    expect(first.privateState.cashuOperation?.result).toMatchObject({
-      walletMutation: "replace",
-      mintUrl: completedLock.change.mintUrl,
-      unit: completedLock.change.unit,
-      proofs: completedLock.change.proofs,
-      lockedToken: completedLock.lockedToken
-    });
-    expect(retry).toEqual(first);
-    expect(wallet.save).not.toHaveBeenCalled();
-    expect(reservations.release).not.toHaveBeenCalled();
-  });
-
-  it("accepts only the maker's exact current published fill before taker termination", async () => {
-    const { effects, orderReader } = harness();
-    const { session, publication } = await takerAwaitingFillVerification();
-
-    orderReader.loadLatestPublishedProjection.mockRejectedValueOnce(
-      new Error("fill is absent from relays")
-    );
-    await expect(effects.performExternal(
-      externalInput({ kind: "verify_order_fill" }, session)
-    )).rejects.toThrow(/absent/i);
-
-    orderReader.loadLatestPublishedProjection.mockResolvedValueOnce({
-      ...publication,
-      eventId: "ff".repeat(32)
-    });
-    await expect(effects.performExternal(
-      externalInput({ kind: "verify_order_fill" }, session)
-    )).rejects.toThrow(/projection|fill/i);
-
-    orderReader.loadLatestPublishedProjection.mockResolvedValueOnce({
-      ...publication,
-      projection: {
-        ...publication.projection,
-        content: JSON.stringify({
-          ...JSON.parse(publication.projection.content),
-          remaining_amount: "1"
-        })
-      }
-    });
-    await expect(effects.performExternal(
-      externalInput({ kind: "verify_order_fill" }, session)
-    )).rejects.toThrow();
-
-    orderReader.loadLatestPublishedProjection.mockResolvedValueOnce(publication);
-    const verified = await effects.performExternal(
-      externalInput({ kind: "verify_order_fill" }, session)
-    );
-
-    expect(orderReader.loadLatestPublishedProjection).toHaveBeenLastCalledWith(
-      session.orderAddress
-    );
-    expect(verified.evidence.fillProjectionId).toBe(publication.eventId);
-    expect(verified.fillProjectionId).toBe(publication.eventId);
-    expect(verified.privateState.transcript.choreography.phase).toBe("settled");
-    expect(verified.revision).toBe(session.revision + 1);
+    it("keeps polling on a missing HTLC unless the leg was already reclaimed", () => {
+      const missing = new ZenonTradeError("htlc-missing");
+      expect(classifyChainError(missing))
+        .toEqual({ code: "htlc_state_invalid", retryable: true });
+      expect(classifyChainError(missing, { reclaimed: true }))
+        .toEqual({ code: "htlc_state_invalid", retryable: false });
     });
   });
 
-  it("polls with the bounded NIP-17 lookback and skips replayed wrappers", async () => {
-    const { effects, nostr } = harness();
-    const current = baseSession();
-    current.privateState.outbox = null;
-    const replay = event(1059, "81");
-    replay.created_at = current.updatedAt - 120;
-    const fresh = event(1059, "82");
-    fresh.created_at = current.updatedAt - 60;
-    nostr.read.mockImplementation(async (
-      _recipient: string,
-      _key: Uint8Array,
-      since: number
-    ) => [replay, fresh].filter((wrapper) => wrapper.created_at >= since));
-    const openIncoming = vi.fn()
-      .mockRejectedValueOnce(new Error("message was already accepted"))
-      .mockResolvedValueOnce({
-        wrapper: fresh,
-        seal: event(13, "83"),
-        rumor: event(14, "84"),
-        message: { message_id: "11111111-1111-4111-8111-111111111115" },
-        transcriptHash: "85".repeat(32)
+  describe("prepare_base_lock", () => {
+    it("stores the artifact under the account lock and reserves nothing yet", async () => {
+      const { maker, addresses } = harness();
+      const session = boundSession("maker", addresses);
+
+      const prepared = await maker.effects.performExternal(
+        externalInput({ kind: "prepare_base_lock" }, session)
+      );
+
+      expect(maker.accountLocks()).toBe(1);
+      expect(prepared.privateState.legs.base.expected)
+        .toEqual(expectedFor("base", addresses));
+      expect(prepared.privateState.chainOperation).toMatchObject({
+        operationId: "11111111-1111-4111-8111-111111111114",
+        leg: "base",
+        kind: "lock",
+        status: "prepared",
+        preparedAt: NOW,
+        fundsReserved: false,
+        result: null
       });
-    Object.assign(effects, { openIncoming });
+      expect(prepared.privateState.chainOperation?.artifact).toMatchObject({
+        version: 1,
+        kind: "lock",
+        chainId: "1",
+        tokenStandard: ZNN_ZTS,
+        amount: "20",
+        htlcId: null
+      });
+      expect((await maker.reservations.load()).reservations).toEqual([]);
+      expect(prepared.evidence.legs.base.htlcId).toBeNull();
+      expect(prepared.revision).toBe(session.revision + 1);
+    });
 
-    const polled = await effects.performExternal(
-      externalInput({ kind: "poll_inbox" }, current)
-    );
+    it("rejects with chain_rejected when the balance minus other reservations is short", async () => {
+      const { maker, addresses } = harness({ makerBalance: "20" });
+      const session = boundSession("maker", addresses);
+      const before = await maker.reservations.load();
+      await maker.reservations.reserve(before.revision, {
+        sessionId: "another-session",
+        tokenStandard: ZNN_ZTS,
+        amount: "10",
+        reservedAt: NOW - 50
+      });
 
-    expect(nostr.read).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.any(Uint8Array),
-      current.updatedAt - 172_800
-    );
-    expect(openIncoming).toHaveBeenCalledTimes(2);
-    expect(polled.privateState.pendingIncoming?.wrapper).toEqual(fresh);
+      const failure = await maker.effects.performExternal(
+        externalInput({ kind: "prepare_base_lock" }, session)
+      ).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(ZwapChainEffectError);
+      expect((failure as ZwapChainEffectError).code).toBe("chain_rejected");
+      expect((failure as ZwapChainEffectError).retryable).toBe(false);
+    });
+
+    it("ignores this session's own reservation so a retry still prepares", async () => {
+      const { maker, addresses } = harness({ makerBalance: "20" });
+      const session = boundSession("maker", addresses);
+      const before = await maker.reservations.load();
+      await maker.reservations.reserve(before.revision, {
+        sessionId: session.sessionId,
+        tokenStandard: ZNN_ZTS,
+        amount: "20",
+        reservedAt: NOW - 50
+      });
+
+      const prepared = await maker.effects.performExternal(
+        externalInput({ kind: "prepare_base_lock" }, session)
+      );
+
+      expect(prepared.privateState.chainOperation?.kind).toBe("lock");
+    });
   });
+
+  describe("reserve_funds → execute → reconcile → clear", () => {
+    it("locks funds on chain and leaves no reservation behind", async () => {
+      const { maker, node, addresses } = harness();
+      const session = boundSession("maker", addresses);
+
+      const prepared = await maker.effects.performExternal(
+        externalInput({ kind: "prepare_base_lock" }, session)
+      );
+      const reserved = await maker.effects.performExternal(
+        externalInput({ kind: "reserve_funds" }, prepared)
+      );
+
+      expect(reserved.privateState.chainOperation?.fundsReserved).toBe(true);
+      expect((await maker.reservations.load()).reservations).toEqual([{
+        sessionId: session.sessionId,
+        tokenStandard: ZNN_ZTS,
+        amount: "20",
+        reservedAt: NOW
+      }]);
+
+      const executed = await maker.effects.performExternal(
+        externalInput({ kind: "execute_chain_operation" }, reserved)
+      );
+      const htlcId = executed.privateState.legs.base.htlcId!;
+
+      expect(htlcId).toMatch(/^[0-9a-f]{64}$/);
+      expect(await node.getHtlc(htlcId)).toMatchObject({
+        id: htlcId,
+        tokenStandard: ZNN_ZTS,
+        amount: "20",
+        hashLock: HTLC_HASH,
+        hashLocked: addresses.taker,
+        timeLocked: addresses.maker,
+        expirationTime: LONG_LOCKTIME
+      });
+      expect(executed.evidence.legs.base).toMatchObject({
+        htlcId,
+        htlcState: "LOCKED",
+        observedAt: NOW
+      });
+      expect(executed.evidence.legs.base.validationCommitment)
+        .toMatch(/^[0-9a-f]{64}$/);
+      expect(executed.privateState.legs.base.observations).toEqual([
+        { observedAt: NOW, state: "LOCKED", witnessCommitment: null }
+      ]);
+      expect(executed.privateState.chainOperation).toMatchObject({
+        status: "completed",
+        result: {
+          blockHash: htlcId,
+          htlcId,
+          tokenStandard: ZNN_ZTS,
+          amount: "20"
+        }
+      });
+      expect(await node.getBalances(addresses.maker)).toEqual([]);
+
+      const reconciled = await maker.effects.performExternal(
+        externalInput({ kind: "reconcile_account" }, executed)
+      );
+
+      expect(reconciled.privateState.chainOperation?.status).toBe("account_applied");
+      expect((await maker.reservations.load()).reservations).toEqual([]);
+
+      const cleared = await maker.effects.applyLocal({
+        action: { kind: "clear_chain_operation" },
+        session: reconciled,
+        now: NOW
+      });
+
+      expect(cleared.privateState.chainOperation).toBeNull();
+      expect(cleared.privateState.legs.base.htlcId).toBe(htlcId);
+    });
+
+    it("refuses to execute before the funds are reserved", async () => {
+      const { maker, addresses } = harness();
+      const session = boundSession("maker", addresses);
+      const prepared = await maker.effects.performExternal(
+        externalInput({ kind: "prepare_base_lock" }, session)
+      );
+
+      await expect(maker.effects.performExternal(
+        externalInput({ kind: "execute_chain_operation" }, prepared)
+      )).rejects.toThrow(/not checkpointed for execution/i);
+    });
+  });
+
+  describe("validate_incoming for a base_lock body", () => {
+    async function incoming(
+      htlcAmount: string
+    ): Promise<{
+      harness: Harness;
+      session: TradeSession;
+      body: AtomicSwapBody<"base_lock">;
+      pendingOf: (body: AtomicSwapBody<"base_lock">) => TradeSession;
+    }> {
+      const context = harness({ makerBalance: "40" });
+      const { addresses, maker, taker } = context;
+      const expected = expectedFor("base", addresses);
+      const onChain = { ...expected, amount: htlcAmount };
+      const completed = await maker.chain.completeLock(
+        await maker.chain.prepareLock({ expected: onChain, now: NOW })
+      );
+      const body: AtomicSwapBody<"base_lock"> = {
+        schema: "zwap/atomic-swap-body/v1",
+        htlc_id: completed.htlcId,
+        validation_commitment: completed.summary.validationCommitment,
+        settlement_hash: HTLC_HASH,
+        chain_id: "1",
+        token_standard: ZNN_ZTS,
+        amount: "20",
+        hash_locked_address: addresses.taker,
+        time_locked_address: addresses.maker,
+        expiration_time: LONG_LOCKTIME
+      };
+      const session = boundSession("taker", addresses);
+      const pendingOf = (used: AtomicSwapBody<"base_lock">): TradeSession => {
+        const message: ZwapTradeMessage = {
+          schema: "granola/dm/v1",
+          deployment: NETWORK,
+          type: "base_lock",
+          message_id: "11111111-1111-4111-8111-111111111116",
+          session_id: FIXTURE_SESSION_ID,
+          reservation_id: FIXTURE_RESERVATION_ID,
+          order_address: FIXTURE_ORDER_ADDRESS,
+          order_projection_id: RESERVE_PROJECTION_ID,
+          order_revision: "1",
+          maker_order_pubkey: FIXTURE_MAKER_PUBKEY,
+          author_pubkey: COUNTERPARTY_PUBKEY,
+          recipient_pubkey: FIXTURE_SESSION_PUBKEY,
+          sequence: "3",
+          previous_message_id: LAST_MESSAGE_ID,
+          previous_transcript_hash: LAST_TRANSCRIPT_HASH,
+          sent_at: NOW - 10,
+          expires_at: NOW + 300,
+          terms_hash: TERMS_HASH,
+          body: used
+        };
+        const opened = {
+          wrapper: event(1059, "96", [["p", FIXTURE_SESSION_PUBKEY]]),
+          seal: event(13, "95"),
+          rumor: {
+            kind: 14 as const,
+            created_at: NOW - 10,
+            tags: [["p", FIXTURE_SESSION_PUBKEY]],
+            content: "encrypted-rumor",
+            id: "94".repeat(32),
+            pubkey: COUNTERPARTY_PUBKEY
+          },
+          message,
+          transcriptHash: "79".repeat(32)
+        };
+        Object.assign(taker.effects, {
+          openIncoming: async () => clone(opened)
+        });
+        const next = clone(session);
+        next.privateState.pendingIncoming = {
+          ...clone(opened),
+          receivedAt: NOW - 5,
+          validation: { status: "unvalidated", checkedAt: null, error: null }
+        };
+        return next;
+      };
+      return { harness: context, session, body, pendingOf };
+    }
+
+    it("accepts a body backed by a matching on-chain HTLC", async () => {
+      const { harness: context, body, pendingOf } = await incoming("20");
+      const pending = pendingOf(body);
+
+      const validated = await context.taker.effects.performExternal(
+        externalInput({ kind: "validate_incoming" }, pending)
+      );
+
+      expect(validated.privateState.pendingIncoming?.validation).toEqual({
+        status: "validated",
+        checkedAt: NOW,
+        error: null
+      });
+      expect(validated.privateState.legs.base).toMatchObject({
+        htlcId: body.htlc_id,
+        expected: expectedFor("base", context.addresses)
+      });
+      expect(validated.privateState.legs.base.observations).toEqual([
+        { observedAt: NOW, state: "LOCKED", witnessCommitment: null }
+      ]);
+      expect(validated.evidence.legs.base).toMatchObject({
+        htlcId: body.htlc_id,
+        validationCommitment: body.validation_commitment,
+        htlcState: "LOCKED",
+        observedAt: NOW
+      });
+    });
+
+    it("rejects a tampered amount with terms_mismatch", async () => {
+      const { harness: context, body, pendingOf } = await incoming("19");
+      const pending = pendingOf(body);
+
+      const failure = await context.taker.effects.performExternal(
+        externalInput({ kind: "validate_incoming" }, pending)
+      ).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(ZwapChainEffectError);
+      expect((failure as ZwapChainEffectError).code).toBe("terms_mismatch");
+      expect((failure as ZwapChainEffectError).retryable).toBe(false);
+    });
+
+    it("rejects a validation commitment that does not match the observed HTLC", async () => {
+      const { harness: context, body, pendingOf } = await incoming("20");
+      const pending = pendingOf({ ...body, validation_commitment: "cd".repeat(32) });
+
+      const failure = await context.taker.effects.performExternal(
+        externalInput({ kind: "validate_incoming" }, pending)
+      ).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(ZwapChainEffectError);
+      expect((failure as ZwapChainEffectError).code).toBe("terms_mismatch");
+    });
+  });
+
+  describe("observe_quote", () => {
+    async function lockedQuote(): Promise<{
+      context: Harness;
+      makerSession: TradeSession;
+      takerSession: TradeSession;
+      htlcId: string;
+    }> {
+      const context = harness();
+      const { addresses, taker } = context;
+      const expected = expectedFor("quote", addresses);
+      const completed = await taker.chain.completeLock(
+        await taker.chain.prepareLock({ expected, now: NOW })
+      );
+      const locked = (role: "maker" | "taker"): TradeSession => boundSession(
+        role,
+        addresses,
+        {
+          privateState: {
+            preimage: null,
+            legs: {
+              quote: {
+                htlcId: completed.htlcId,
+                expected: clone(expected),
+                observations: [
+                  { observedAt: NOW - 5, state: "LOCKED", witnessCommitment: null }
+                ]
+              }
+            }
+          },
+          evidence: {
+            legs: {
+              quote: {
+                htlcId: completed.htlcId,
+                validationCommitment: completed.summary.validationCommitment,
+                htlcState: "LOCKED",
+                observedAt: NOW - 5
+              }
+            }
+          }
+        }
+      );
+      return {
+        context,
+        makerSession: locked("maker"),
+        takerSession: locked("taker"),
+        htlcId: completed.htlcId
+      };
+    }
+
+    it("still reports LOCKED while the maker has not unlocked", async () => {
+      const { context, takerSession } = await lockedQuote();
+
+      const observed = await context.taker.effects.performExternal(
+        externalInput({ kind: "observe_quote" }, takerSession)
+      );
+
+      expect(observed.evidence.legs.quote.htlcState).toBe("LOCKED");
+      expect(observed.privateState.preimage).toBeNull();
+    });
+
+    it("learns the preimage from the chain once the maker unlocks", async () => {
+      const { context, takerSession, htlcId } = await lockedQuote();
+      await context.node.signer(context.addresses.maker).send({
+        kind: "htlc_unlock",
+        id: htlcId,
+        preimage: PREIMAGE
+      });
+
+      const observed = await context.taker.effects.performExternal(
+        externalInput({ kind: "observe_quote" }, takerSession)
+      );
+
+      expect(observed.privateState.preimage).toBe(PREIMAGE);
+      expect(observed.evidence.legs.quote).toMatchObject({
+        htlcState: "UNLOCKED",
+        observedAt: NOW
+      });
+      expect(observed.evidence.legs.quote.spendCommitment)
+        .toMatch(/^[0-9a-f]{64}$/);
+      expect(observed.privateState.legs.quote.observations.at(-1)).toEqual({
+        observedAt: NOW,
+        state: "UNLOCKED",
+        witnessCommitment: observed.evidence.legs.quote.spendCommitment
+      });
+    });
+
+    it("never hands the maker a preimage it already knows through the same path", async () => {
+      const { context, makerSession, htlcId } = await lockedQuote();
+      await context.node.signer(context.addresses.maker).send({
+        kind: "htlc_unlock",
+        id: htlcId,
+        preimage: PREIMAGE
+      });
+
+      const observed = await context.maker.effects.performExternal(
+        externalInput({ kind: "observe_quote" }, makerSession)
+      );
+
+      expect(observed.evidence.legs.quote.htlcState).toBe("UNLOCKED");
+      expect(observed.privateState.preimage).toBeNull();
+    });
+
+    it("freezes the session when the observed HTLC contradicts the agreed terms", async () => {
+      const { context, takerSession } = await lockedQuote();
+      const contradicted = clone(takerSession);
+      contradicted.privateState.legs.quote.expected!.amount = "2";
+
+      const frozen = await context.taker.effects.performExternal(
+        externalInput({ kind: "observe_quote" }, contradicted)
+      );
+
+      expect(frozen.phase).toBe("frozen");
+      expect(frozen.privateState.transcript.choreography.phase).toBe("failed");
+      expect(frozen.evidence.chainStates).toEqual(["terms_mismatch:quote:htlc-amount"]);
+    });
+  });
+
+  describe("prepare_quote_refund", () => {
+    async function lockedQuote(): Promise<{
+      context: Harness;
+      makerSession: TradeSession;
+      takerSession: TradeSession;
+      htlcId: string;
+    }> {
+      const context = harness();
+      const { addresses, taker } = context;
+      const expected = expectedFor("quote", addresses);
+      const completed = await taker.chain.completeLock(
+        await taker.chain.prepareLock({ expected, now: NOW })
+      );
+      const locked = (role: "maker" | "taker"): TradeSession => boundSession(
+        role,
+        addresses,
+        {
+          phase: "quote_locked",
+          privateState: {
+            legs: {
+              quote: {
+                htlcId: completed.htlcId,
+                expected: clone(expected),
+                observations: [
+                  { observedAt: NOW - 5, state: "LOCKED", witnessCommitment: null }
+                ]
+              }
+            }
+          },
+          evidence: {
+            legs: {
+              quote: {
+                htlcId: completed.htlcId,
+                validationCommitment: completed.summary.validationCommitment,
+                htlcState: "LOCKED",
+                observedAt: NOW - 5
+              }
+            }
+          }
+        }
+      );
+      return {
+        context,
+        makerSession: locked("maker"),
+        takerSession: locked("taker"),
+        htlcId: completed.htlcId
+      };
+    }
+
+    it("refuses before the expiry guard and leaves the recovery path intact", async () => {
+      const { context, takerSession } = await lockedQuote();
+
+      const failure = await context.taker.effects.performExternal(
+        externalInput({ kind: "prepare_quote_refund" }, takerSession)
+      ).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(ZwapChainEffectError);
+      expect((failure as ZwapChainEffectError).code).toBe("chain_rejected");
+
+      const recovering = await context.taker.effects.applyLocal({
+        action: { kind: "enter_recovery" },
+        session: takerSession,
+        now: NOW
+      });
+
+      expect(recovering.phase).toBe("waiting_quote_refund");
+      expect(recovering.privateState.transcript.choreography.phase).toBe("refunding");
+    });
+
+    it("reclaims after the expiry guard, and the counterparty then observes RECLAIMED", async () => {
+      const { context, takerSession, makerSession, htlcId } = await lockedQuote();
+      const after = SHORT_LOCKTIME + REFUND_GUARD_SECONDS + 1;
+      context.clock.now = after;
+
+      const prepared = await context.taker.effects.performExternal(
+        externalInputAt({ kind: "prepare_quote_refund" }, takerSession, after)
+      );
+
+      // A refund spends an HTLC, not this account's free balance, so the
+      // planner goes straight to execution with no reservation step.
+      expect(prepared.privateState.chainOperation).toMatchObject({
+        leg: "quote",
+        kind: "refund",
+        status: "prepared",
+        fundsReserved: true
+      });
+      expect(prepared.evidence.legs.quote.refundOperationCommitment)
+        .toBe(prepared.privateState.chainOperation?.artifact.operationCommitment);
+      expect((await context.taker.reservations.load()).reservations).toEqual([]);
+
+      const executed = await context.taker.effects.performExternal(
+        externalInputAt({ kind: "execute_chain_operation" }, prepared, after)
+      );
+
+      expect(executed.privateState.chainOperation).toMatchObject({
+        status: "completed",
+        result: { htlcId, tokenStandard: QSR_ZTS, amount: "1" }
+      });
+      expect(await context.node.getHtlc(htlcId)).toBeNull();
+      expect(await context.node.listUnreceived(context.addresses.taker))
+        .toHaveLength(1);
+
+      const observed = await context.maker.effects.performExternal(
+        externalInputAt({ kind: "observe_quote" }, makerSession, after)
+      );
+
+      expect(observed.evidence.legs.quote).toMatchObject({
+        htlcState: "RECLAIMED",
+        observedAt: after,
+        spendCommitment: null
+      });
+    });
+  });
+
+  describe("externalFingerprintMaterial", () => {
+    it("changes when the funds reservation revision changes", async () => {
+      const { maker, addresses } = harness();
+      const session = boundSession("maker", addresses);
+
+      const before = await maker.effects.externalFingerprintMaterial!(
+        { kind: "prepare_base_lock" },
+        session
+      );
+      await maker.reservations.reserve(
+        (await maker.reservations.load()).revision,
+        {
+          sessionId: "another-session",
+          tokenStandard: ZNN_ZTS,
+          amount: "5",
+          reservedAt: NOW - 50
+        }
+      );
+      const after = await maker.effects.externalFingerprintMaterial!(
+        { kind: "prepare_base_lock" },
+        session
+      );
+
+      expect(before).toEqual({
+        reservationRevision: 0,
+        address: addresses.maker,
+        expected: expectedFor("base", addresses)
+      });
+      expect(after).toEqual({
+        reservationRevision: 1,
+        address: addresses.maker,
+        expected: expectedFor("base", addresses)
+      });
+      expect(after).not.toEqual(before);
+    });
+
+    it("binds a claim to its HTLC ID rather than to the account address", async () => {
+      const { maker, taker, addresses } = harness();
+      const expected = expectedFor("quote", addresses);
+      const completed = await taker.chain.completeLock(
+        await taker.chain.prepareLock({ expected, now: NOW })
+      );
+      const session = boundSession("maker", addresses, {
+        privateState: {
+          legs: {
+            quote: {
+              htlcId: completed.htlcId,
+              expected: clone(expected),
+              observations: []
+            }
+          }
+        }
+      });
+
+      const material = await maker.effects.externalFingerprintMaterial!(
+        { kind: "prepare_quote_claim" },
+        session
+      );
+
+      expect(material).toEqual({
+        reservationRevision: 0,
+        htlcId: completed.htlcId,
+        expected
+      });
+    });
+  });
+
+  describe("shared order and Nostr effects", () => {
+    it("retries the exact persisted Nostr wrapper and only records its receipts", async () => {
+      const { maker, addresses } = harness();
+      const session = boundSession("maker", addresses);
+      session.privateState.legs.base.expected = expectedFor("base", addresses);
+      session.privateState.legs.base.htlcId = "5a".repeat(32);
+      session.evidence.legs.base.htlcId = "5a".repeat(32);
+      session.evidence.legs.base.validationCommitment = "5b".repeat(32);
+      session.privateState.outbox = {
+        message: {
+          schema: "granola/dm/v1",
+          deployment: NETWORK,
+          type: "base_lock",
+          message_id: "11111111-1111-4111-8111-111111111112",
+          session_id: session.sessionId,
+          reservation_id: session.reservationId,
+          order_address: session.orderAddress,
+          order_projection_id: RESERVE_PROJECTION_ID,
+          order_revision: "1",
+          maker_order_pubkey: FIXTURE_MAKER_PUBKEY,
+          author_pubkey: FIXTURE_SESSION_PUBKEY,
+          recipient_pubkey: COUNTERPARTY_PUBKEY,
+          sequence: "3",
+          previous_message_id: LAST_MESSAGE_ID,
+          previous_transcript_hash: LAST_TRANSCRIPT_HASH,
+          sent_at: NOW - 10,
+          expires_at: NOW + 300,
+          terms_hash: TERMS_HASH,
+          body: {
+            schema: "zwap/atomic-swap-body/v1",
+            htlc_id: "5a".repeat(32),
+            validation_commitment: "5b".repeat(32),
+            settlement_hash: HTLC_HASH,
+            chain_id: "1",
+            token_standard: ZNN_ZTS,
+            amount: "20",
+            hash_locked_address: addresses.taker,
+            time_locked_address: addresses.maker,
+            expiration_time: LONG_LOCKTIME
+          }
+        },
+        rumor: {
+          kind: 14,
+          created_at: NOW - 10,
+          tags: [["p", COUNTERPARTY_PUBKEY]],
+          content: "encrypted-rumor",
+          id: "94".repeat(32),
+          pubkey: FIXTURE_SESSION_PUBKEY
+        },
+        seal: event(13, "95"),
+        wrapper: event(1059, "96", [["p", COUNTERPARTY_PUBKEY]]),
+        recipientInboxListId: "97".repeat(32),
+        recipientRelays: ["wss://recipient.example"],
+        receipts: [],
+        nextChoreography: clone(
+          session.privateState.transcript.choreography
+        ) as AtomicSwapChoreography,
+        status: "staged"
+      };
+      const receipts = [{
+        relay: "wss://recipient.example",
+        ok: true,
+        message: "stored"
+      }];
+      const sentKeys: Uint8Array[] = [];
+      maker.nostr.send.mockImplementation(async (
+        _wrapper: NostrEvent,
+        _relays: string[],
+        secretKey: Uint8Array
+      ) => {
+        sentKeys.push(Uint8Array.from(secretKey));
+        return receipts;
+      });
+
+      const first = await maker.effects.performExternal(
+        externalInput({ kind: "deliver_outbox" }, session)
+      );
+      const retry = await maker.effects.performExternal(
+        externalInput({ kind: "deliver_outbox" }, session)
+      );
+
+      expect(maker.nostr.send).toHaveBeenCalledTimes(2);
+      for (const [wrapper, relays] of maker.nostr.send.mock.calls) {
+        expect(wrapper).toEqual(session.privateState.outbox!.wrapper);
+        expect(relays).toEqual(session.privateState.outbox!.recipientRelays);
+      }
+      expect(sentKeys).toEqual([
+        new Uint8Array(32).fill(1),
+        new Uint8Array(32).fill(1)
+      ]);
+      expect(first.privateState.outbox).toEqual({
+        ...session.privateState.outbox,
+        receipts,
+        status: "acknowledged"
+      });
+      expect(retry).toEqual(first);
+    });
+
+    it("uses the shared order outbox as retry authority and never republishes an acknowledged stage", async () => {
+      const { maker, addresses } = harness();
+      const session = boundSession("maker", addresses);
+      session.pendingOrderPublication = {
+        operation: "reserve",
+        orderId: FIXTURE_ORDER_ID,
+        projection: event(30078, "a2"),
+        receipts: [],
+        status: "staged",
+        stagedAt: NOW - 10,
+        acknowledgedAt: null,
+        committedAt: null
+      };
+      const stagedEntry = {
+        schema: "granola/order-outbox/v3",
+        status: "staged",
+        intent: {
+          operation: "reserve",
+          orderId: FIXTURE_ORDER_ID,
+          address: session.orderAddress,
+          createdAt: NOW - 10
+        },
+        publication: {
+          state: { revision: "1" },
+          projection: session.pendingOrderPublication.projection,
+          receipts: []
+        }
+      } as unknown as OrderOutboxEntry;
+      const acknowledgedEntry = clone(stagedEntry);
+      acknowledgedEntry.status = "acknowledged";
+      acknowledgedEntry.publication.receipts = [{
+        relay: "wss://orders.example",
+        ok: true,
+        message: "stored"
+      }];
+      let durableEntry = stagedEntry;
+      maker.orderOutbox.load.mockImplementation(async () => clone(durableEntry));
+      maker.orderApi.publishNextStage.mockImplementation(async () => {
+        durableEntry = acknowledgedEntry;
+        return { orderId: FIXTURE_ORDER_ID };
+      });
+
+      const first = await maker.effects.performExternal(
+        externalInput({ kind: "publish_order_projection" }, session)
+      );
+      const retry = await maker.effects.performExternal(
+        externalInput({ kind: "publish_order_projection" }, session)
+      );
+
+      expect(maker.orderApi.publishNextStage).toHaveBeenCalledTimes(1);
+      expect(maker.orderApi.publishNextStage).toHaveBeenCalledWith(FIXTURE_ORDER_ID);
+      expect(first.pendingOrderPublication?.status).toBe("acknowledged");
+      expect(first.pendingOrderPublication?.receipts)
+        .toEqual(acknowledgedEntry.publication.receipts);
+      expect(retry).toEqual(first);
+    });
+
+    it("advances the session clock when order staging crosses a wall-clock second", async () => {
+      const { maker, addresses } = harness();
+      const session = boundSession("maker", addresses, {
+        reserveProjectionId: null,
+        reserveProjectionRevision: null,
+        evidence: {
+          reserveProjectionId: null,
+          reserveProjectionRevision: null,
+          reservation: { takerCommitment: null }
+        },
+        privateState: {
+          transcript: {
+            choreography: { phase: "awaiting_reserve_accept" }
+          }
+        }
+      });
+      const projection = event(30078, "b2");
+      projection.created_at = NOW + 1;
+      const stagedEntry = {
+        schema: "granola/order-outbox/v3",
+        status: "staged",
+        intent: {
+          operation: "reserve",
+          orderId: FIXTURE_ORDER_ID,
+          address: session.orderAddress,
+          createdAt: NOW + 1,
+          state: { reservation: { taker_commitment: "bc".repeat(32) } }
+        },
+        publication: {
+          state: {
+            revision: "1",
+            reservation: { taker_commitment: "bc".repeat(32) }
+          },
+          projection,
+          receipts: []
+        }
+      } as unknown as OrderOutboxEntry;
+      maker.orderApi.ensureReserveStaged.mockResolvedValue({
+        orderId: FIXTURE_ORDER_ID
+      });
+      maker.orderOutbox.load.mockResolvedValue(stagedEntry);
+
+      const staged = await maker.effects.performExternal(
+        externalInput({ kind: "stage_order_reserve" }, session)
+      );
+
+      expect(staged.pendingOrderPublication?.stagedAt).toBe(NOW + 1);
+      expect(staged.updatedAt).toBe(NOW + 1);
+    });
+
+    it("accepts only the maker's exact current published fill before taker termination", async () => {
+      const { taker, addresses } = harness();
+      const publication = await publishedFill();
+      const session = boundSession("taker", addresses, {
+        phase: "quote_locked",
+        orderAddress:
+          `30078:${publication.projection.pubkey}:zwap:order:v1:${FIXTURE_ORDER_ID}`,
+        reserveProjectionId: "32".repeat(32),
+        reserveProjectionRevision: "1",
+        evidence: {
+          makerPubkey: publication.projection.pubkey,
+          reserveProjectionId: "32".repeat(32),
+          reserveProjectionRevision: "1"
+        },
+        privateState: {
+          transcript: { choreography: { phase: "settling" } }
+        }
+      });
+
+      taker.orderReader.loadLatestPublishedProjection.mockRejectedValueOnce(
+        new Error("fill is absent from relays")
+      );
+      await expect(taker.effects.performExternal(
+        externalInput({ kind: "verify_order_fill" }, session)
+      )).rejects.toThrow(/absent/i);
+
+      taker.orderReader.loadLatestPublishedProjection.mockResolvedValueOnce({
+        ...publication,
+        eventId: "ff".repeat(32)
+      });
+      await expect(taker.effects.performExternal(
+        externalInput({ kind: "verify_order_fill" }, session)
+      )).rejects.toThrow(/projection|fill/i);
+
+      taker.orderReader.loadLatestPublishedProjection
+        .mockResolvedValueOnce(publication);
+      const verified = await taker.effects.performExternal(
+        externalInput({ kind: "verify_order_fill" }, session)
+      );
+
+      expect(taker.orderReader.loadLatestPublishedProjection)
+        .toHaveBeenLastCalledWith(session.orderAddress);
+      expect(verified.fillProjectionId).toBe(publication.eventId);
+      expect(verified.evidence.fillProjectionId).toBe(publication.eventId);
+      expect(verified.privateState.transcript.choreography.phase).toBe("settled");
+    });
+
+    it("polls with the bounded NIP-17 lookback and skips replayed wrappers", async () => {
+      const { maker, addresses } = harness();
+      const session = boundSession("maker", addresses);
+      const replay = event(1059, "81");
+      replay.created_at = session.updatedAt - 120;
+      const fresh = event(1059, "82");
+      fresh.created_at = session.updatedAt - 60;
+      maker.nostr.read.mockImplementation(async (
+        _recipient: string,
+        _key: Uint8Array,
+        since: number
+      ) => [replay, fresh].filter((wrapper) => wrapper.created_at >= since));
+      const openIncoming = vi.fn()
+        .mockRejectedValueOnce(new Error("message was already accepted"))
+        .mockResolvedValueOnce({
+          wrapper: fresh,
+          seal: event(13, "83"),
+          rumor: event(14, "84"),
+          message: { message_id: "11111111-1111-4111-8111-111111111115" },
+          transcriptHash: "85".repeat(32)
+        });
+      Object.assign(maker.effects, { openIncoming });
+
+      const polled = await maker.effects.performExternal(
+        externalInput({ kind: "poll_inbox" }, session)
+      );
+
+      expect(maker.nostr.read).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(Uint8Array),
+        session.updatedAt - 172_800
+      );
+      expect(openIncoming).toHaveBeenCalledTimes(2);
+      expect(polled.privateState.pendingIncoming?.wrapper).toEqual(fresh);
+    });
+  });
+});

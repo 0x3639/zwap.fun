@@ -8,150 +8,61 @@ import {
   type RunCoordinatorSessionExclusive
 } from "./coordinator.js";
 import type { TradeSession } from "./session.js";
+import {
+  FIXTURE_COUNTERPARTY_ADDRESS,
+  FIXTURE_LOCAL_ADDRESS,
+  FIXTURE_ORDER_ID,
+  FIXTURE_SESSION_PRIVATE_KEY,
+  sessionFixture
+} from "./test-fixtures.js";
 
 function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
+const ANCHOR = 1_800_000_000;
+
+/**
+ * The shared storage-valid fixture, retimed onto this suite's clock and frozen
+ * in the terminal `failed` choreography so `nextCoordinatorAction` reports
+ * `none` unless a test moves the session somewhere else.
+ */
 function session(): TradeSession {
-  return {
-    schema: "granola/trade-session/v2",
-    revision: 0,
-    sessionId: "11".repeat(32),
-    reservationId: "11111111-1111-4111-8111-111111111111",
-    role: "maker",
-    phase: "negotiating",
-    orderAddress:
-      `30078:${"22".repeat(32)}:zwap:order:v1:22222222-2222-4222-8222-222222222222`,
-    offeredProjectionId: "33".repeat(32),
-    offeredProjectionRevision: "0",
-    reserveProjectionId: null,
-    reserveProjectionRevision: null,
-    fillProjectionId: null,
-    fillProjectionRevision: null,
-    pendingOrderPublication: null,
-    createdAt: 1_800_000_000,
-    updatedAt: 1_800_000_000,
-    terms: {
-      baseMint: "https://testnut.cashu.space",
-      baseUnit: "sat",
-      baseKeyset: "base-keyset",
-      baseAmount: "20",
-      quoteMint: "https://nofee.testnut.cashu.space",
-      quoteUnit: "usd",
-      quoteKeyset: "quote-keyset",
-      quoteAmount: "1",
-      priceCentsPerBtc: "5000000"
-    },
+  return sessionFixture({
+    createdAt: ANCHOR,
+    updatedAt: ANCHOR,
     plan: {
-      anchor: 1_800_000_000,
-      shortLocktime: 1_800_000_600,
-      makerClaimCutoff: 1_800_000_480,
-      longLocktime: 1_800_001_200,
-      takerClaimCutoff: 1_800_001_080,
-      reservationExpiresAt: 1_800_001_800,
+      anchor: ANCHOR,
+      shortLocktime: ANCHOR + 600,
+      makerClaimCutoff: ANCHOR + 480,
+      longLocktime: ANCHOR + 1_200,
+      takerClaimCutoff: ANCHOR + 1_080,
+      reservationExpiresAt: ANCHOR + 1_800,
       refundGuardSeconds: 60
     },
     evidence: {
-      makerPubkey: "22".repeat(32),
-      commitments: [],
-      mintStates: [],
-      reserveProjectionId: null,
-      reserveProjectionRevision: null,
-      fillProjectionId: null,
-      fillProjectionRevision: null,
       reservation: {
-        proposalSealId: null,
-        takerCommitment: null,
         abortSeal: {
           kind: 13,
-          created_at: 1_800_000_000,
+          created_at: ANCHOR,
           tags: [],
           content: "encrypted-abort-secret",
           id: "44".repeat(32),
           pubkey: "55".repeat(32),
           sig: "66".repeat(64)
         }
-      },
-      legs: {
-        base: {
-          tokenCommitment: null,
-          validationCommitment: null,
-          keysetId: "base-keyset",
-          proofCount: null,
-          fee: null,
-          mintState: "UNKNOWN",
-          observedAt: null,
-          spendCommitment: null,
-          claimOperationCommitment: null,
-          refundOperationCommitment: null
-        },
-        quote: {
-          tokenCommitment: null,
-          validationCommitment: null,
-          keysetId: "quote-keyset",
-          proofCount: null,
-          fee: null,
-          mintState: "UNKNOWN",
-          observedAt: null,
-          spendCommitment: null,
-          claimOperationCommitment: null,
-          refundOperationCommitment: null
-        }
       }
     },
     privateState: {
-      nostrPrivateKey: "private-nostr-key",
-      cashuPrivateKey: "private-cashu-key",
-      refundPrivateKey: "private-refund-key",
-      preimage: "private-preimage",
-      htlcHash: null,
-      settlementTranscriptHash: null,
       inbox: {
-        status: "registered",
-        quorum: 1,
-        event: {
-          kind: 10050,
-          created_at: 1_800_000_000,
-          tags: [["relay", "wss://inbox.example"]],
-          content: "",
-          id: "77".repeat(32),
-          pubkey: "88".repeat(32),
-          sig: "99".repeat(64)
-        },
-        discoveryRelays: ["wss://discovery.example"],
-        inboxRelays: ["wss://inbox.example"],
-        receipts: [{
-          relay: "wss://discovery.example",
-          ok: true,
-          message: "stored"
-        }],
-        readbacks: [],
-        stagedAt: 1_800_000_000,
-        acknowledgedAt: 1_800_000_000,
-        registeredAt: 1_800_000_000
+        stagedAt: ANCHOR,
+        acknowledgedAt: ANCHOR,
+        registeredAt: ANCHOR,
+        readbacks: []
       },
-      pendingIncoming: null,
-      transcript: {
-        choreography: {
-          phase: "failed",
-          participants: { makerOrderPubkey: "22".repeat(32) },
-          refundedLegs: []
-        },
-        nextSequence: "0",
-        lastRumorId: null,
-        lastMessageId: null,
-        lastTranscriptHash: null,
-        accepted: []
-      },
-      outbox: null,
-      cashuOperation: null,
-      legs: {
-        base: { token: null, expected: null, observations: [] },
-        quote: { token: null, expected: null, observations: [] }
-      }
+      transcript: { choreography: { phase: "failed" } }
     }
-  };
+  });
 }
 
 class MemorySessionRepository implements CoordinatorSessionRepository {
@@ -272,7 +183,7 @@ describe("durable trade coordinator shell", () => {
       const serialized = JSON.stringify(view);
       expect(serialized).not.toContain("privateState");
       expect(serialized).not.toContain("encrypted-abort-secret");
-      expect(serialized).not.toContain("private-nostr-key");
+      expect(serialized).not.toContain(FIXTURE_SESSION_PRIVATE_KEY);
       expect(view?.evidence.reservation.abortSealId).toBe("44".repeat(32));
     }
     expect(repository.save).not.toHaveBeenCalled();
@@ -455,40 +366,35 @@ describe("durable trade coordinator shell", () => {
     expect(repository.save).not.toHaveBeenCalled();
   });
 
-  it("fingerprints network preparation with persisted lock terms and wallet input commitment", async () => {
+  it("fingerprints chain preparation with the persisted expected HTLC terms", async () => {
     const current = session();
     current.privateState.transcript.choreography.phase = "awaiting_base_lock";
     current.privateState.settlementTranscriptHash = "ab".repeat(32);
     current.privateState.htlcHash = "cd".repeat(32);
     current.privateState.legs.base.expected = {
-      mintUrl: current.terms.baseMint,
-      unit: current.terms.baseUnit,
+      leg: "base",
+      chainId: current.terms.chainId,
+      tokenStandard: current.terms.baseToken,
+      amount: current.terms.baseAmount,
+      hashLock: current.privateState.htlcHash,
+      hashType: 1,
+      keyMaxSize: 32,
+      hashLockedAddress: FIXTURE_COUNTERPARTY_ADDRESS,
+      timeLockedAddress: FIXTURE_LOCAL_ADDRESS,
+      expirationTime: current.plan.longLocktime,
       binding: {
         protocolVersion: "1",
-        network: "cashu-testnet-v1",
-        orderId: "22222222-2222-4222-8222-222222222222",
-        reservationId: current.reservationId,
+        network: "zenon-1-v1",
+        orderId: FIXTURE_ORDER_ID,
         sessionId: current.sessionId,
-        direction: "base",
+        reservationId: current.reservationId,
         transcriptHash: current.privateState.settlementTranscriptHash
-      },
-      amount: current.terms.baseAmount,
-      hash: current.privateState.htlcHash,
-      receiverPubkey: `02${"01".repeat(32)}`,
-      refundPubkey: `03${"02".repeat(32)}`,
-      locktime: current.plan.longLocktime,
-      leg: "base",
-      refundHorizon: current.plan.longLocktime + current.plan.refundGuardSeconds,
-      deadlines: {
-        short: current.plan.shortLocktime,
-        long: current.plan.longLocktime,
-        minimumGap: current.plan.longLocktime - current.plan.shortLocktime
       }
     };
     const repository = new MemorySessionRepository(current);
     const externalFingerprintMaterial = vi.fn(async () => ({
-      walletRevision: 4,
-      inputCommitment: "ef".repeat(32)
+      reservationRevision: 4,
+      address: FIXTURE_LOCAL_ADDRESS
     }));
     const performExternal = vi.fn(async (input) => ({
       ...clone(input.session),

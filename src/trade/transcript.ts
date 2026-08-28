@@ -1,5 +1,5 @@
 import type { AtomicSwapChoreography } from "./atomic-messages.js";
-import type { GranolaTradeMessage } from "./messages.js";
+import type { ZwapTradeMessage } from "./messages.js";
 
 const HEX_32 = /^[0-9a-f]{64}$/;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -24,7 +24,7 @@ export interface TradeTranscriptCheckpoint {
 }
 
 interface CheckpointAdvance {
-  message: GranolaTradeMessage;
+  message: ZwapTradeMessage;
   rumorId: string;
   transcriptHash: string;
   nextChoreography: AtomicSwapChoreography;
