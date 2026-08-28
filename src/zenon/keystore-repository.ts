@@ -99,7 +99,12 @@ export class KeystoreRepository {
 
   private async persist(keyStore: KeyStore): Promise<{ address: string }> {
     await this.storage.set(KEY, keyStore.mnemonic);
-    return { address: keyStore.getKeyPair(0).address.toString() };
+    const keyPair = keyStore.getKeyPair(0);
+    try {
+      return { address: keyPair.address.toString() };
+    } finally {
+      keyPair.clear();
+    }
   }
 
   private async load(): Promise<KeyStore> {
