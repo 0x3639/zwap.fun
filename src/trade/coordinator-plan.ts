@@ -220,6 +220,26 @@ function unsafeStagedDelivery(session: TradeSession, now: number): boolean {
   return false;
 }
 
+/**
+ * True when this side still has to step onto the refund ladder before it may
+ * touch the chain.
+ *
+ * `enter_recovery` is the only effect that moves a session to a `waiting_*`
+ * phase, and the durable validator accepts a refund only along
+ * `base_locked -> waiting_base_refund -> released` (and the taker's
+ * `quote_locked -> waiting_quote_refund`). A session that reclaims first and
+ * changes phase later - a maker whose tab was closed from before
+ * `makerClaimCutoff` until after `longLocktime + refundGuardSeconds`, which
+ * skips every per-phase cutoff check in one jump - would get its funds back on
+ * chain and then wedge forever retrying the release commit, leaving the order
+ * reserved on the relay. Taking the rung first keeps the ladder walked.
+ */
+function owesRefundLadderEntry(session: TradeSession): boolean {
+  return session.role === "maker"
+    ? session.phase === "base_locked"
+    : session.phase === "quote_locked";
+}
+
 function recoveryAction(session: TradeSession, now: number): CoordinatorAction | undefined {
   const makerOfferLeg = slotLeg(session, "base");
   const takerPaymentLeg = slotLeg(session, "quote");
@@ -231,12 +251,14 @@ function recoveryAction(session: TradeSession, now: number): CoordinatorAction |
 
   const quoteExpiryGuard = session.plan.shortLocktime + guard;
   if (session.role === "taker" && quote.htlcId !== null && !quoteSpent && now >= quoteExpiryGuard) {
+    if (owesRefundLadderEntry(session)) return { kind: "enter_recovery" };
     return hasPostExpiryLockedObservation(session, takerPaymentLeg, quoteExpiryGuard)
       ? { kind: "prepare_quote_refund" }
       : { kind: "observe_quote" };
   }
   const baseExpiryGuard = session.plan.longLocktime + guard;
   if (session.role === "maker" && base.htlcId !== null && !baseSpent && now >= baseExpiryGuard) {
+    if (owesRefundLadderEntry(session)) return { kind: "enter_recovery" };
     return hasPostExpiryLockedObservation(session, makerOfferLeg, baseExpiryGuard)
       ? { kind: "prepare_base_refund" }
       : { kind: "observe_base" };

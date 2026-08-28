@@ -526,7 +526,7 @@ describe("two-party Zenon atomic swap", () => {
     await settle("buy");
   }, 60_000);
 
-  it("refunds the maker when the taker never locks its quote leg", async () => {
+  it("refunds the maker after a slept-through cutoff when the taker never locks", async () => {
     const value = await stack("sell");
     await startTaker(value);
     await drive(value, [value.taker], {
@@ -554,23 +554,19 @@ describe("two-party Zenon atomic swap", () => {
       .toBe(plan.anchor + LONG_LOCK_SECONDS + RESERVATION_GRACE_SECONDS);
     expect(plan.refundGuardSeconds).toBe(REFUND_GUARD_SECONDS);
 
-    // Once the maker can no longer safely claim the quote leg it gives up on
-    // the swap and starts waiting for its own refund window.
-    value.clock.now = plan.makerClaimCutoff;
-    await drive(value, [value.maker], {
-      stopWhen: (_party, current) => current.phase === "waiting_base_refund"
-    });
-    expect((await session(value.maker)).phase).toBe("waiting_base_refund");
-
-    // The HTLC is reclaimable one guard interval past its locktime, but the
-    // order release only becomes publishable once the reservation has expired.
-    value.clock.now = Math.max(
-      plan.longLocktime + plan.refundGuardSeconds,
-      plan.reservationExpiresAt
-    );
+    // ONE jump, straight over `makerClaimCutoff` and the refund guard: a maker
+    // whose tab was closed for the whole window never evaluates a per-phase
+    // cutoff, so the planner has to put it on the refund ladder itself. The
+    // release projection is only publishable once the reservation has expired,
+    // which is 600s past the long locktime, so that bound sets the jump.
+    expect(plan.reservationExpiresAt)
+      .toBeGreaterThan(plan.longLocktime + plan.refundGuardSeconds);
+    value.clock.now = plan.reservationExpiresAt;
 
     const trace = await drive(value, [value.maker]);
 
+    // The ladder was walked rather than jumped.
+    expect(trace[0]).toBe("maker:enter_recovery");
     expect(trace).toContain("maker:prepare_base_refund");
     const maker = await session(value.maker);
     expect(maker.phase).toBe("released");

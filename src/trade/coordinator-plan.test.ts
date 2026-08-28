@@ -413,6 +413,38 @@ describe("atomic swap coordinator action planning", () => {
       .toBe("prepare_quote_refund");
   });
 
+  it("steps onto the refund ladder before reclaiming when a cutoff was slept through", () => {
+    // A maker whose tab was closed from before `makerClaimCutoff` until after
+    // the refund guard sees no per-phase cutoff check at all: the recovery
+    // branch fires straight away. It must still take the `base_locked ->
+    // waiting_base_refund` rung first, or the eventual release commit is a
+    // `base_locked -> released` jump the durable validator rejects.
+    const maker = session("maker", "awaiting_quote_lock");
+    maker.phase = "base_locked";
+    maker.privateState.legs.base.htlcId = BASE_HTLC_ID;
+    const wokeUp = maker.plan.longLocktime + maker.plan.refundGuardSeconds + 1;
+    markPostExpiryLocked(maker, "base", wokeUp);
+
+    expect(nextCoordinatorAction(maker, wokeUp)).toEqual({ kind: "enter_recovery" });
+
+    // Once `enter_recovery` has moved it onto the ladder, the refund proceeds.
+    maker.phase = "waiting_base_refund";
+    maker.privateState.transcript.choreography.phase = "refunding";
+    expect(nextCoordinatorAction(maker, wokeUp).kind).toBe("prepare_base_refund");
+
+    const taker = session("taker", "awaiting_claim_notice");
+    taker.phase = "quote_locked";
+    taker.privateState.legs.quote.htlcId = QUOTE_HTLC_ID;
+    const takerWokeUp = taker.plan.shortLocktime + taker.plan.refundGuardSeconds + 1;
+    markPostExpiryLocked(taker, "quote", takerWokeUp);
+
+    expect(nextCoordinatorAction(taker, takerWokeUp)).toEqual({ kind: "enter_recovery" });
+
+    taker.phase = "waiting_quote_refund";
+    taker.privateState.transcript.choreography.phase = "refunding";
+    expect(nextCoordinatorAction(taker, takerWokeUp).kind).toBe("prepare_quote_refund");
+  });
+
   it("requires independently persisted unlocked observations for settlement", () => {
     const inconsistent = session("maker", "settled");
     expect(nextCoordinatorAction(inconsistent, NOW))
