@@ -2160,17 +2160,39 @@ const api = new ZwapApi({ keystore, node, config, createAccount: (keyPair) => ne
 
 **Files:**
 - Create: `docs/adr/0006-zenon-htlc-settlement.md`, `docs/guides/manual-swap.md`
-- Modify: `README.md`, `docs/README.md`, `docs/guides/agent-api.md`, `docs/guides/testnet-wallet.md` → rename `docs/guides/wallet.md`, `docs/protocol/security-invariants.md`, `AGENTS.md`, `.github/workflows/pages.yml`, `src/manual-tutorial.test.ts`
+- Modify: `README.md`, `docs/README.md`, `docs/guides/agent-api.md`, `docs/guides/testnet-wallet.md` → rename `docs/guides/wallet.md`, `docs/protocol/security-invariants.md`, `AGENTS.md`, `src/manual-tutorial.test.ts`
+- Create: `Dockerfile`, `deploy/nginx.conf`, `.dockerignore`, `.github/workflows/ci.yml`, `docs/guides/deploy-coolify.md`
+- Delete: `.github/workflows/pages.yml`
 - Delete: `docs/adr/0004-cashu-htlc-settlement.md` (superseded — keep a one-line stub pointing at 0006), `docs/adr/0005-quote-minor-unit-settlement.md` content replaced with the `price` rule
 
 - [ ] **Step 1: ADR 0006** — decision: Zenon HTLC embedded contract as the settlement layer; hashType SHA-256 / keyMaxSize 32; maker locks base with the long locktime, taker locks quote with the short one; preimage learned from the on-chain Unlock block (scan of `hashLocked` address account chain, `scanPages × pageSize`); refund = `Reclaim` after expiry + guard; plasma/PoW requirement and `plasma_unavailable` retry semantics; trust boundary: the node you connect to is your view of the chain (recommend running your own node for real volume); no list-HTLC RPC, hence ids travel in DMs and are re-verified.
 - [ ] **Step 2: `manual-swap.md`** — two browsers (`?wallet=maker`, `?wallet=taker`), fund both via go-syrius or nom-webwallet with ≥ 1 ZNN / ≥ 4 QSR plus 10 QSR fused (or accept PoW), publish a sell order, take it, watch the phases through `filled`, then `Receive pending`; include the refund drill (take an order, close the taker tab, wait `long locktime + 60 s`, advance the maker). Update `manual-tutorial.test.ts` to assert the guide mentions the steps it checks (`Create wallet`, `Fuse plasma`, `Receive pending`).
 - [ ] **Step 3: `agent-api.md`** — document `window.zwap` methods and which ones return bearer material (`revealMnemonic` only).
 - [ ] **Step 4: `security-invariants.md` / `AGENTS.md`** — replace mint/NUT language with chain invariants: verify every HTLC from the node before acting; never trust DM-carried ids without `getById`; chain-id binding; sequential sends; never expose mnemonic/preimage.
-- [ ] **Step 5: `pages.yml`** — unchanged steps, add `VITE_*` defaults via `env:` on the build step (mainnet). Add `.env.testnet` usage note to README (`vite --mode testnet`).
+- [ ] **Step 5: Deployment via Coolify (replaces GitHub Pages)** — delete `.github/workflows/pages.yml`; add `.github/workflows/ci.yml` (Node 22, `npm ci`, `npm run typecheck`, `npm test`, `npm run build` on push/PR). Add a multi-stage `Dockerfile`:
+```dockerfile
+FROM node:22-alpine AS build
+WORKDIR /app
+ARG VITE_ZENON_NODE_WS=wss://node.zenon.network:35998
+ARG VITE_ZENON_CHAIN_ID=1
+ARG VITE_PLASMA_BOT_URL=https://plazma.bot
+ARG VITE_NOSTR_RELAYS=wss://relay.primal.net,wss://nos.lol,wss://offchain.pub
+ARG VITE_NOSTR_INBOX_RELAY=wss://auth.nostr1.com
+ENV VITE_ZENON_NODE_WS=$VITE_ZENON_NODE_WS VITE_ZENON_CHAIN_ID=$VITE_ZENON_CHAIN_ID VITE_PLASMA_BOT_URL=$VITE_PLASMA_BOT_URL VITE_NOSTR_RELAYS=$VITE_NOSTR_RELAYS VITE_NOSTR_INBOX_RELAY=$VITE_NOSTR_INBOX_RELAY
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM nginx:1.27-alpine
+COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/dist /usr/share/nginx/html
+EXPOSE 80
+```
+and `deploy/nginx.conf` (listen 80; `root /usr/share/nginx/html`; `types { application/wasm wasm; }` merged via `include mime.types` + explicit wasm type; `location = /index.html { add_header Cache-Control "no-cache"; }`; `location /assets/ { add_header Cache-Control "public, max-age=31536000, immutable"; }`; `add_header X-Content-Type-Options nosniff; add_header Referrer-Policy no-referrer;`). Add `.dockerignore` (`node_modules`, `dist`, `.git`, `.superpowers`, `docs`). Write `docs/guides/deploy-coolify.md`: create a Coolify application from the GitHub repo with the Dockerfile build pack, set the five `VITE_*` build variables (mainnet defaults; a second app with the testnet values gives a testnet instance), domain + TLS via Coolify's proxy (required — `wss://` connections need an HTTPS origin), health check `GET /`; alternative: Coolify Static build pack with build command `npm run build`, publish dir `dist`, same build variables. README: replace the Pages note with a link to the guide and the `vite --mode testnet` note. Verify locally: `docker build -t zwap . && docker run -p 8080:80 zwap` then `curl -sI localhost:8080/pow.wasm | grep -i 'content-type: application/wasm'`.
 - [ ] **Step 6: `scripts/probe-inbox.ts`** — keep; update imports. Delete `publish:test-orders` if it can't run without a keystore, or make it read `ZWAP_TEST_NSEC` from env and publish to relays with `price` semantics.
 - [ ] **Step 7: Run** — `npm run typecheck && npm test && npm run build` — PASS.
-- [ ] **Step 8: Commit** — `git add -A && git commit -m "docs: Zenon HTLC ADR, manual swap guide, agent API, CI env"`
+- [ ] **Step 8: Commit** — `git add -A && git commit -m "docs+deploy: Zenon HTLC ADR, guides, Coolify Dockerfile, CI"`
 
 ---
 
