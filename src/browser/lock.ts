@@ -47,13 +47,13 @@ async function requestLock<T>(
   return withFallbackLock(name, action);
 }
 
-export async function withWalletLock<T>(
+export async function withAccountLock<T>(
   profile: string,
   action: () => Promise<T>,
   locks: LockPort | undefined = hasNativeWebLocks() ? navigator.locks : undefined
 ): Promise<T> {
   return requestLock(
-    `granola-wallet-${profile}-write`,
+    `zwap-account-${profile}-write`,
     action,
     locks
   );
@@ -65,7 +65,7 @@ export async function withOrderOutboxLock<T>(
   locks: LockPort | undefined = hasNativeWebLocks() ? navigator.locks : undefined
 ): Promise<T> {
   return requestLock(
-    `granola-order-outbox-${profile}-write`,
+    `zwap-order-outbox-${profile}-write`,
     action,
     locks
   );
@@ -84,7 +84,7 @@ export async function withTradeSessionLock<T>(
     throw new Error("Trade lock session ID is invalid");
   }
   return requestLock(
-    `granola-trade-${profile}-${sessionId}-write`,
+    `zwap-trade-${profile}-${sessionId}-write`,
     action,
     locks
   );
@@ -99,7 +99,7 @@ export async function withTradeSessionStorageLock<T>(
     throw new Error("Trade storage lock profile is invalid");
   }
   return requestLock(
-    `granola-trade-${profile}-storage-write`,
+    `zwap-trade-${profile}-storage-write`,
     action,
     locks
   );

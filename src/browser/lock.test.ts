@@ -4,7 +4,7 @@ import {
   withOrderOutboxLock,
   withTradeSessionLock,
   withTradeSessionStorageLock,
-  withWalletLock,
+  withAccountLock,
   type LockPort
 } from "./lock.js";
 
@@ -17,9 +17,9 @@ describe("wallet mutation lock", () => {
     ) => callback());
     const locks: LockPort = { request };
 
-    await expect(withWalletLock("maker", async () => "done", locks)).resolves.toBe("done");
+    await expect(withAccountLock("maker", async () => "done", locks)).resolves.toBe("done");
     expect(request).toHaveBeenCalledWith(
-      "granola-wallet-maker-write",
+      "zwap-account-maker-write",
       { mode: "exclusive" },
       expect.any(Function)
     );
@@ -32,13 +32,13 @@ describe("wallet mutation lock", () => {
       releaseFirst = resolve;
     });
 
-    const first = withWalletLock("fallback", async () => {
+    const first = withAccountLock("fallback", async () => {
       events.push("first-start");
       await firstStarted;
       events.push("first-end");
       return "first";
     }, undefined);
-    const second = withWalletLock("fallback", async () => {
+    const second = withAccountLock("fallback", async () => {
       events.push("second");
       return "second";
     }, undefined);
@@ -63,7 +63,7 @@ describe("order outbox mutation lock", () => {
 
     await expect(withOrderOutboxLock("maker", async () => "done", locks)).resolves.toBe("done");
     expect(request).toHaveBeenCalledWith(
-      "granola-order-outbox-maker-write",
+      "zwap-order-outbox-maker-write",
       { mode: "exclusive" },
       expect.any(Function)
     );
@@ -87,7 +87,7 @@ describe("trade session mutation lock", () => {
       locks
     )).resolves.toBe("done");
     expect(request).toHaveBeenCalledWith(
-      `granola-trade-maker-${sessionId}-write`,
+      `zwap-trade-maker-${sessionId}-write`,
       { mode: "exclusive" },
       expect.any(Function)
     );
@@ -119,7 +119,7 @@ describe("trade session storage lock", () => {
       locks
     )).resolves.toBe("done");
     expect(request).toHaveBeenCalledWith(
-      "granola-trade-maker-storage-write",
+      "zwap-trade-maker-storage-write",
       { mode: "exclusive" },
       expect.any(Function)
     );

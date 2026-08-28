@@ -1,39 +1,44 @@
 import { Buffer } from "buffer";
 (globalThis as { Buffer?: typeof Buffer }).Buffer ??= Buffer;
 
-import { GranolaApi, QuoteRepository, type BrowserGranolaApi, type GranolaState } from "./api/granola-api.js";
-import { OrderApi, TEST_MARKET, type PublishOrderInput } from "./api/order-api.js";
-import { TradeApi, type TakeOrderInput } from "./api/trade-api.js";
 import { nip19 } from "nostr-tools";
+import type { KeyPair } from "znn-typescript-sdk";
+
+import { OrderApi, type PublishOrderInput } from "./api/order-api.js";
+import type { TradeApi, TakeOrderInput } from "./api/trade-api.js";
+import { ZwapApi, type ZwapState } from "./api/zwap-api.js";
 import {
   hasNativeWebLocks,
-  withOrderOutboxLock,
-  withWalletLock
+  withAccountLock,
+  withOrderOutboxLock
 } from "./browser/lock.js";
 import { profileFromLocation, storageNameForProfile } from "./browser/profile.js";
 import { BrowserTradeController } from "./browser/trade-controller.js";
 import { startInboxListeners } from "./browser/startup.js";
-import { createBrowserTradeRuntime } from "./browser/trade-runtime.js";
-import { CashuClient } from "./cashu/client.js";
 import {
-  fiatPerBtcPrice,
-  settlementQuoteGuidance
-} from "./order/human-price.js";
-import { assertOrderFunding } from "./order/funding.js";
+  createBrowserTradeRuntime,
+  type BrowserTradeRuntime
+} from "./browser/trade-runtime.js";
+import { browserConfig } from "./config.js";
+import { fundingRequirement } from "./order/funding.js";
+import { humanPriceToPrice } from "./order/human-price.js";
+import { quoteAmountForSettlement } from "./order/model.js";
 import type { OrderRecord } from "./order/model.js";
 import { NostrOrderService } from "./order/service.js";
 import { MakerIdentity } from "./nostr/identity.js";
 import { RelayClient } from "./nostr/relay.js";
 import { OrderOutboxRepository } from "./storage/order-outbox.js";
 import { IndexedDbStorageDriver } from "./storage/driver.js";
-import { WalletRepository } from "./storage/wallet-repository.js";
-import { renderDashboard, renderWalletSummary } from "./ui/dashboard.js";
-import { formatUnitAmount } from "./ui/format.js";
-import { renderMintActions, type QuickMintRequest } from "./ui/mint-actions.js";
+import { ZenonAccount } from "./zenon/account.js";
+import { KeystoreRepository } from "./zenon/keystore-repository.js";
+import { KeystoreSigner } from "./zenon/keystore-signer.js";
+import type { PlasmaTier } from "./zenon/plasma-bot.js";
+import { ChainMismatchError, SdkZenonNode } from "./zenon/sdk-node.js";
+import { QSR_ZTS, ZNN_ZTS } from "./zenon/types.js";
 import { renderOrderBook } from "./ui/orderbook.js";
 import { renderPendingPublications } from "./ui/order-outbox.js";
 import { renderTrades } from "./ui/trades.js";
-import { endButtonFeedback, withButtonFeedback } from "./ui/button-feedback.js";
+import { withButtonFeedback } from "./ui/button-feedback.js";
 import {
   renderActivityLog,
   type ActivityDetail,
@@ -41,15 +46,15 @@ import {
 } from "./ui/activity-log.js";
 import type { PublicTradeView } from "./trade/session.js";
 
-interface GranolaBrowserFacade {
-  getState: BrowserGranolaApi["getState"];
-  inspectMint: BrowserGranolaApi["inspectMint"];
-  inspectToken: BrowserGranolaApi["inspectToken"];
-  requestMint: BrowserGranolaApi["requestMint"];
-  claimMint: BrowserGranolaApi["claimMint"];
-  receiveToken: BrowserGranolaApi["receiveToken"];
-  createBackup: BrowserGranolaApi["createBackup"];
-  clearWallet: BrowserGranolaApi["clearWallet"];
+interface ZwapBrowserFacade {
+  getState: ZwapApi["getState"];
+  createWallet: ZwapApi["createWallet"];
+  importWallet: ZwapApi["importWallet"];
+  receivePending: ZwapApi["receivePending"];
+  fusePlasma: ZwapApi["fusePlasma"];
+  send: ZwapApi["send"];
+  revealMnemonic: ZwapApi["revealMnemonic"];
+  clearWallet: ZwapApi["clearWallet"];
   resetProfile: (confirmation: string) => Promise<void>;
   getMakerPublicKeys: OrderApi["getMakerPublicKeys"];
   getOrderBook: OrderApi["getOrderBook"];
@@ -66,7 +71,7 @@ interface GranolaBrowserFacade {
 }
 
 declare global {
-  interface Window { granola: GranolaBrowserFacade; }
+  interface Window { zwap: ZwapBrowserFacade; }
 }
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -75,14 +80,70 @@ function byId<T extends HTMLElement>(id: string): T {
   return node as T;
 }
 
+const dashboard = byId("dashboard");
+const walletSummary = byId("wallet-summary");
+const orderbook = byId("orderbook");
+const pendingPublications = byId("pending-publications");
+const trades = byId("trades");
+const status = byId("status");
+const orderSettlementHint = byId("order-settlement-hint");
+const activity = byId<HTMLOListElement>("activity-log");
+
+let blockedReason: string | undefined;
+
+function showStatus(message: string, error: boolean): void {
+  status.textContent = message;
+  status.classList.toggle("error", error);
+  status.classList.add("visible");
+}
+
+/**
+ * A permanent banner. The page still renders — the order book and the local
+ * trade journal are readable without a node — but nothing that signs or reads
+ * chain state can run, so the message must not be scrolled away by a later
+ * transient report.
+ */
+function blockTrading(message: string): void {
+  blockedReason = message;
+  showStatus(message, true);
+  document.documentElement.dataset.zwapChain = "unavailable";
+  // Erasing the seed and resetting the profile stay reachable: neither needs
+  // a node, and a user who cannot reach one must still be able to get out.
+  for (const node of document.querySelectorAll<HTMLButtonElement>(
+    "#order-form button[type=submit], #refresh"
+  )) {
+    node.disabled = true;
+  }
+}
+
+function setStatus(message: string): void {
+  if (blockedReason !== undefined) return;
+  showStatus(message, false);
+}
+
+function clearStatus(): void {
+  if (blockedReason !== undefined) return;
+  status.classList.remove("visible");
+}
+
+function report(message: string, error = false): void {
+  if (blockedReason !== undefined) return;
+  showStatus(message, error);
+  window.setTimeout(clearStatus, 5000);
+}
+
+function messageOf(value: unknown): string {
+  return value instanceof Error ? value.message : String(value);
+}
+
+const config = browserConfig();
 const profile = profileFromLocation(window.location.href);
 const driver = new IndexedDbStorageDriver(storageNameForProfile(profile));
-const locked = <T>(action: () => Promise<T>): Promise<T> => withWalletLock(profile, action);
+const locked = <T>(action: () => Promise<T>): Promise<T> =>
+  withAccountLock(profile, action);
 const outboxLocked = <T>(action: () => Promise<T>): Promise<T> =>
   withOrderOutboxLock(profile, action);
-const walletRepository = new WalletRepository(driver);
-const cashu = new CashuClient();
-const api = new GranolaApi(walletRepository, new QuoteRepository(driver), cashu);
+const keystore = new KeystoreRepository(driver, locked);
 const makerIdentity = new MakerIdentity(driver, locked);
 const relayClient = new RelayClient();
 const orderService = new NostrOrderService(makerIdentity, relayClient);
@@ -95,34 +156,72 @@ const orderApi = new OrderApi(
   orderOutbox
 );
 
-async function publishOrderWithFunding(input: PublishOrderInput) {
-  assertOrderFunding(
-    (await api.getState()).wallet,
-    input.side,
-    input.amount,
-    input.priceCentsPerBtc,
-    TEST_MARKET
+/**
+ * The page's single signer. `ZwapApi` derives the key pair once and hands it
+ * here; the trade runtime then shares this exact instance, because
+ * `KeystoreSigner` serializes its own sends and two signers over one address
+ * would race each other's account-chain height.
+ *
+ * The key pair stays resident until the tab closes or the wallet is erased —
+ * this is a hot wallet by design, and re-deriving per action would only spread
+ * the same secret over more allocations.
+ */
+let walletSigner: KeystoreSigner | undefined;
+let walletApi: ZwapApi | undefined;
+let createTradeRuntime: (() => Promise<BrowserTradeRuntime>) | undefined;
+
+try {
+  const node = await SdkZenonNode.connect({
+    nodeUrl: config.nodeUrl,
+    chainId: config.chainId
+  });
+  KeystoreSigner.installPowWorker({
+    onPowStart: () => setStatus("Generating proof of work…"),
+    onPowEnd: () => clearStatus()
+  });
+  const createAccount = (keyPair: KeyPair): ZenonAccount => {
+    walletSigner = new KeystoreSigner(node.zenon, keyPair);
+    return new ZenonAccount({ node, signer: walletSigner });
+  };
+  const api = new ZwapApi({ keystore, node, config, createAccount });
+  walletApi = api;
+  let runtimePromise: Promise<BrowserTradeRuntime> | undefined;
+  createTradeRuntime = async () => {
+    // `createAccount` runs on the first wallet read, which is what publishes
+    // the shared signer. Force it before the runtime asks for one.
+    if (walletSigner === undefined) await api.getState();
+    const signer = walletSigner;
+    if (signer === undefined) {
+      throw new Error("Create or import a wallet before trading");
+    }
+    runtimePromise ??= createBrowserTradeRuntime({
+      profile,
+      driver,
+      node,
+      signer,
+      config,
+      makerIdentity,
+      orderApi,
+      orderService,
+      orderOutbox
+    });
+    return runtimePromise;
+  };
+} catch (error) {
+  blockTrading(
+    error instanceof ChainMismatchError
+      ? `${error.message}. Point VITE_ZENON_NODE_WS at a chain ${config.chainId} node and reload.`
+      : `Cannot reach the Zenon node at ${config.nodeUrl}: ${messageOf(error)}`
   );
-  const publication = await orderApi.publishOrder(input);
-  // Publishing creates the order's fresh maker key. Keep the shared page's
-  // maker side live without requiring a reload or a role-specific page.
-  try {
-    await syncMakerInboxes();
-  } catch (error) {
-    // A relay/listener refresh must not turn an already-published order into
-    // a failed API result. The visible listener status remains actionable.
-    report(messageOf(error), true);
-  }
-  return publication;
 }
-const dashboard = byId("dashboard");
-const walletSummary = byId("wallet-summary");
-const orderbook = byId("orderbook");
-const pendingPublications = byId("pending-publications");
-const trades = byId("trades");
-const status = byId("status");
-const orderSettlementHint = byId("order-settlement-hint");
-const activity = byId<HTMLOListElement>("activity-log");
+
+function requireWallet(): ZwapApi {
+  if (walletApi === undefined) {
+    throw new Error(blockedReason ?? "The Zenon node is unavailable");
+  }
+  return walletApi;
+}
+
 let tradeControllerPromise: Promise<BrowserTradeController> | undefined;
 const activityEntries: ActivityEntry[] = [];
 const tracedTradeMessages = new Set<string>();
@@ -199,21 +298,55 @@ function tradeTrace(trade: PublicTradeView): void {
   }
 }
 
-function report(message: string, error = false): void {
-  status.textContent = message;
-  status.classList.toggle("error", error);
-  status.classList.add("visible");
-  window.setTimeout(() => status.classList.remove("visible"), 5000);
+const TOKEN_SYMBOLS: Record<string, string> = {
+  [ZNN_ZTS]: "ZNN",
+  [QSR_ZTS]: "QSR"
+};
+
+/**
+ * TODO(Task 13): move this into `src/ui/format.ts` alongside the rewritten
+ * wallet panel. `formatUnitAmount` still speaks the removed ecash units.
+ */
+function formatTokenAmount(amount: string, decimals: number, symbol: string): string {
+  const divisor = 10n ** BigInt(decimals);
+  const whole = BigInt(amount) / divisor;
+  const fraction = (BigInt(amount) % divisor).toString().padStart(decimals, "0")
+    .replace(/0+$/, "");
+  return `${whole.toLocaleString("en-US")}${fraction ? `.${fraction}` : ""} ${symbol}`;
 }
 
-function messageOf(value: unknown): string {
-  return value instanceof Error ? value.message : String(value);
-}
-
-async function refresh(state?: GranolaState): Promise<GranolaState> {
-  const next = state ?? await api.getState();
-  renderWalletSummary(walletSummary, next);
-  renderDashboard(dashboard, next);
+/**
+ * TODO(Task 13): `renderWalletSummary` and `renderDashboard` still take the
+ * removed ecash wallet state. Task 13 owns `src/ui/*`; until then the wallet
+ * panel renders as plain text so the address, balances and plasma are visible.
+ */
+async function refresh(state?: ZwapState): Promise<ZwapState> {
+  if (walletApi === undefined) {
+    walletSummary.textContent = blockedReason ?? "The Zenon node is unavailable";
+    dashboard.textContent = "";
+    throw new Error(blockedReason ?? "The Zenon node is unavailable");
+  }
+  const next = state ?? await walletApi.getState();
+  if (next.address === null) {
+    walletSummary.textContent =
+      "No wallet in this browser profile yet. Call zwap.createWallet() or zwap.importWallet(words).";
+    dashboard.textContent = "";
+    return next;
+  }
+  const balances = next.balances.length === 0
+    ? "no balances"
+    : next.balances
+      .map((balance) => formatTokenAmount(balance.balance, balance.decimals, balance.symbol))
+      .join(" · ");
+  walletSummary.textContent = `${next.address} — ${balances}`;
+  dashboard.textContent = [
+    `Network ${next.network} (chain ${next.chainId})`,
+    `${next.unreceived} unreceived block(s)`,
+    next.plasma === null
+      ? "plasma unknown"
+      : `plasma ${next.plasma.currentPlasma}/${next.plasma.maxPlasma}`,
+    next.powRequired ? "proof of work required for sends" : "plasma covers sends"
+  ].join(" · ");
   return next;
 }
 
@@ -240,16 +373,10 @@ async function refreshOrderBook(): Promise<void> {
 }
 
 function tradeController(): Promise<BrowserTradeController> {
-  tradeControllerPromise ??= createBrowserTradeRuntime({
-    profile,
-    driver,
-    wallet: walletRepository,
-    makerIdentity,
-    orderApi,
-    orderService,
-    orderOutbox,
-    cashu
-  }).then((runtime) => new BrowserTradeController({
+  if (createTradeRuntime === undefined) {
+    return Promise.reject(new Error(blockedReason ?? "The Zenon node is unavailable"));
+  }
+  tradeControllerPromise ??= createTradeRuntime().then((runtime) => new BrowserTradeController({
     api: runtime.api,
     sessions: runtime.sessions,
     transport: runtime.transport,
@@ -282,6 +409,43 @@ async function refreshTrades(): Promise<void> {
   renderTrades(trades, current);
 }
 
+/**
+ * The exact chain balance an order must already hold before it is published:
+ * the base leg for a sell, the settlement quote amount for a buy.
+ */
+async function assertOrderFunding(input: PublishOrderInput): Promise<void> {
+  const requirement = fundingRequirement({
+    side: input.side,
+    amount: input.amount,
+    price: input.price
+  });
+  const token = requirement.token === "base" ? ZNN_ZTS : QSR_ZTS;
+  const state = await requireWallet().getState();
+  const held = state.balances.find((balance) => balance.tokenStandard === token);
+  if (held === undefined || BigInt(held.balance) < BigInt(requirement.amount)) {
+    const symbol = TOKEN_SYMBOLS[token] ?? token;
+    throw new Error(
+      `This order needs ${requirement.amount} ${symbol} minor units on chain; ` +
+      `this wallet holds ${held?.balance ?? "0"}`
+    );
+  }
+}
+
+async function publishOrderWithFunding(input: PublishOrderInput) {
+  await assertOrderFunding(input);
+  const publication = await orderApi.publishOrder(input);
+  // Publishing creates the order's fresh maker key. Keep the shared page's
+  // maker side live without requiring a reload or a role-specific page.
+  try {
+    await syncMakerInboxes();
+  } catch (error) {
+    // A relay/listener refresh must not turn an already-published order into
+    // a failed API result. The visible listener status remains actionable.
+    report(messageOf(error), true);
+  }
+  return publication;
+}
+
 const takeRequestIds = new Map<string, string>();
 
 function takeOrderFromBook(
@@ -293,7 +457,7 @@ function takeOrderFromBook(
   const requestId = takeRequestIds.get(retryKey) ?? crypto.randomUUID();
   takeRequestIds.set(retryKey, requestId);
   const task = async (): Promise<void> => {
-    const trade = await granola.takeOrder({
+    const trade = await zwap.takeOrder({
       requestId,
       address: order.address,
       expectedProjectionId: order.eventId,
@@ -302,7 +466,7 @@ function takeOrderFromBook(
     });
     tradeTrace(trade);
     report("Order taken; settling automatically");
-    const result = await granola.runUntilSettled(trade.sessionId);
+    const result = await zwap.runUntilSettled(trade.sessionId);
     await Promise.all([refreshTrades(), refresh()]);
     report(`Swap filled after ${result.checkpoints.length} verified actions`);
     void refreshOrderBook().catch(() => {
@@ -317,7 +481,7 @@ function takeOrderFromBook(
 }
 
 function retryPendingPublication(orderId: string, button?: HTMLButtonElement): void {
-  const task = () => granola.retryOrderPublication(orderId);
+  const task = () => zwap.retryOrderPublication(orderId);
   const request = button
     ? withButtonFeedback(button, "Retrying…", task)
     : task();
@@ -338,7 +502,7 @@ function retryPendingPublication(orderId: string, button?: HTMLButtonElement): v
 }
 
 function cancelOrderFromBook(order: OrderRecord, button?: HTMLButtonElement): void {
-  const task = () => granola.cancelOrder({
+  const task = () => zwap.cancelOrder({
     address: order.address,
     expectedProjectionId: order.eventId,
     expectedRevision: order.state.revision
@@ -365,18 +529,23 @@ async function refreshPendingPublications(): Promise<void> {
   );
 }
 
-const granola: GranolaBrowserFacade = {
-  getState: api.getState.bind(api),
-  inspectMint: api.inspectMint.bind(api),
-  inspectToken: api.inspectToken.bind(api),
-  requestMint: (input) => locked(() => api.requestMint(input)),
-  claimMint: (ref) => locked(() => api.claimMint(ref)),
-  receiveToken: (token) => locked(() => api.receiveToken(token)),
-  createBackup: () => locked(() => api.createBackup()),
-  clearWallet: (confirmation) => locked(() => api.clearWallet(confirmation)),
+const zwap: ZwapBrowserFacade = {
+  getState: () => requireWallet().getState(),
+  createWallet: () => locked(() => requireWallet().createWallet()),
+  importWallet: (mnemonic) => locked(() => requireWallet().importWallet(mnemonic)),
+  receivePending: () => locked(() => requireWallet().receivePending()),
+  fusePlasma: (tier: PlasmaTier) => requireWallet().fusePlasma(tier),
+  send: (toAddress, tokenStandard, amount) =>
+    locked(() => requireWallet().send(toAddress, tokenStandard, amount)),
+  // Reading and erasing the seed touch the keystore only, so they keep working
+  // while the node is unreachable.
+  revealMnemonic: (confirmation) => keystore.revealMnemonic(confirmation),
+  clearWallet: (confirmation) => locked(() => walletApi === undefined
+    ? keystore.clear(confirmation)
+    : walletApi.clearWallet(confirmation)),
   resetProfile: async (confirmation) => {
-    if (confirmation !== "RESET GRANOLA PROFILE") {
-      throw new Error("Type RESET GRANOLA PROFILE to erase this profile");
+    if (confirmation !== "RESET ZWAP PROFILE") {
+      throw new Error("Type RESET ZWAP PROFILE to erase this profile");
     }
     await driver.resetDatabase();
   },
@@ -394,7 +563,7 @@ const granola: GranolaBrowserFacade = {
     (await tradeController()).runUntilSettled(sessionId),
   enableMaker: async () => (await tradeController()).enableMaker()
 };
-window.granola = granola;
+window.zwap = zwap;
 
 if (!hasNativeWebLocks()) {
   log("Web Locks API unavailable. Using single-tab mode; keep this wallet profile in one tab. Use HTTPS and a browser with Web Locks for multi-tab workflows.");
@@ -407,7 +576,7 @@ let makerInboxRetryAttempt = 0;
 let makerInboxRetryTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
 
 async function syncMakerInboxes(): Promise<void> {
-  const publicKeys = await granola.getMakerPublicKeys();
+  const publicKeys = await zwap.getMakerPublicKeys();
   if (publicKeys.length === 0) {
     return;
   }
@@ -424,7 +593,7 @@ function startMakerInbox(): Promise<void> {
       return startMakerInbox();
     });
   }
-  makerInboxStartPromise = granola.enableMaker()
+  makerInboxStartPromise = zwap.enableMaker()
     .then(({ makerPubkey, inboxRelay }) => {
       makerInboxRetryAttempt = 0;
       if (makerInboxRetryTimer !== undefined) {
@@ -465,72 +634,36 @@ function startMakerInbox(): Promise<void> {
   return makerInboxStartPromise;
 }
 
-function defaultMintForUnit(unit: QuickMintRequest["unit"]): string {
-  return unit === "usd"
-    ? "https://nofee.testnut.cashu.space"
-    : "https://testnut.cashu.space";
-}
-
-async function requestAndClaimMint(input: {
-  mintUrl: string;
-  unit: string;
-  amount: string;
-}, button?: HTMLButtonElement): Promise<void> {
-  const task = async (): Promise<void> => {
-    const quote = await granola.requestMint(input);
-    log(`Mint quote requested for ${formatUnitAmount(quote.amount, quote.unit)} from ${new URL(quote.mintUrl).host}`);
-    report("Quote created; waiting for the Testnut mint to mark it paid");
-
-    for (let attempt = 0; attempt < 60; attempt += 1) {
-      await new Promise((resolve) => window.setTimeout(resolve, 1000));
-      const state = await granola.claimMint(quote.ref);
-      await refresh(state);
-      const current = state.quotes.find((item) => item.ref === quote.ref);
-      if (current?.state === "ISSUED") {
-        log(`Received ${formatUnitAmount(current.amount, current.unit)} of Testnut ecash`);
-        report("Testnut tokens added to this browser wallet");
-        return;
-      }
-    }
-    throw new Error("The quote did not become paid within 60 seconds");
-  };
-  return button
-    ? withButtonFeedback(button, "Funding…", task)
-    : task();
-}
-
-renderMintActions(byId("mint-actions"), (request, button) => {
-  void requestAndClaimMint({
-    ...request,
-    mintUrl: defaultMintForUnit(request.unit)
-  }, button).catch((error: unknown) => report(messageOf(error), true));
-});
+// TODO(Task 13): `#mint-actions` and `#backup` still describe the removed
+// testnut faucet and the bearer-token backup. Task 13 replaces them with the
+// Zenon custody panel: `zwap.receivePending()`, `zwap.fusePlasma(tier)` and a
+// `zwap.revealMnemonic("REVEAL SEED")` reveal behind an explicit confirmation.
 
 function runAgentSettlement(sessionId: string): void {
   const root = document.documentElement;
   if (!/^[0-9a-f]{64}$/.test(sessionId)) {
-    root.dataset.granolaRunStatus = "error";
-    root.dataset.granolaRunError = "Agent run requires a lowercase hex session ID";
+    root.dataset.zwapRunStatus = "error";
+    root.dataset.zwapRunError = "Agent run requires a lowercase hex session ID";
     return;
   }
-  if (root.dataset.granolaRunStatus === "running") return;
-  root.dataset.granolaRunStatus = "running";
-  delete root.dataset.granolaRunResult;
-  delete root.dataset.granolaRunError;
-  void granola.runUntilSettled(sessionId)
+  if (root.dataset.zwapRunStatus === "running") return;
+  root.dataset.zwapRunStatus = "running";
+  delete root.dataset.zwapRunResult;
+  delete root.dataset.zwapRunError;
+  void zwap.runUntilSettled(sessionId)
     .then(async (result) => {
-      root.dataset.granolaRunResult = JSON.stringify(result);
-      root.dataset.granolaRunStatus = "filled";
+      root.dataset.zwapRunResult = JSON.stringify(result);
+      root.dataset.zwapRunStatus = "filled";
       await refreshTrades();
     })
     .catch((error: unknown) => {
-      root.dataset.granolaRunError = messageOf(error);
-      root.dataset.granolaRunStatus = "error";
+      root.dataset.zwapRunError = messageOf(error);
+      root.dataset.zwapRunStatus = "error";
     });
 }
 
-document.addEventListener("granola:run-until-settled", () => {
-  runAgentSettlement(document.documentElement.dataset.granolaRunSession ?? "");
+document.addEventListener("zwap:run-until-settled", () => {
+  runAgentSettlement(document.documentElement.dataset.zwapRunSession ?? "");
 });
 
 const requestedAgentRun = new URL(window.location.href).searchParams
@@ -564,48 +697,27 @@ function requiredOrderInput(name: string): HTMLInputElement {
   if (input === null) throw new Error(`Missing order input ${name}`);
   return input;
 }
+// TODO(Task 13): the markup still calls the price field `fiatPrice`. It now
+// carries QSR per ZNN, and Task 13 renames the input and its labels.
 const orderAmountInput = requiredOrderInput("amount");
 const orderPriceInput = requiredOrderInput("fiatPrice");
 const orderSubmitButton = orderForm.querySelector<HTMLButtonElement>("button[type=submit]");
 if (orderSubmitButton === null) throw new Error("Missing order submit button");
 
 const defaultOrderSettlementHint = orderSettlementHint.textContent ?? "";
-function groupedInteger(value: string): string {
-  return BigInt(value).toLocaleString("en-US");
-}
 
-function decimalMinorUnits(numerator: string, denominator: string): string {
-  const whole = BigInt(numerator);
-  const divisor = BigInt(denominator);
-  const integerPart = whole / divisor;
-  let remainder = whole % divisor;
-  if (remainder === 0n) return integerPart.toString();
-  let fraction = "";
-  for (let index = 0; index < 4 && remainder !== 0n; index += 1) {
-    remainder *= 10n;
-    fraction += (remainder / divisor).toString();
-    remainder %= divisor;
-  }
-  return `${integerPart}.${fraction.replace(/0+$/, "")}${remainder !== 0n ? "…" : ""}`;
-}
+const QUOTE_DECIMALS = 8;
 
 function updateOrderSettlementHint(): void {
   orderAmountInput.setCustomValidity("");
   orderSettlementHint.textContent = defaultOrderSettlementHint;
   try {
-    const price = fiatPerBtcPrice(orderPriceInput.value);
-    const guidance = settlementQuoteGuidance(orderAmountInput.value, price);
-    if (guidance === null) return;
-    const exactQuote = decimalMinorUnits(
-      guidance.exactQuoteNumerator,
-      guidance.exactQuoteDenominator
-    );
-    const message = `At ${orderPriceInput.value} USD/BTC, ${groupedInteger(orderAmountInput.value)} SAT ` +
-      `is ${exactQuote} cents at the entered price. The USD mint settles ` +
-      `${groupedInteger(guidance.settlementQuoteAmount)} cents ` +
-      `(${formatUnitAmount(guidance.settlementQuoteAmount, "usd")}) after truncating the fractional cent. ` +
-      `Your order remains exactly ${groupedInteger(orderAmountInput.value)} SAT.`;
-    orderSettlementHint.textContent = message;
+    const price = humanPriceToPrice(orderPriceInput.value, QUOTE_DECIMALS);
+    const quote = quoteAmountForSettlement(orderAmountInput.value, price);
+    orderSettlementHint.textContent =
+      `At ${orderPriceInput.value} QSR per ZNN, ` +
+      `${formatTokenAmount(orderAmountInput.value, 8, "ZNN")} settles for exactly ` +
+      `${formatTokenAmount(quote, QUOTE_DECIMALS, "QSR")} in a single HTLC pair.`;
   } catch {
     // Native input patterns and the submit handler provide the authoritative error.
   }
@@ -636,11 +748,11 @@ orderForm.addEventListener("submit", (event) => {
     const input: PublishOrderInput = {
       side,
       amount: String(form.get("amount")),
-      priceCentsPerBtc: fiatPerBtcPrice(String(form.get("fiatPrice"))),
+      price: humanPriceToPrice(String(form.get("fiatPrice")), QUOTE_DECIMALS),
       expiresAt: Math.floor(Date.now() / 1000) + days * 86_400,
       execution: "all_or_none"
     };
-    const publication = await granola.publishOrder(input);
+    const publication = await zwap.publishOrder(input);
     const acknowledgements = publication.receipts.filter((receipt) => receipt.ok).length;
     trace("Order", "Public order published", [
       { label: "side", value: side },
@@ -658,47 +770,36 @@ orderForm.addEventListener("submit", (event) => {
   });
 });
 
-const backupButton = byId<HTMLButtonElement>("backup");
-backupButton.addEventListener("click", () => {
-  void withButtonFeedback(backupButton, "Preparing…", async () => {
-    const backup = await granola.createBackup();
-    const data = JSON.stringify(backup, null, 2);
-    const url = URL.createObjectURL(new Blob([data], { type: "application/json" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `granola-${profile}-bearer-backup.json`;
-    link.click();
-    URL.revokeObjectURL(url);
-    log(`Downloaded a bearer backup containing ${backup.tokens.length} token pocket(s)`);
-    report("Bearer backup downloaded — keep it private");
-  }).catch((error: unknown) => report(messageOf(error), true));
-});
-
 const clearWalletButton = byId<HTMLButtonElement>("clear-wallet");
 clearWalletButton.addEventListener("click", () => {
-  void withButtonFeedback(clearWalletButton, "Erasing…", () => granola.clearWallet("DELETE TEST WALLET"))
-    .then(async () => { await refresh(); log("Erased this profile’s local wallet"); report("Local wallet erased"); })
+  // Reload rather than refresh: the erased key pair is zeroed in place, and
+  // the signer the trade runtime captured must not outlive the wallet.
+  void withButtonFeedback(clearWalletButton, "Erasing…", () => zwap.clearWallet("DELETE WALLET"))
+    .then(() => window.location.reload())
     .catch((error: unknown) => report(messageOf(error), true));
 });
 
 const resetProfileButton = byId<HTMLButtonElement>("reset-profile");
 resetProfileButton.addEventListener("click", () => {
-  void withButtonFeedback(resetProfileButton, "Restarting…", () => granola.resetProfile("RESET GRANOLA PROFILE"))
+  void withButtonFeedback(resetProfileButton, "Restarting…", () => zwap.resetProfile("RESET ZWAP PROFILE"))
     .then(() => window.location.reload())
     .catch((error: unknown) => report(messageOf(error), true));
 });
 
-void Promise.all([
-  refresh(),
-  refreshOrderBook(),
-  refreshPendingPublications(),
-  startInboxListeners({
+// Each start-up read stands on its own: without a node the order book and the
+// pending outbox still render, and only the wallet panel reports the outage.
+for (const start of [
+  () => refresh(),
+  () => refreshOrderBook(),
+  () => refreshPendingPublications(),
+  () => startInboxListeners({
     startSessions: refreshTrades,
     startMaker: syncMakerInboxes
-  }),
-])
-  .then(() => log("Opened the shared maker/taker workspace"))
-  .catch((error: unknown) => report(messageOf(error), true));
+  })
+]) {
+  void start().catch((error: unknown) => report(messageOf(error), true));
+}
+log("Opened the shared maker/taker workspace");
 
 window.addEventListener("pagehide", () => {
   void tradeControllerPromise?.then((controller) => controller.stop()).catch(() => undefined);

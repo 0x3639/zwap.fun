@@ -4,10 +4,9 @@ import {
   getPublicKey
 } from "nostr-tools/pure";
 
-import { TEST_MARKET, type OrderApi } from "../api/order-api.js";
+import type { OrderApi } from "../api/order-api.js";
 import { TradeApi } from "../api/trade-api.js";
-import { CashuClient } from "../cashu/client.js";
-import { CashuTradeClient } from "../cashu/trade-client.js";
+import type { ZwapConfig } from "../config.js";
 import {
   createInboxList,
   probeInboxRelayLive,
@@ -16,23 +15,27 @@ import {
 } from "../nostr/inbox.js";
 import { NostrToolsInboxRelayPort } from "../nostr/inbox-relay.js";
 import type { MakerIdentity } from "../nostr/identity.js";
-import { PUBLIC_RELAYS } from "../nostr/relay.js";
 import type { TradeSubscriptionRelayPort } from "../nostr/trade-subscription.js";
 import { NostrTradeTransport } from "../nostr/trade-transport.js";
+import type { ExactMarket } from "../order/model.js";
 import type { NostrOrderService } from "../order/service.js";
 import type { OrderOutboxRepository } from "../storage/order-outbox.js";
-import { ProofReservationRepository } from "../storage/proof-reservation-repository.js";
 import { TradeSessionRepository } from "../storage/trade-session.js";
 import type { StorageDriver } from "../storage/driver.js";
-import type { WalletRepository } from "../storage/wallet-repository.js";
 import { TradeCoordinator } from "../trade/coordinator.js";
-import { GranolaCoordinatorEffects } from "../trade/effects.js";
+import { ZwapCoordinatorEffects } from "../trade/effects.js";
+import { deploymentFor } from "../trade/messages.js";
+import { FundsReservationRepository } from "../zenon/funds-reservations.js";
+import { sdkUnlockDecoder, type UnlockDecoder } from "../zenon/htlc.js";
+import { ZenonTradeClient } from "../zenon/trade-client.js";
+import { QSR_ZTS, ZNN_ZTS, type ZenonNodePort, type ZenonSigner } from "../zenon/types.js";
 import {
+  withAccountLock,
   withTradeSessionLock,
-  withTradeSessionStorageLock,
-  withWalletLock
+  withTradeSessionStorageLock
 } from "./lock.js";
 
+/** Fallback inbox relay when the deployment configures none. */
 export const TRADE_INBOX_RELAY = "wss://auth.nostr1.com";
 
 type KeyGenerator = () => Uint8Array;
@@ -62,7 +65,7 @@ export async function probeTradeInboxRelay(
         ["p", recipientPubkey],
         ["expiration", String(input.now + 3_600)]
       ],
-      content: "granola-inbox-live-probe"
+      content: "zwap-inbox-live-probe"
     }, wrapperSigner);
     return await probeInboxRelayLive({
       relay: input.relay,
@@ -85,7 +88,15 @@ export async function probeTradeInboxRelay(
 export interface CreateBrowserTradeRuntimeInput {
   profile: string;
   driver: StorageDriver;
-  wallet: WalletRepository;
+  /** The connected node every chain read in this runtime goes through. */
+  node: ZenonNodePort;
+  /**
+   * The page's single signer. It serializes its own sends, so the wallet API
+   * and this runtime must share one instance or they would race each other's
+   * account-chain height.
+   */
+  signer: ZenonSigner;
+  config: ZwapConfig;
   makerIdentity: MakerIdentity;
   orderApi: OrderApi;
   orderService: NostrOrderService;
@@ -95,8 +106,8 @@ export interface CreateBrowserTradeRuntimeInput {
   discoveryRelays?: readonly string[];
   now?: () => number;
   generateSecretKey?: KeyGenerator;
-  cashu?: CashuClient;
-  cashuTrade?: CashuTradeClient;
+  /** Reads `Unlock` preimages off chain blocks; the fake node needs its own. */
+  decodeUnlock?: UnlockDecoder;
 }
 
 export interface BrowserTradeRuntime {
@@ -105,7 +116,7 @@ export interface BrowserTradeRuntime {
   transport: NostrTradeTransport;
   inboxPort: BrowserInboxPort;
   inboxRelay: string;
-  market: typeof TEST_MARKET;
+  market: ExactMarket;
 }
 
 export interface BrowserInboxPort
@@ -119,9 +130,16 @@ export async function createBrowserTradeRuntime(
   if (!Number.isSafeInteger(currentTime) || currentTime < 0) {
     throw new Error("Trade runtime clock must be a non-negative Unix timestamp");
   }
-  const inboxRelay = input.inboxRelay ?? TRADE_INBOX_RELAY;
-  const discoveryRelays = input.discoveryRelays ?? PUBLIC_RELAYS;
+  const inboxRelay = input.inboxRelay
+    ?? (input.config.inboxRelay.length > 0 ? input.config.inboxRelay : TRADE_INBOX_RELAY);
+  const discoveryRelays = input.discoveryRelays ?? input.config.discoveryRelays;
   const inboxPort = input.inboxPort ?? new NostrToolsInboxRelayPort();
+  const chainId = String(input.config.chainId);
+  const market: ExactMarket = {
+    chainId,
+    baseToken: ZNN_ZTS,
+    quoteToken: QSR_ZTS
+  };
   const probe = await probeTradeInboxRelay({
     relay: inboxRelay,
     port: inboxPort,
@@ -141,19 +159,25 @@ export async function createBrowserTradeRuntime(
     input.driver,
     (action) => withTradeSessionStorageLock(input.profile, action)
   );
-  const reservations = new ProofReservationRepository(input.driver);
-  const cashu = input.cashu ?? new CashuClient();
-  const effects = new GranolaCoordinatorEffects({
+  const reservations = new FundsReservationRepository(input.driver);
+  const chain = new ZenonTradeClient({
+    node: input.node,
+    signer: input.signer,
+    decodeUnlock: input.decodeUnlock ?? sdkUnlockDecoder,
+    now
+  });
+  const effects = new ZwapCoordinatorEffects({
     orderApi: input.orderApi,
     orderOutbox: input.orderOutbox,
     orderReader: input.orderService,
     nostr: transport,
-    cashu: input.cashuTrade ?? new CashuTradeClient(),
-    wallet: input.wallet,
+    chain,
+    node: input.node,
     reservations,
     makerIdentity: input.makerIdentity,
     discoveryRelays,
-    withWalletLock: (action) => withWalletLock(input.profile, action)
+    withAccountLock: (action) => withAccountLock(input.profile, action),
+    network: deploymentFor(chainId)
   });
   const coordinator = new TradeCoordinator({
     repository: sessions,
@@ -166,17 +190,19 @@ export async function createBrowserTradeRuntime(
     api: new TradeApi({
       coordinator,
       orders: input.orderService,
-      cashu,
-      wallets: input.wallet,
-      spendability: cashu,
+      chain: input.node,
+      reservations,
+      localAddress: () => input.signer.address(),
       sessions,
-      market: TEST_MARKET,
-      now
+      market,
+      now,
+      shortLockSeconds: input.config.shortLockSeconds,
+      longLockSeconds: input.config.longLockSeconds
     }),
     sessions,
     transport,
     inboxPort,
     inboxRelay,
-    market: TEST_MARKET
+    market
   };
 }

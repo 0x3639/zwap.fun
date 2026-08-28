@@ -1,7 +1,8 @@
 import { getPublicKey } from "nostr-tools/pure";
 import { describe, expect, it, vi } from "vitest";
 
-import { OrderApi, TEST_MARKET } from "../api/order-api.js";
+import { OrderApi } from "../api/order-api.js";
+import { loadConfig } from "../config.js";
 import { MakerIdentity } from "../nostr/identity.js";
 import type {
   AuthHandler,
@@ -14,7 +15,9 @@ import type { NostrEvent } from "../order/events.js";
 import { NostrOrderService, type OrderRelayPort } from "../order/service.js";
 import { OrderOutboxRepository } from "../storage/order-outbox.js";
 import { MemoryStorageDriver } from "../storage/driver.js";
-import { WalletRepository } from "../storage/wallet-repository.js";
+import { FakeZenonNode } from "../zenon/fake-node.js";
+import { fakeUnlockDecoder } from "../zenon/htlc.js";
+import { QSR_ZTS, ZNN_ZTS } from "../zenon/types.js";
 import {
   createBrowserTradeRuntime,
   probeTradeInboxRelay
@@ -110,7 +113,8 @@ describe("browser trade runtime", () => {
 
   it("constructs one durable redacted coordinator for an isolated profile", async () => {
     const driver = new MemoryStorageDriver();
-    const wallet = new WalletRepository(driver);
+    const node = new FakeZenonNode({ chainId: 1, now: () => now });
+    const signer = node.signer(node.createAddress("local"));
     const identity = new MakerIdentity(driver, async (action) => action(), () => key(9));
     const orderService = new NostrOrderService(identity, silentOrderRelays);
     const orderOutbox = new OrderOutboxRepository(driver);
@@ -125,7 +129,10 @@ describe("browser trade runtime", () => {
     const runtime = await createBrowserTradeRuntime({
       profile: "maker",
       driver,
-      wallet,
+      node,
+      signer,
+      config: loadConfig({}),
+      decodeUnlock: fakeUnlockDecoder,
       makerIdentity: identity,
       orderApi,
       orderService,
@@ -145,7 +152,11 @@ describe("browser trade runtime", () => {
     });
 
     expect(await runtime.api.listTrades()).toEqual([]);
-    expect(runtime.market).toEqual(TEST_MARKET);
+    expect(runtime.market).toEqual({
+      chainId: "1",
+      baseToken: ZNN_ZTS,
+      quoteToken: QSR_ZTS
+    });
     expect(runtime.inboxRelay).toBe(relay);
     expect(runtime.sessions).toBeDefined();
     expect(runtime.transport).toBeDefined();

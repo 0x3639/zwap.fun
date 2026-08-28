@@ -13,7 +13,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@cashu/cashu-ts": "4.7.1",
     "buffer": "^6.0.3",
     "nostr-tools": "2.23.3",
     "znn-typescript-sdk": "^1.0.5"
