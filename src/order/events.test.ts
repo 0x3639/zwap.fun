@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { QSR_ZTS, ZNN_ZTS } from "../zenon/types.js";
 import {
   createProjectionTemplate,
   parseProjectionEvent,
@@ -17,15 +18,11 @@ function open() {
     createdAt: 1_700_000_000,
     expiresAt: 1_700_003_600,
     side: "sell",
-    baseUnit: "sat",
-    quoteUnit: "usd",
-    offered: { unit: "sat", mint: "https://mint.example" },
-    requested: {
-      unit: "usd",
-      acceptableMints: ["https://quote.example"]
-    },
+    chainId: "1",
+    baseToken: ZNN_ZTS,
+    quoteToken: QSR_ZTS,
     amount: "100",
-    priceCentsPerBtc: "200000000"
+    price: "200000000"
   });
 }
 
@@ -49,11 +46,12 @@ describe("order projection events", () => {
 
     expect(projection.kind).toBe(30078);
     expect(projection.tags).toEqual(expect.arrayContaining([
-      ["d", `granola:order:v1:${orderId}`],
-      ["t", "granola-order"],
+      ["d", `zwap:order:v1:${orderId}`],
+      ["t", "zwap-order"],
       ["v", "1"],
       ["s", "open"],
-      ["side", "sell"]
+      ["side", "sell"],
+      ["chain", "1"]
     ]));
     expect(projection.tags.some((tag) => tag[0] === "e")).toBe(false);
     expect(JSON.parse(projection.content)).toEqual(state);
@@ -86,7 +84,7 @@ describe("order projection events", () => {
   it("parses a signed canonical projection as authoritative current state", async () => {
     const event = await signed();
     await expect(parseProjectionEvent(event, () => true)).resolves.toEqual({
-      address: `30078:${maker}:granola:order:v1:${orderId}`,
+      address: `30078:${maker}:zwap:order:v1:${orderId}`,
       eventId: event.id,
       makerPubkey: maker,
       verified: true,
@@ -94,7 +92,7 @@ describe("order projection events", () => {
     });
   });
 
-  it("rejects chain tags, embedded heads, and noncanonical state", async () => {
+  it("rejects predecessor chains, embedded heads, and noncanonical state", async () => {
     const event = await signed();
     await expect(parseProjectionEvent({
       ...event,
@@ -110,6 +108,14 @@ describe("order projection events", () => {
       ...event,
       content: JSON.stringify({ ...open(), revision: "01" })
     }, () => true)).rejects.toThrow(/canonical/i);
+  });
+
+  it("rejects a mismatched chain tag", async () => {
+    const event = await signed();
+    await expect(parseProjectionEvent({
+      ...event,
+      tags: event.tags.map((tag) => (tag[0] === "chain" ? ["chain", "2"] : tag))
+    }, () => true)).rejects.toThrow(/chain/i);
   });
 
   it("rejects invalid signatures and mismatched indexes", async () => {

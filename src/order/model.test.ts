@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { QSR_ZTS, ZNN_ZTS } from "../zenon/types.js";
 import {
   buildOrderBook,
   cancelOrder,
@@ -14,130 +15,119 @@ import {
   type OrderRecord
 } from "./model.js";
 
-const testnut = "https://testnut.cashu.space";
-const nofee = "https://nofee.testnut.cashu.space";
+const chainId = "1";
 const askOne = "11111111-1111-4111-8111-111111111111";
 const bidOne = "22222222-2222-4222-8222-222222222222";
+const znnQsrMarketId = "317ca90facdb549a0b53369c43be80dfc7df831b408e52354726f46667d371ee";
 
-describe("Granola order model", () => {
-  it("creates a canonical ask with explicit 30-day expiry and indexed markets", async () => {
+describe("Zwap order model", () => {
+  it("creates a canonical ask with explicit 30-day expiry and one eligible market", async () => {
     const state = createOrderState({
       orderId: askOne,
       createdAt: 1_700_000_000,
       side: "sell",
-      baseUnit: "sat",
-      quoteUnit: "usd",
-      offered: { unit: "sat", mint: testnut },
-      requested: { unit: "usd", acceptableMints: [testnut, nofee, nofee] },
+      chainId,
+      baseToken: ZNN_ZTS,
+      quoteToken: QSR_ZTS,
       amount: "2000",
-      priceCentsPerBtc: "5050000"
+      price: "350000000"
     });
 
     expect(state.expires_at).toBe(1_702_592_000);
     expect(state.execution).toBe("all_or_none");
     expect(state.minimum_fill_amount).toBe("2000");
-    expect(state.requested.acceptable_mints).toEqual([nofee, testnut]);
-    await expect(eligibleMarketIds(state)).resolves.toEqual([
-      "79da04f634a843c37c7a5ffb4aa29742a2551d238d9a443b39338c52b8fd1d5b",
-      "8b232677c9edc17ccae45cf226fda181d314a83426212ee0ffada7f92d10dbad"
-    ]);
+    expect(state.offered).toEqual({ token: ZNN_ZTS });
+    expect(state.requested).toEqual({ token: QSR_ZTS });
+    await expect(eligibleMarketIds(state)).resolves.toEqual([znnQsrMarketId]);
+    await expect(marketId({ chainId, baseToken: ZNN_ZTS, quoteToken: QSR_ZTS }))
+      .resolves.toBe(znnQsrMarketId);
   });
 
-  it("models a bid without reversing offered/requested mint cardinality", async () => {
+  it("models a bid, reversing offered and requested tokens", async () => {
     const state = createOrderState({
       orderId: bidOne,
       createdAt: 1_700_000_000,
       side: "buy",
-      baseUnit: "sat",
-      quoteUnit: "usd",
-      offered: { unit: "usd", mint: nofee },
-      requested: { unit: "sat", acceptableMints: [testnut, nofee] },
+      chainId,
+      baseToken: ZNN_ZTS,
+      quoteToken: QSR_ZTS,
       amount: "2000",
-      priceCentsPerBtc: "4950000",
+      price: "295000000",
       execution: "partial",
       minimumFillAmount: "1000"
     });
 
-    expect(state.offered).toEqual({ unit: "usd", mint: nofee });
-    expect(state.requested.acceptable_mints).toEqual([nofee, testnut]);
-    await expect(eligibleMarketIds(state)).resolves.toEqual([
-      "79da04f634a843c37c7a5ffb4aa29742a2551d238d9a443b39338c52b8fd1d5b",
-      "af826c2cddbdba30d2fa196180ce8a0111618e002eec2a1e644cbddd9935797e"
-    ]);
+    expect(state.offered).toEqual({ token: QSR_ZTS });
+    expect(state.requested).toEqual({ token: ZNN_ZTS });
+    await expect(eligibleMarketIds(state)).resolves.toEqual([znnQsrMarketId]);
   });
 
-  it("preserves exact SAT amounts, truncates cents, and rejects zero quotes", () => {
+  it("preserves exact base amounts, truncates the quote, and rejects zero quotes", () => {
     const exactBase = createOrderState({
       orderId: "99999999-9999-4999-8999-999999999999",
       createdAt: 1,
       side: "sell",
-      baseUnit: "sat",
-      quoteUnit: "usd",
-      offered: { unit: "sat", mint: testnut },
-      requested: { unit: "usd", acceptableMints: [nofee] },
+      chainId,
+      baseToken: ZNN_ZTS,
+      quoteToken: QSR_ZTS,
       amount: "200",
-      priceCentsPerBtc: "4950000"
+      price: "350000000"
     });
     expect(exactBase.original_amount).toBe("200");
     expect(exactBase.remaining_amount).toBe("200");
-    expect(quoteAmountForSettlement("200", exactBase.price_cents_per_btc)).toBe("9");
+    expect(quoteAmountForSettlement("200", exactBase.price)).toBe("700");
 
     expect(() => createOrderState({
       orderId: "33333333-3333-4333-8333-333333333333",
       createdAt: 1,
       side: "buy",
-      baseUnit: "sat",
-      quoteUnit: "usd",
-      offered: { unit: "usd", mint: nofee },
-      requested: { unit: "sat", acceptableMints: [testnut] },
+      chainId,
+      baseToken: ZNN_ZTS,
+      quoteToken: QSR_ZTS,
       amount: "1",
-      priceCentsPerBtc: "50000000"
+      price: "50000000"
     })).toThrow("at least one quote unit");
 
     const truncated = createOrderState({
       orderId: "77777777-7777-4777-8777-777777777777",
       createdAt: 1,
       side: "sell",
-      baseUnit: "sat",
-      quoteUnit: "usd",
-      offered: { unit: "sat", mint: testnut },
-      requested: { unit: "usd", acceptableMints: [nofee] },
+      chainId,
+      baseToken: ZNN_ZTS,
+      quoteToken: QSR_ZTS,
       amount: "2000",
-      priceCentsPerBtc: "4960000"
+      price: "4960000"
     });
     expect(truncated.original_amount).toBe("2000");
-    expect(quoteAmountForSettlement("2000", truncated.price_cents_per_btc)).toBe("99");
-
-    expect(() => createOrderState({
-      orderId: "44444444-4444-4444-8444-444444444444",
-      createdAt: 1,
-      side: "sell",
-      baseUnit: "sat",
-      quoteUnit: "usd",
-      offered: { unit: "usd", mint: nofee },
-      requested: { unit: "sat", acceptableMints: [testnut] },
-      amount: "2",
-      priceCentsPerBtc: "50000000"
-    })).toThrow("Sell orders must offer the base unit");
+    expect(quoteAmountForSettlement("2000", truncated.price)).toBe("99");
   });
 
-  it("rejects non-UUID IDs and runtime enum bypasses", () => {
+  it("rejects non-UUID IDs, invalid chain IDs, invalid tokens, and runtime enum bypasses", () => {
     const valid = {
       orderId: "11111111-1111-4111-8111-111111111111",
       createdAt: 1,
       side: "sell" as const,
-      baseUnit: "sat",
-      quoteUnit: "usd",
-      offered: { unit: "sat", mint: testnut },
-      requested: { unit: "usd", acceptableMints: [nofee] },
+      chainId,
+      baseToken: ZNN_ZTS,
+      quoteToken: QSR_ZTS,
       amount: "2",
-      priceCentsPerBtc: "50000000"
+      price: "50000000"
     };
 
     expect(() => createOrderState({ ...valid, orderId: "decorated-id" }))
       .toThrow("Order ID must be a UUID");
     expect(() => createOrderState({ ...valid, side: "market" as "sell" }))
       .toThrow("Order side");
+    expect(() => createOrderState({ ...valid, chainId: "0" }))
+      .toThrow("Chain ID");
+    expect(() => createOrderState({ ...valid, chainId: "01" }))
+      .toThrow("Chain ID");
+    expect(() => createOrderState({ ...valid, baseToken: "not-a-token" }))
+      .toThrow("Base token");
+    expect(() => createOrderState({ ...valid, quoteToken: "not-a-token" }))
+      .toThrow("Quote token");
+    expect(() => createOrderState({ ...valid, quoteToken: ZNN_ZTS }))
+      .toThrow("Base and quote tokens must differ");
     expect(() => createOrderState({
       ...valid,
       execution: "immediate" as "partial",
@@ -145,7 +135,7 @@ describe("Granola order model", () => {
     })).toThrow("Execution condition");
   });
 
-  it("sorts an issuer-specific book and makes the top bid and ask explicit", async () => {
+  it("sorts an issuer-agnostic book and makes the top bid and ask explicit", async () => {
     const askHigh = "55555555-5555-4555-8555-555555555555";
     const bidLow = "66666666-6666-4666-8666-666666666666";
     const askLow = "77777777-7777-4777-8777-777777777777";
@@ -160,19 +150,14 @@ describe("Granola order model", () => {
         createdAt: 1_700_000_000,
         expiresAt: 1_800_000_000,
         side,
-        baseUnit: "sat",
-        quoteUnit: "usd",
-        offered: side === "sell"
-          ? { unit: "sat", mint: testnut }
-          : { unit: "usd", mint: nofee },
-          requested: side === "sell"
-          ? { unit: "usd", acceptableMints: [nofee] }
-          : { unit: "sat", acceptableMints: [testnut] },
-          amount: "2000",
-        priceCentsPerBtc: (BigInt(numerator) * 50_000n).toString()
+        chainId,
+        baseToken: ZNN_ZTS,
+        quoteToken: QSR_ZTS,
+        amount: "2000",
+        price: (BigInt(numerator) * 50_000n).toString()
       })
     });
-    const market = { baseUnit: "sat", baseMint: testnut, quoteUnit: "usd", quoteMint: nofee };
+    const market = { chainId, baseToken: ZNN_ZTS, quoteToken: QSR_ZTS };
     const records = [
       record(askHigh, "sell", "102"),
       record(bidLow, "buy", "98"),
@@ -186,9 +171,7 @@ describe("Granola order model", () => {
     expect(book.bids.map((order) => order.state.order_id)).toEqual([bidHigh, bidLow]);
     expect(book.topAsk?.state.order_id).toBe(askLow);
     expect(book.topBid?.state.order_id).toBe(bidHigh);
-    await expect(marketId(market)).resolves.toBe(
-      "79da04f634a843c37c7a5ffb4aa29742a2551d238d9a443b39338c52b8fd1d5b"
-    );
+    await expect(marketId(market)).resolves.toBe(znnQsrMarketId);
   });
 
   it("reserves an exact all-or-none amount without reducing the remaining amount", () => {
@@ -197,12 +180,11 @@ describe("Granola order model", () => {
       createdAt: 1_700_000_000,
       expiresAt: 1_700_010_000,
       side: "sell",
-      baseUnit: "sat",
-      quoteUnit: "usd",
-      offered: { unit: "sat", mint: testnut },
-      requested: { unit: "usd", acceptableMints: [nofee] },
+      chainId,
+      baseToken: ZNN_ZTS,
+      quoteToken: QSR_ZTS,
       amount: "20",
-      priceCentsPerBtc: "5000000"
+      price: "500000000"
     });
 
     const reserved = reserveOrder(initial, {
@@ -242,12 +224,11 @@ describe("Granola order model", () => {
       createdAt: 1_700_000_000,
       expiresAt: 1_700_010_000,
       side: "sell",
-      baseUnit: "sat",
-      quoteUnit: "usd",
-      offered: { unit: "sat", mint: testnut },
-      requested: { unit: "usd", acceptableMints: [nofee] },
+      chainId,
+      baseToken: ZNN_ZTS,
+      quoteToken: QSR_ZTS,
       amount: "20",
-      priceCentsPerBtc: "5000000"
+      price: "500000000"
     });
     const reserved = reserveOrder(initial, {
       reservationId: "99999999-9999-4999-8999-999999999999",
@@ -281,12 +262,11 @@ describe("Granola order model", () => {
       createdAt: 1_700_000_000,
       expiresAt: 1_700_010_000,
       side: "sell",
-      baseUnit: "sat",
-      quoteUnit: "usd",
-      offered: { unit: "sat", mint: testnut },
-      requested: { unit: "usd", acceptableMints: [nofee] },
+      chainId,
+      baseToken: ZNN_ZTS,
+      quoteToken: QSR_ZTS,
       amount: "20",
-      priceCentsPerBtc: "5000000"
+      price: "500000000"
     });
     const reserved = reserveOrder(initial, {
       reservationId: "99999999-9999-4999-8999-999999999999",
@@ -334,12 +314,11 @@ describe("Granola order model", () => {
       createdAt: 1_700_000_000,
       expiresAt: 1_700_001_000,
       side: "sell",
-      baseUnit: "sat",
-      quoteUnit: "usd",
-      offered: { unit: "sat", mint: testnut },
-      requested: { unit: "usd", acceptableMints: [nofee] },
+      chainId,
+      baseToken: ZNN_ZTS,
+      quoteToken: QSR_ZTS,
       amount: "20",
-      priceCentsPerBtc: "5000000"
+      price: "500000000"
     });
     const reserved = reserveOrder(initial, {
       reservationId: "99999999-9999-4999-8999-999999999999",

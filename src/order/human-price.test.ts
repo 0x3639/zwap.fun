@@ -1,30 +1,36 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  fiatPerBtcPrice,
-  settlementQuoteGuidance
-} from "./human-price.js";
+import { humanPriceToPrice, priceToHumanPrice } from "./human-price.js";
 
-describe("human fiat/BTC price", () => {
-  it("converts decimal fiat per BTC into integer cents per BTC", () => {
-    expect(fiatPerBtcPrice("50500.00")).toBe("5050000");
-    expect(fiatPerBtcPrice("49500")).toBe("4950000");
-    expect(fiatPerBtcPrice("0.01")).toBe("1");
+describe("human price conversion", () => {
+  it("converts a decimal quote-per-base price into an integer price", () => {
+    expect(humanPriceToPrice("3.5", 8)).toBe("350000000");
+    expect(humanPriceToPrice("0.00000001", 8)).toBe("1");
+    expect(humanPriceToPrice("1", 8)).toBe("100000000");
   });
 
-  it("rejects ambiguous, negative, and over-precise prices", () => {
-    for (const value of ["50,500", "-1", "0", "1.001", "1e5", ""])
-      expect(() => fiatPerBtcPrice(value)).toThrow("Price must");
+  it("converts an integer price back into a decimal quote-per-base price", () => {
+    expect(priceToHumanPrice("350000000", 8)).toBe("3.5");
+    expect(priceToHumanPrice("1", 8)).toBe("0.00000001");
+    expect(priceToHumanPrice("100000000", 8)).toBe("1");
   });
 
-  it("preserves the SAT amount and reports the truncated cent settlement", () => {
-    expect(settlementQuoteGuidance("200", fiatPerBtcPrice("49500.00")))
-      .toEqual({
-        exactQuoteNumerator: "990000000",
-        exactQuoteDenominator: "100000000",
-        settlementQuoteAmount: "9"
-      });
-    expect(settlementQuoteGuidance("2000", fiatPerBtcPrice("50000.00")))
-      .toBeNull();
+  it("rounds a human price with more fractional precision than the quote decimals support", () => {
+    expect(humanPriceToPrice("3.5", 0)).toBe("4");
+    expect(humanPriceToPrice("3.4", 0)).toBe("3");
+  });
+
+  it("rejects scientific notation, negative values, and over-precise fractions", () => {
+    expect(() => humanPriceToPrice("1e3", 8)).toThrow("Human price must");
+    expect(() => humanPriceToPrice("-1", 8)).toThrow("Human price must");
+    expect(() => humanPriceToPrice("1.123456789", 8)).toThrow("Human price must");
+    expect(() => humanPriceToPrice("0", 8)).toThrow("greater than zero");
+    expect(() => humanPriceToPrice("0.00000000", 8)).toThrow("greater than zero");
+  });
+
+  it("rejects a non-canonical price string", () => {
+    expect(() => priceToHumanPrice("0", 8)).toThrow("Price must");
+    expect(() => priceToHumanPrice("01", 8)).toThrow("Price must");
+    expect(() => priceToHumanPrice("-1", 8)).toThrow("Price must");
   });
 });

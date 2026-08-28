@@ -12,6 +12,7 @@ import {
   type OrderState,
   type ReserveOrderInput
 } from "../order/model.js";
+import { QSR_ZTS, ZNN_ZTS } from "../zenon/types.js";
 import {
   parseProjectionEvent,
   type FillOrderEvidence,
@@ -37,11 +38,10 @@ import {
   type VerifiedInitialReserveProposal
 } from "../trade/messages.js";
 
-export const TEST_MARKET: ExactMarket = {
-  baseUnit: "sat",
-  baseMint: "https://testnut.cashu.space",
-  quoteUnit: "usd",
-  quoteMint: "https://nofee.testnut.cashu.space"
+export const DEFAULT_MARKET: ExactMarket = {
+  chainId: "1",
+  baseToken: ZNN_ZTS,
+  quoteToken: QSR_ZTS
 };
 
 export interface MakerIdentityPort {
@@ -71,7 +71,7 @@ export interface OrderServicePort {
 export interface PublishOrderInput {
   side: "buy" | "sell";
   amount: string;
-  priceCentsPerBtc: string;
+  price: string;
   expiresAt?: number;
   execution?: "all_or_none" | "partial";
   minimumFillAmount?: string;
@@ -160,7 +160,7 @@ export class OrderApi {
     private readonly outbox: OrderOutboxPort,
     private readonly verify: (event: NostrEvent) => boolean =
       (event) => verifyEvent(event),
-    private readonly market: ExactMarket = TEST_MARKET
+    private readonly market: ExactMarket = DEFAULT_MARKET
   ) {
     if (!outbox) throw new Error("Order API requires a durable projection outbox");
   }
@@ -335,25 +335,11 @@ export class OrderApi {
       createdAt,
       ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
       side: input.side,
-      baseUnit: this.market.baseUnit,
-      quoteUnit: this.market.quoteUnit,
-      ...(input.side === "sell"
-        ? {
-            offered: { unit: this.market.baseUnit, mint: this.market.baseMint },
-            requested: {
-              unit: this.market.quoteUnit,
-              acceptableMints: [this.market.quoteMint]
-            }
-          }
-        : {
-            offered: { unit: this.market.quoteUnit, mint: this.market.quoteMint },
-            requested: {
-              unit: this.market.baseUnit,
-              acceptableMints: [this.market.baseMint]
-            }
-          }),
+      chainId: this.market.chainId,
+      baseToken: this.market.baseToken,
+      quoteToken: this.market.quoteToken,
       amount: input.amount,
-      priceCentsPerBtc: input.priceCentsPerBtc,
+      price: input.price,
       ...(input.execution === undefined ? {} : { execution: input.execution }),
       ...(input.minimumFillAmount === undefined
         ? {}
@@ -363,7 +349,7 @@ export class OrderApi {
     const entry = await this.outbox.ensureStaged({
       operation: "create",
       orderId: state.order_id,
-      address: `30078:${maker}:granola:order:v1:${state.order_id}`,
+      address: `30078:${maker}:zwap:order:v1:${state.order_id}`,
       expectedProjectionId: null,
       expectedRevision: null,
       compatibility: canonicalOrderPublicationCompatibility({

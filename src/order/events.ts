@@ -45,7 +45,7 @@ const UUID_V4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export function orderAddress(pubkey: string, orderId: string): string {
-  return `30078:${pubkey}:granola:order:v1:${orderId}`;
+  return `30078:${pubkey}:zwap:order:v1:${orderId}`;
 }
 
 function requireHex(value: string, pattern: RegExp, label: string): void {
@@ -92,18 +92,19 @@ function parseCanonicalState(value: unknown): OrderState {
     throw new Error("Projection content must be an object");
   }
   const input = value as Partial<OrderState>;
-  if (input.schema !== "granola/order/v1") throw new Error("Unknown order schema");
+  if (input.schema !== "zwap/order/v1") throw new Error("Unknown order schema");
   if (
     typeof input.order_id !== "string" ||
     typeof input.created_at !== "number" ||
     typeof input.expires_at !== "number" ||
     (input.side !== "buy" && input.side !== "sell") ||
-    typeof input.base_unit !== "string" ||
-    typeof input.quote_unit !== "string" ||
+    typeof input.chain_id !== "string" ||
+    typeof input.base_token !== "string" ||
+    typeof input.quote_token !== "string" ||
     !input.offered ||
     !input.requested ||
     typeof input.original_amount !== "string" ||
-    typeof input.price_cents_per_btc !== "string" ||
+    typeof input.price !== "string" ||
     typeof input.minimum_fill_amount !== "string" ||
     (input.execution !== "all_or_none" && input.execution !== "partial")
   ) {
@@ -115,15 +116,11 @@ function parseCanonicalState(value: unknown): OrderState {
     createdAt: input.created_at,
     expiresAt: input.expires_at,
     side: input.side,
-    baseUnit: input.base_unit,
-    quoteUnit: input.quote_unit,
-    offered: input.offered,
-    requested: {
-      unit: input.requested.unit,
-      acceptableMints: input.requested.acceptable_mints
-    },
+    chainId: input.chain_id,
+    baseToken: input.base_token,
+    quoteToken: input.quote_token,
     amount: input.original_amount,
-    priceCentsPerBtc: input.price_cents_per_btc,
+    price: input.price,
     execution: input.execution,
     minimumFillAmount: input.minimum_fill_amount
   });
@@ -220,12 +217,13 @@ export async function createProjectionTemplate(
     kind: 30078,
     created_at: createdAt,
     tags: [
-      ["d", `granola:order:v1:${state.order_id}`],
-      ["t", "granola-order"],
+      ["d", `zwap:order:v1:${state.order_id}`],
+      ["t", "zwap-order"],
       ["v", "1"],
       ["s", state.status],
       ["side", state.side],
       ...markets.map((market) => ["m", market]),
+      ["chain", state.chain_id],
       ["expires_at", String(state.expires_at)],
       ["expiration", String(state.expires_at)]
     ],
@@ -262,10 +260,10 @@ export async function parseProjectionEvent(
   ) {
     throw new Error("Reserved projection timestamp does not match acceptance");
   }
-  if (oneTag(event, "d") !== `granola:order:v1:${state.order_id}`) {
+  if (oneTag(event, "d") !== `zwap:order:v1:${state.order_id}`) {
     throw new Error("Projection order ID tag mismatch");
   }
-  if (oneTag(event, "t") !== "granola-order") {
+  if (oneTag(event, "t") !== "zwap-order") {
     throw new Error("Projection namespace mismatch");
   }
   if (oneTag(event, "v") !== "1") throw new Error("Projection version mismatch");
@@ -274,6 +272,9 @@ export async function parseProjectionEvent(
   }
   if (oneTag(event, "side") !== state.side) {
     throw new Error("Projection side tag mismatch");
+  }
+  if (oneTag(event, "chain") !== state.chain_id) {
+    throw new Error("Projection chain tag mismatch");
   }
   if (tagValues(event, "e").length !== 0) {
     throw new Error("Projection cannot reference a public predecessor");

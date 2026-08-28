@@ -108,7 +108,7 @@ function harness(now = 1_700_000_000) {
 const createInput = {
   side: "sell" as const,
   amount: "100",
-  priceCentsPerBtc: "200000000"
+  price: "200000000"
 };
 
 describe("OrderApi projections", () => {
@@ -152,7 +152,7 @@ describe("OrderApi projections", () => {
     relay.orderEvents = [initial];
 
     const reserved = await api.reserveOrder({
-      address: `30078:${MAKER}:granola:order:v1:${ORDER_ID}`,
+      address: `30078:${MAKER}:zwap:order:v1:${ORDER_ID}`,
       expectedProjectionId: created.projectionId,
       expectedRevision: "0",
       reservationId: RESERVATION_ID,
@@ -178,7 +178,7 @@ describe("OrderApi projections", () => {
     const signedBefore = signer.count;
 
     await expect(api.reserveOrder({
-      address: `30078:${MAKER}:granola:order:v1:${ORDER_ID}`,
+      address: `30078:${MAKER}:zwap:order:v1:${ORDER_ID}`,
       expectedProjectionId: created.projectionId,
       expectedRevision: "9",
       reservationId: RESERVATION_ID,
@@ -195,7 +195,7 @@ describe("OrderApi projections", () => {
     const created = await canceledHarness.api.publishOrder(createInput);
     canceledHarness.relay.orderEvents = [canceledHarness.relay.published[0]!];
     const canceled = await canceledHarness.api.cancelOrder({
-      address: `30078:${MAKER}:granola:order:v1:${ORDER_ID}`,
+      address: `30078:${MAKER}:zwap:order:v1:${ORDER_ID}`,
       expectedProjectionId: created.projectionId,
       expectedRevision: "0"
     });
@@ -212,7 +212,7 @@ describe("OrderApi projections", () => {
     expiredHarness.relay.orderEvents = [expiredHarness.relay.published[0]!];
     expiredHarness.setNow(1_700_000_002);
     const expired = await expiredHarness.api.expireOrder({
-      address: `30078:${MAKER}:granola:order:v1:${ORDER_ID}`,
+      address: `30078:${MAKER}:zwap:order:v1:${ORDER_ID}`,
       expectedProjectionId: expiring.projectionId,
       expectedRevision: "0"
     });
@@ -231,7 +231,7 @@ describe("OrderApi projections", () => {
     relay.orderEvents = [relay.published.at(-1)!];
 
     const reserved = await api.reserveOrder({
-      address: `30078:${MAKER}:granola:order:v1:${ORDER_ID}`,
+      address: `30078:${MAKER}:zwap:order:v1:${ORDER_ID}`,
       expectedProjectionId: created.projectionId,
       expectedRevision: "0",
       reservationId: RESERVATION_ID,

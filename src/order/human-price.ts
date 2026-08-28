@@ -1,40 +1,60 @@
-import { quoteAmountForSettlement } from "./model.js";
+const HUMAN_PRICE = /^(0|[1-9]\d*)(?:\.(\d{1,8}))?$/;
+const PRICE = /^[1-9]\d*$/;
 
-export interface SettlementQuoteGuidance {
-  exactQuoteNumerator: string;
-  exactQuoteDenominator: string;
-  settlementQuoteAmount: string;
-}
-
-export function fiatPerBtcPrice(value: string): string {
-  if (!/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(value)) {
-    throw new Error("Price must be a positive decimal with at most two places");
+function nonNegativeInteger(value: number, label: string): void {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative integer`);
   }
-  const [whole = "0", fraction = ""] = value.split(".");
-  const minorUnitsPerBtc = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0") || "0");
-  if (minorUnitsPerBtc <= 0n) {
-    throw new Error("Price must be greater than zero");
-  }
-  return minorUnitsPerBtc.toString();
 }
 
 /**
- * Describe the exact fractional quote and the integer amount the mint settles.
- * The base amount is never changed.
+ * Convert a decimal "quote per base" string into the integer `price`
+ * (quote minor units per 10^8 base minor units). The conversion is exact
+ * bigint arithmetic on the decimal string; it never touches floating point.
  */
-export function settlementQuoteGuidance(
-  baseAmount: string,
-  priceCentsPerBtc: string
-): SettlementQuoteGuidance | null {
-  if (!/^[1-9]\d*$/.test(baseAmount)) return null;
-  const amount = BigInt(baseAmount);
-  if (!/^[1-9]\d*$/.test(priceCentsPerBtc)) return null;
-  const exactQuoteNumerator = amount * BigInt(priceCentsPerBtc);
-  const exactQuoteDenominator = 100_000_000n;
-  if (exactQuoteNumerator % exactQuoteDenominator === 0n) return null;
-  return {
-    exactQuoteNumerator: exactQuoteNumerator.toString(),
-    exactQuoteDenominator: exactQuoteDenominator.toString(),
-    settlementQuoteAmount: quoteAmountForSettlement(baseAmount, priceCentsPerBtc)
-  };
+export function humanPriceToPrice(human: string, quoteDecimals: number): string {
+  nonNegativeInteger(quoteDecimals, "Quote decimals");
+  const match = HUMAN_PRICE.exec(human);
+  if (!match) {
+    throw new Error(
+      "Human price must be a plain positive decimal with at most 8 fractional digits"
+    );
+  }
+  const whole = match[1] as string;
+  const fraction = match[2] ?? "";
+  if (whole === "0" && fraction.replace(/0+$/, "") === "") {
+    throw new Error("Human price must be greater than zero");
+  }
+  const numerator = BigInt(whole + fraction);
+  const fractionLength = fraction.length;
+  let price: bigint;
+  if (quoteDecimals >= fractionLength) {
+    price = numerator * 10n ** BigInt(quoteDecimals - fractionLength);
+  } else {
+    const divisor = 10n ** BigInt(fractionLength - quoteDecimals);
+    const quotient = numerator / divisor;
+    const remainder = numerator % divisor;
+    price = remainder * 2n >= divisor ? quotient + 1n : quotient;
+  }
+  if (price <= 0n) {
+    throw new Error("Human price must round to at least one minor unit");
+  }
+  return price.toString();
+}
+
+/**
+ * Convert the integer `price` (quote minor units per 10^8 base minor units)
+ * back into a decimal "quote per base" string, using exact bigint arithmetic.
+ */
+export function priceToHumanPrice(price: string, quoteDecimals: number): string {
+  if (!PRICE.test(price)) {
+    throw new Error("Price must be a canonical positive integer string");
+  }
+  nonNegativeInteger(quoteDecimals, "Quote decimals");
+  const padded = price.padStart(quoteDecimals + 1, "0");
+  const whole = padded.slice(0, padded.length - quoteDecimals) || "0";
+  const fraction = quoteDecimals > 0 ? padded.slice(-quoteDecimals) : "";
+  const trimmedWhole = whole.replace(/^0+(?=\d)/, "");
+  const trimmedFraction = fraction.replace(/0+$/, "");
+  return trimmedFraction ? `${trimmedWhole}.${trimmedFraction}` : trimmedWhole;
 }

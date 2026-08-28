@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { RelayReceipt } from "../nostr/relay.js";
 import type { OrderOutboxEntry } from "../storage/order-outbox.js";
+import { QSR_ZTS, ZNN_ZTS } from "../zenon/types.js";
 import type { NostrEvent, UnsignedNostrEvent } from "./events.js";
 import {
   createOrderState,
@@ -17,7 +18,7 @@ import {
 
 const MAKER = "a".repeat(64);
 const ORDER_ID = "11111111-1111-4111-8111-111111111111";
-const ADDRESS = `30078:${MAKER}:granola:order:v1:${ORDER_ID}`;
+const ADDRESS = `30078:${MAKER}:zwap:order:v1:${ORDER_ID}`;
 
 function open(): OrderState {
   return createOrderState({
@@ -25,15 +26,11 @@ function open(): OrderState {
     createdAt: 1_700_000_000,
     expiresAt: 1_700_003_600,
     side: "sell",
-    baseUnit: "sat",
-    quoteUnit: "usd",
-    offered: { unit: "sat", mint: "https://mint.example" },
-    requested: {
-      unit: "usd",
-      acceptableMints: ["https://quote.example"]
-    },
+    chainId: "1",
+    baseToken: ZNN_ZTS,
+    quoteToken: QSR_ZTS,
     amount: "100",
-    priceCentsPerBtc: "200000000"
+    price: "200000000"
   });
 }
 
@@ -226,10 +223,9 @@ describe("NostrOrderService", () => {
     relay.marketEvents = [initial.projection, later];
 
     const result = await service.loadBook({
-      baseUnit: "sat",
-      baseMint: "https://mint.example",
-      quoteUnit: "usd",
-      quoteMint: "https://quote.example"
+      chainId: "1",
+      baseToken: ZNN_ZTS,
+      quoteToken: QSR_ZTS
     }, 1_700_000_100);
 
     expect(result.book.asks[0]?.eventId).toBe(later.id);

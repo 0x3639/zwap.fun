@@ -1,25 +1,28 @@
 import { OrderApi } from "../src/api/order-api.js";
 import { MakerIdentity } from "../src/nostr/identity.js";
 import { PUBLIC_RELAYS, RelayClient, type RelayReadback } from "../src/nostr/relay.js";
+import { humanPriceToPrice } from "../src/order/human-price.js";
 import { NostrOrderService } from "../src/order/service.js";
 import { OrderOutboxRepository } from "../src/storage/order-outbox.js";
 import { MemoryStorageDriver } from "../src/storage/wallet-repository.js";
+
+// QSR uses 8 decimal places, matching the sat-scale price convention.
+const QUOTE_DECIMALS = 8;
 
 interface SeedOrder {
   label: string;
   side: "buy" | "sell";
   amount: string;
-  priceCentsPerBtc: string;
-  usdPerBtc: string;
+  qsrPerZnn: string;
 }
 
 const seeds: SeedOrder[] = [
-  { label: "ask-50500", side: "sell", amount: "2000", priceCentsPerBtc: "5050000", usdPerBtc: "50500.00" },
-  { label: "ask-51000", side: "sell", amount: "1000", priceCentsPerBtc: "5100000", usdPerBtc: "51000.00" },
-  { label: "ask-52000", side: "sell", amount: "1000", priceCentsPerBtc: "5200000", usdPerBtc: "52000.00" },
-  { label: "bid-49500", side: "buy", amount: "2000", priceCentsPerBtc: "4950000", usdPerBtc: "49500.00" },
-  { label: "bid-49000", side: "buy", amount: "1000", priceCentsPerBtc: "4900000", usdPerBtc: "49000.00" },
-  { label: "bid-48000", side: "buy", amount: "1000", priceCentsPerBtc: "4800000", usdPerBtc: "48000.00" }
+  { label: "ask-1.05", side: "sell", amount: "2000", qsrPerZnn: "1.05" },
+  { label: "ask-1.10", side: "sell", amount: "1000", qsrPerZnn: "1.10" },
+  { label: "ask-1.20", side: "sell", amount: "1000", qsrPerZnn: "1.20" },
+  { label: "bid-0.95", side: "buy", amount: "2000", qsrPerZnn: "0.95" },
+  { label: "bid-0.90", side: "buy", amount: "1000", qsrPerZnn: "0.90" },
+  { label: "bid-0.80", side: "buy", amount: "1000", qsrPerZnn: "0.80" }
 ];
 
 function sleep(milliseconds: number): Promise<void> {
@@ -58,7 +61,7 @@ try {
     const result = await api.publishOrder({
       side: seed.side,
       amount: seed.amount,
-      priceCentsPerBtc: seed.priceCentsPerBtc,
+      price: humanPriceToPrice(seed.qsrPerZnn, QUOTE_DECIMALS),
       execution: "all_or_none"
     });
     const projectionReadback = await confirmedReadback(relayClient, servicePublicationEvent(

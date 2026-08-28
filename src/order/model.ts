@@ -1,4 +1,4 @@
-import { normalizeMintUrl } from "../core/wallet.js";
+import { isTokenStandard } from "../zenon/validate.js";
 
 export type OrderSide = "buy" | "sell";
 export type ExecutionCondition = "all_or_none" | "partial";
@@ -11,13 +11,11 @@ export type OrderStatus =
   | "expired";
 
 export interface OfferedAsset {
-  unit: string;
-  mint: string;
+  token: string;
 }
 
 export interface RequestedAsset {
-  unit: string;
-  acceptable_mints: string[];
+  token: string;
 }
 
 export interface ReservationState {
@@ -30,20 +28,21 @@ export interface ReservationState {
 }
 
 export interface OrderState {
-  schema: "granola/order/v1";
+  schema: "zwap/order/v1";
   order_id: string;
   revision: string;
   created_at: number;
   expires_at: number;
   side: OrderSide;
-  base_unit: string;
-  quote_unit: string;
+  chain_id: string;
+  base_token: string;
+  quote_token: string;
   offered: OfferedAsset;
   requested: RequestedAsset;
   original_amount: string;
   remaining_amount: string;
   reserved_amount: string;
-  price_cents_per_btc: string;
+  price: string;
   minimum_fill_amount: string;
   execution: ExecutionCondition;
   status: OrderStatus;
@@ -55,12 +54,11 @@ export interface CreateOrderInput {
   createdAt: number;
   expiresAt?: number;
   side: OrderSide;
-  baseUnit: string;
-  quoteUnit: string;
-  offered: { unit: string; mint: string };
-  requested: { unit: string; acceptableMints: string[] };
+  chainId: string;
+  baseToken: string;
+  quoteToken: string;
   amount: string;
-  priceCentsPerBtc: string;
+  price: string;
   execution?: ExecutionCondition;
   minimumFillAmount?: string;
 }
@@ -118,10 +116,9 @@ export function expireOrder(state: OrderState, expiredAt: number): OrderState {
 }
 
 export interface ExactMarket {
-  baseUnit: string;
-  baseMint: string;
-  quoteUnit: string;
-  quoteMint: string;
+  chainId: string;
+  baseToken: string;
+  quoteToken: string;
 }
 
 export interface OrderRecord {
@@ -143,13 +140,20 @@ export interface OrderBook {
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HEX_32 = /^[0-9a-f]{64}$/;
+const CHAIN_ID = /^[1-9]\d*$/;
 
-function canonicalUnit(value: string): string {
-  const unit = value.trim().toLowerCase();
-  if (!/^[a-z][a-z0-9_-]{0,31}$/.test(unit)) {
-    throw new Error("Cashu unit must be a lowercase identifier");
+function canonicalChainId(value: string): string {
+  if (!CHAIN_ID.test(value)) {
+    throw new Error("Chain ID must be a canonical positive integer string");
   }
-  return unit;
+  return value;
+}
+
+function canonicalToken(value: string, label: string): string {
+  if (!isTokenStandard(value)) {
+    throw new Error(`${label} must be a valid Zenon token standard`);
+  }
+  return value;
 }
 
 function integer(value: string, label: string, allowZero = false): bigint {
@@ -158,21 +162,22 @@ function integer(value: string, label: string, allowZero = false): bigint {
   return BigInt(value);
 }
 
-function canonicalPriceCentsPerBtc(value: string): string {
-  return integer(value, "Price cents per BTC").toString();
+function canonicalPrice(value: string): string {
+  return integer(value, "Price").toString();
 }
 
 /**
- * Convert SAT and cents-per-BTC integers into whole quote cents. For positive
- * BigInts, `/` truncates the fractional remainder like Python's `//`.
+ * Convert base and price integers into whole quote minor units. `price` is
+ * quote minor units per 10^8 base minor units. For positive BigInts, `/`
+ * truncates the fractional remainder like Python's `//`.
  */
 export function quoteAmountForSettlement(
   baseAmount: string,
-  priceCentsPerBtc: string
+  price: string
 ): string {
   const base = integer(baseAmount, "Base amount");
-  const price = BigInt(canonicalPriceCentsPerBtc(priceCentsPerBtc));
-  const quote = (base * price) / 100_000_000n;
+  const priceValue = BigInt(canonicalPrice(price));
+  const quote = (base * priceValue) / 100_000_000n;
   if (quote === 0n) {
     throw new Error("Order amount and limit price must produce at least one quote unit");
   }
@@ -186,17 +191,10 @@ export function createOrderState(input: CreateOrderInput): OrderState {
   if (!UUID_V4.test(input.orderId)) {
     throw new Error("Order ID must be a UUID v4");
   }
-  const baseUnit = canonicalUnit(input.baseUnit);
-  const quoteUnit = canonicalUnit(input.quoteUnit);
-  const offeredUnit = canonicalUnit(input.offered.unit);
-  const requestedUnit = canonicalUnit(input.requested.unit);
-  if (baseUnit === quoteUnit) throw new Error("Base and quote units must differ");
-  if (input.side === "sell" && (offeredUnit !== baseUnit || requestedUnit !== quoteUnit)) {
-    throw new Error("Sell orders must offer the base unit and request the quote unit");
-  }
-  if (input.side === "buy" && (offeredUnit !== quoteUnit || requestedUnit !== baseUnit)) {
-    throw new Error("Buy orders must offer the quote unit and request the base unit");
-  }
+  const chainId = canonicalChainId(input.chainId);
+  const baseToken = canonicalToken(input.baseToken, "Base token");
+  const quoteToken = canonicalToken(input.quoteToken, "Quote token");
+  if (baseToken === quoteToken) throw new Error("Base and quote tokens must differ");
   if (!Number.isSafeInteger(input.createdAt) || input.createdAt < 0) {
     throw new Error("Creation time must be a Unix timestamp");
   }
@@ -206,8 +204,8 @@ export function createOrderState(input: CreateOrderInput): OrderState {
     throw new Error("Order expiry must be after creation");
   }
   const amount = integer(input.amount, "Order amount");
-  const priceCentsPerBtc = canonicalPriceCentsPerBtc(input.priceCentsPerBtc);
-  quoteAmountForSettlement(amount.toString(), priceCentsPerBtc);
+  const price = canonicalPrice(input.price);
+  quoteAmountForSettlement(amount.toString(), price);
 
   const execution = input.execution ?? "all_or_none";
   if (execution !== "all_or_none" && execution !== "partial") {
@@ -220,26 +218,22 @@ export function createOrderState(input: CreateOrderInput): OrderState {
     throw new Error("All-or-none minimum fill must equal the order amount");
   }
 
-  const acceptableMints = [...new Set(
-    input.requested.acceptableMints.map(normalizeMintUrl)
-  )].sort();
-  if (acceptableMints.length === 0) throw new Error("At least one requested mint is required");
-
   return {
-    schema: "granola/order/v1",
+    schema: "zwap/order/v1",
     order_id: input.orderId,
     revision: "0",
     created_at: input.createdAt,
     expires_at: expiresAt,
     side: input.side,
-    base_unit: baseUnit,
-    quote_unit: quoteUnit,
-    offered: { unit: offeredUnit, mint: normalizeMintUrl(input.offered.mint) },
-    requested: { unit: requestedUnit, acceptable_mints: acceptableMints },
+    chain_id: chainId,
+    base_token: baseToken,
+    quote_token: quoteToken,
+    offered: { token: input.side === "sell" ? baseToken : quoteToken },
+    requested: { token: input.side === "sell" ? quoteToken : baseToken },
     original_amount: amount.toString(),
     remaining_amount: amount.toString(),
     reserved_amount: "0",
-    price_cents_per_btc: priceCentsPerBtc,
+    price,
     minimum_fill_amount: minimumValue.toString(),
     execution,
     status: "open",
@@ -273,7 +267,7 @@ function validateFillShape(state: OrderState, amount: bigint, remaining: bigint)
       throw new Error("Fill would leave dust below the order minimum");
     }
   }
-  quoteAmountForSettlement(amount.toString(), state.price_cents_per_btc);
+  quoteAmountForSettlement(amount.toString(), state.price);
 }
 
 export function reserveOrder(state: OrderState, input: ReserveOrderInput): OrderState {
@@ -378,11 +372,10 @@ export function releaseOrder(state: OrderState, input: ReleaseOrderInput): Order
 
 function marketPreimage(market: ExactMarket): string {
   return [
-    "granola-market-v1",
-    canonicalUnit(market.baseUnit),
-    normalizeMintUrl(market.baseMint),
-    canonicalUnit(market.quoteUnit),
-    normalizeMintUrl(market.quoteMint)
+    "zwap-market-v1",
+    canonicalChainId(market.chainId),
+    canonicalToken(market.baseToken, "Base token"),
+    canonicalToken(market.quoteToken, "Quote token")
   ].join("\n");
 }
 
@@ -397,22 +390,11 @@ export async function marketId(market: ExactMarket): Promise<string> {
 }
 
 export async function eligibleMarketIds(state: OrderState): Promise<string[]> {
-  const markets: ExactMarket[] = state.requested.acceptable_mints.map((mint) =>
-    state.side === "sell"
-      ? {
-          baseUnit: state.base_unit,
-          baseMint: state.offered.mint,
-          quoteUnit: state.quote_unit,
-          quoteMint: mint
-        }
-      : {
-          baseUnit: state.base_unit,
-          baseMint: mint,
-          quoteUnit: state.quote_unit,
-          quoteMint: state.offered.mint
-        }
-  );
-  return (await Promise.all(markets.map(marketId))).sort();
+  return [await marketId({
+    chainId: state.chain_id,
+    baseToken: state.base_token,
+    quoteToken: state.quote_token
+  })];
 }
 
 function effectiveAvailable(state: OrderState, now: number): bigint {
@@ -424,8 +406,8 @@ function effectiveAvailable(state: OrderState, now: number): bigint {
 }
 
 function comparePrice(left: OrderRecord, right: OrderRecord): number {
-  const leftPrice = BigInt(left.state.price_cents_per_btc);
-  const rightPrice = BigInt(right.state.price_cents_per_btc);
+  const leftPrice = BigInt(left.state.price);
+  const rightPrice = BigInt(right.state.price);
   return leftPrice < rightPrice ? -1 : leftPrice > rightPrice ? 1 : 0;
 }
 

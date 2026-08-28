@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { QSR_ZTS, ZNN_ZTS } from "../zenon/types.js";
 import type { NostrEvent, UnsignedNostrEvent } from "./events.js";
 import { createOrderState } from "./model.js";
 import { NostrOrderService } from "./service.js";
@@ -13,15 +14,11 @@ function state() {
     createdAt: 1_700_000_000,
     expiresAt: 1_700_003_600,
     side: "sell",
-    baseUnit: "sat",
-    quoteUnit: "usd",
-    offered: { unit: "sat", mint: "https://mint.example" },
-    requested: {
-      unit: "usd",
-      acceptableMints: ["https://quote.example"]
-    },
+    chainId: "1",
+    baseToken: ZNN_ZTS,
+    quoteToken: QSR_ZTS,
     amount: "100",
-    priceCentsPerBtc: "200000000"
+    price: "200000000"
   });
 }
 
