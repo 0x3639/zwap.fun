@@ -114,7 +114,12 @@ function bidOrder(): OrderRecord {
 async function proposal(
   takerAddress: string,
   current = order(),
-  identifiers: { entropyOffset?: number } = {}
+  identifiers: {
+    sessionId?: string;
+    reservationId?: string;
+    messageId?: string;
+    entropyOffset?: number;
+  } = {}
 ): Promise<VerifiedInitialReserveProposal> {
   const takerEntropy = entropy(identifiers.entropyOffset ?? 0);
   const takerSecret = bytes(takerEntropy.privateKey("nostr"));
@@ -131,9 +136,9 @@ async function proposal(
     schema: "granola/dm/v1",
     deployment: deploymentFor("1"),
     type: "reserve_propose",
-    message_id: "66666666-6666-4666-8666-666666666666",
-    session_id: sessionId,
-    reservation_id: reservationId,
+    message_id: identifiers.messageId ?? "66666666-6666-4666-8666-666666666666",
+    session_id: identifiers.sessionId ?? sessionId,
+    reservation_id: identifiers.reservationId ?? reservationId,
     order_address: current.address,
     order_projection_id: current.eventId,
     order_revision: "0",
@@ -648,6 +653,28 @@ describe("trade start API", () => {
     expect(retried).toEqual(first);
     expect(fixture.sessions.createMakerForOrder).toHaveBeenCalledOnce();
     expect(fixture.chainIdentifier).toHaveBeenCalledOnce();
+  });
+
+  it("allows only one taker to create a maker session for an AON order", async () => {
+    // Both proposals are fully fundable, so the rejection has to come from the
+    // durable single-maker-session guard rather than from the balance check.
+    const fixture = options({
+      balances: [{ tokenStandard: ZNN_ZTS, amount: "2000" }]
+    });
+    const first = await proposal(fixture.counterpartyAddress);
+    const second = await proposal(fixture.counterpartyAddress, order(), {
+      sessionId: "77".repeat(32),
+      reservationId: "77777777-7777-4777-8777-777777777777",
+      messageId: "88888888-8888-4888-8888-888888888888",
+      entropyOffset: 12
+    });
+
+    await expect(fixture.api.acceptReserveProposal(first)).resolves.toBeDefined();
+    await expect(fixture.api.acceptReserveProposal(second))
+      .rejects.toThrow(/already being taken/i);
+
+    expect(fixture.sessions.values).toHaveProperty("size", 1);
+    expect([...fixture.sessions.values.keys()]).toEqual([sessionId]);
   });
 
   it("rejects unverified proposals and an insufficient maker base balance", async () => {

@@ -438,6 +438,24 @@ describe("zwap trade session repository", () => {
     expect(await repository.list()).toEqual([session]);
   });
 
+  it("lets only one taker open a maker session for the same order", async () => {
+    const repository = new TradeSessionRepository(new MemoryStorageDriver());
+    // A second taker proposing against the same all-or-none order arrives with
+    // its own session and reservation IDs, so it is not the idempotent retry
+    // above - it is a race for the one reservation the order can grant.
+    const competing = sessionFixture({
+      sessionId: "77".repeat(32),
+      reservationId: "77777777-7777-4777-8777-777777777777"
+    });
+
+    await repository.createMakerForOrder(session);
+
+    expect(competing.orderAddress).toBe(session.orderAddress);
+    await expect(repository.createMakerForOrder(competing))
+      .rejects.toThrow(/already being taken by another trader/i);
+    expect(await repository.list()).toEqual([session]);
+  });
+
   it("rejects unknown or bearer fields in the exact request-binding store", async () => {
     const driver = new MemoryStorageDriver();
     const candidate = await revisionZeroTaker();
