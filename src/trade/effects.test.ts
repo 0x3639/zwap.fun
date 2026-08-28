@@ -14,6 +14,7 @@ import {
   reserveOrder
 } from "../order/model.js";
 import { MemoryStorageDriver } from "../storage/driver.js";
+import { TradeSessionRepository } from "../storage/trade-session.js";
 import type { OrderOutboxEntry, OrderOutboxPort } from "../storage/order-outbox.js";
 import { FakeZenonNode } from "../zenon/fake-node.js";
 import { FundsReservationRepository } from "../zenon/funds-reservations.js";
@@ -24,7 +25,7 @@ import {
   type ExpectedZenonLock
 } from "../zenon/htlc.js";
 import { ZenonTradeClient, ZenonTradeError } from "../zenon/trade-client.js";
-import { QSR_ZTS, ZNN_ZTS } from "../zenon/types.js";
+import { HTLC_ADDRESS, QSR_ZTS, ZNN_ZTS, type ZenonNodePort } from "../zenon/types.js";
 import type { AtomicSwapBody, AtomicSwapChoreography } from "./atomic-messages.js";
 import type { CoordinatorAction } from "./coordinator-plan.js";
 import {
@@ -65,14 +66,15 @@ const DISCOVERY_RELAYS = [
   "wss://discovery-one.example",
   "wss://discovery-two.example"
 ];
-const INBOX_RELAYS = ["wss://inbox.example"];
 const ORDER_SIGNING_KEY = new Uint8Array(32).fill(12);
 
 /** The counterparty's session key: the fixture's own key is the local side. */
 const COUNTERPARTY_PUBKEY = getPublicKey(new Uint8Array(32).fill(3));
 const RESERVE_PROJECTION_ID = "34".repeat(32);
 const LAST_MESSAGE_ID = "11111111-1111-4111-8111-111111111111";
-const LAST_TRANSCRIPT_HASH = "78".repeat(32);
+const LAST_RUMOR_ID = "90".repeat(32);
+/** The reserve_propose transcript hash, which is also what binds settlement. */
+const LAST_TRANSCRIPT_HASH = SETTLEMENT_TRANSCRIPT_HASH;
 
 const TERMS: ZwapTradeTerms = {
   maker_side: "sell",
@@ -185,11 +187,6 @@ function boundSession(
       counterpartyAddress: counterparty,
       htlcHash: HTLC_HASH,
       settlementTranscriptHash: SETTLEMENT_TRANSCRIPT_HASH,
-      inbox: {
-        quorum: 2,
-        discoveryRelays: [...DISCOVERY_RELAYS],
-        inboxRelays: [...INBOX_RELAYS]
-      },
       transcript: {
         choreography: {
           phase: "awaiting_base_lock",
@@ -220,10 +217,19 @@ function boundSession(
           },
           refundedLegs: []
         },
-        nextSequence: "3",
-        lastRumorId: "90".repeat(32),
+        nextSequence: "1",
+        lastRumorId: LAST_RUMOR_ID,
         lastMessageId: LAST_MESSAGE_ID,
-        lastTranscriptHash: LAST_TRANSCRIPT_HASH
+        lastTranscriptHash: LAST_TRANSCRIPT_HASH,
+        accepted: [{
+          sequence: "0",
+          messageId: LAST_MESSAGE_ID,
+          rumorId: LAST_RUMOR_ID,
+          transcriptHash: LAST_TRANSCRIPT_HASH,
+          type: "reserve_propose",
+          authorPubkey: role === "maker" ? COUNTERPARTY_PUBKEY : FIXTURE_SESSION_PUBKEY,
+          recipientPubkey: FIXTURE_MAKER_PUBKEY
+        }]
       }
     },
   }, overrides) as DeepPartial<TradeSession>);
@@ -257,8 +263,49 @@ interface Harness {
   node: FakeZenonNode;
   clock: { now: number };
   addresses: { maker: string; taker: string };
+  /** Transient node faults injected into the trade clients' reads. */
+  nodeFaults: NodeFaults;
   maker: Participant;
   taker: Participant;
+}
+
+interface NodeFaults {
+  /** Makes the next N `getHtlc` calls throw a network error. */
+  readBack: number;
+  /** Makes the next N `listAccountBlocks` calls come back empty. */
+  blindScans: number;
+}
+
+/**
+ * The node the trade clients read through. `getHtlc` is the read-back
+ * `completeLock` performs after its send, so failing it here reproduces the
+ * "block landed, response lost" case exactly; an empty `listAccountBlocks`
+ * reproduces a node whose account index has not caught up yet.
+ */
+function flakyNode(node: FakeZenonNode, faults: NodeFaults): ZenonNodePort {
+  return {
+    chainIdentifier: () => node.chainIdentifier(),
+    frontierMomentum: () => node.frontierMomentum(),
+    getHtlc: async (id) => {
+      if (faults.readBack > 0) {
+        faults.readBack -= 1;
+        throw new Error("network connection reset");
+      }
+      return node.getHtlc(id);
+    },
+    getAccountBlock: (hash) => node.getAccountBlock(hash),
+    listAccountBlocks: async (address, page, size) => {
+      if (faults.blindScans > 0) {
+        faults.blindScans -= 1;
+        return [];
+      }
+      return node.listAccountBlocks(address, page, size);
+    },
+    getBalances: (address) => node.getBalances(address),
+    listUnreceived: (address) => node.listUnreceived(address),
+    getTokenDecimals: (zts) => node.getTokenDecimals(zts),
+    getPlasma: (address) => node.getPlasma(address)
+  };
 }
 
 function harness(
@@ -272,10 +319,12 @@ function harness(
   };
   node.fund(addresses.maker, ZNN_ZTS, options.makerBalance ?? "20");
   node.fund(addresses.taker, QSR_ZTS, options.takerBalance ?? "1");
+  const nodeFaults: NodeFaults = { readBack: 0, blindScans: 0 };
+  const clientNode = flakyNode(node, nodeFaults);
 
   const participant = (address: string): Participant => {
     const chain = new ZenonTradeClient({
-      node,
+      node: clientNode,
       signer: node.signer(address),
       decodeUnlock: fakeUnlockDecoder,
       now: () => clock.now
@@ -347,9 +396,29 @@ function harness(
     node,
     clock,
     addresses,
+    nodeFaults,
     maker: participant(addresses.maker),
     taker: participant(addresses.taker)
   };
+}
+
+/**
+ * `coordinator-plan.independentlySpent`, restated: a spend only counts when the
+ * evidence summary and the observation log agree on the same exact reading.
+ */
+function independentlySpent(session: TradeSession, leg: "base" | "quote"): boolean {
+  const evidence = session.evidence.legs[leg];
+  const hex32 = /^[0-9a-f]{64}$/;
+  if (
+    evidence.htlcState !== "UNLOCKED" ||
+    evidence.observedAt === null ||
+    evidence.spendCommitment === null ||
+    !hex32.test(evidence.spendCommitment)
+  ) return false;
+  return session.privateState.legs[leg].observations.some((observation) =>
+    observation.state === "UNLOCKED" &&
+    observation.observedAt === evidence.observedAt &&
+    observation.witnessCommitment === evidence.spendCommitment);
 }
 
 function externalInput(action: CoordinatorAction, session: TradeSession) {
@@ -645,6 +714,40 @@ describe("ZwapCoordinatorEffects", () => {
       expect(cleared.privateState.legs.base.htlcId).toBe(htlcId);
     });
 
+    it("creates exactly one HTLC when a lost read-back forces a retry", async () => {
+      const context = harness();
+      const { maker, node, addresses } = context;
+      const session = boundSession("maker", addresses);
+      const prepared = await maker.effects.performExternal(
+        externalInput({ kind: "prepare_base_lock" }, session)
+      );
+      const reserved = await maker.effects.performExternal(
+        externalInput({ kind: "reserve_funds" }, prepared)
+      );
+
+      // The htlc_create lands but its read-back is lost, so nothing is
+      // persisted and the coordinator will re-run the same external action.
+      context.nodeFaults.readBack = 1;
+      const failure = await maker.effects.performExternal(
+        externalInput({ kind: "execute_chain_operation" }, reserved)
+      ).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(ZwapChainEffectError);
+      expect((failure as ZwapChainEffectError).code).toBe("node_unavailable");
+      expect((failure as ZwapChainEffectError).retryable).toBe(true);
+
+      const executed = await maker.effects.performExternal(
+        externalInput({ kind: "execute_chain_operation" }, reserved)
+      );
+      const created = (await node.listAccountBlocks(addresses.maker, 0, 100))
+        .filter((block) => block.toAddress === HTLC_ADDRESS && block.amount === "20");
+
+      expect(created).toHaveLength(1);
+      expect(executed.privateState.legs.base.htlcId).toBe(created[0]!.hash);
+      expect(await node.getHtlc(created[0]!.hash)).not.toBeNull();
+      expect(await node.getBalances(addresses.maker)).toEqual([]);
+    });
+
     it("refuses to execute before the funds are reserved", async () => {
       const { maker, addresses } = harness();
       const session = boundSession("maker", addresses);
@@ -655,6 +758,53 @@ describe("ZwapCoordinatorEffects", () => {
       await expect(maker.effects.performExternal(
         externalInput({ kind: "execute_chain_operation" }, prepared)
       )).rejects.toThrow(/not checkpointed for execution/i);
+    });
+  });
+
+  describe("buy-side slot mapping", () => {
+    it("gives the maker-offered quote leg the long locktime and survives the durable validator", async () => {
+      const { maker, node, addresses } = harness();
+      node.fund(addresses.maker, QSR_ZTS, "1");
+      const session = boundSession("maker", addresses, {
+        revision: 0,
+        orderSide: "buy",
+        terms: { makerSide: "buy" }
+      });
+      const repository = new TradeSessionRepository(new MemoryStorageDriver());
+      await repository.createMakerForOrder(session);
+
+      const prepared = await maker.effects.performExternal(
+        externalInput({ kind: "prepare_base_lock" }, session)
+      );
+
+      // The maker's offered side is the quote leg on a buy order, so the base
+      // *slot* maps to the quote *leg* and still carries the long locktime.
+      expect(prepared.privateState.chainOperation?.leg).toBe("quote");
+      expect(prepared.privateState.legs.base.expected).toBeNull();
+      expect(prepared.privateState.legs.quote.expected).toEqual({
+        leg: "quote",
+        chainId: "1",
+        tokenStandard: QSR_ZTS,
+        amount: "1",
+        hashLock: HTLC_HASH,
+        hashType: 1,
+        keyMaxSize: 32,
+        hashLockedAddress: addresses.taker,
+        timeLockedAddress: addresses.maker,
+        expirationTime: LONG_LOCKTIME,
+        binding: {
+          protocolVersion: "1",
+          network: NETWORK,
+          orderId: FIXTURE_ORDER_ID,
+          sessionId: FIXTURE_SESSION_ID,
+          reservationId: FIXTURE_RESERVATION_ID,
+          transcriptHash: SETTLEMENT_TRANSCRIPT_HASH
+        }
+      });
+
+      await repository.save(prepared, session.revision);
+
+      expect(await repository.get(session.sessionId)).toEqual(prepared);
     });
   });
 
@@ -701,7 +851,7 @@ describe("ZwapCoordinatorEffects", () => {
           maker_order_pubkey: FIXTURE_MAKER_PUBKEY,
           author_pubkey: COUNTERPARTY_PUBKEY,
           recipient_pubkey: FIXTURE_SESSION_PUBKEY,
-          sequence: "3",
+          sequence: "1",
           previous_message_id: LAST_MESSAGE_ID,
           previous_transcript_hash: LAST_TRANSCRIPT_HASH,
           sent_at: NOW - 10,
@@ -781,6 +931,155 @@ describe("ZwapCoordinatorEffects", () => {
     it("rejects a validation commitment that does not match the observed HTLC", async () => {
       const { harness: context, body, pendingOf } = await incoming("20");
       const pending = pendingOf({ ...body, validation_commitment: "cd".repeat(32) });
+
+      const failure = await context.taker.effects.performExternal(
+        externalInput({ kind: "validate_incoming" }, pending)
+      ).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(ZwapChainEffectError);
+      expect((failure as ZwapChainEffectError).code).toBe("terms_mismatch");
+    });
+  });
+
+  describe("validate_incoming for a reserve_accept body", () => {
+    async function acceptance(htlcAmount: string): Promise<{
+      context: Harness;
+      pending: TradeSession;
+      body: AtomicSwapBody<"reserve_accept">;
+    }> {
+      const context = harness({ makerBalance: "40" });
+      const { addresses, maker, taker } = context;
+      const expected = expectedFor("base", addresses);
+      const completed = await maker.chain.completeLock(
+        await maker.chain.prepareLock({
+          expected: { ...expected, amount: htlcAmount },
+          now: NOW
+        })
+      );
+      const body: AtomicSwapBody<"reserve_accept"> = {
+        schema: "zwap/atomic-swap-body/v1",
+        taker_session_pubkey: FIXTURE_SESSION_PUBKEY,
+        maker_session_pubkey: COUNTERPARTY_PUBKEY,
+        maker_address: addresses.maker,
+        reserve_projection_id: RESERVE_PROJECTION_ID,
+        reserve_revision: "1",
+        settlement_hash: HTLC_HASH,
+        short_locktime: SHORT_LOCKTIME,
+        maker_claim_cutoff: MAKER_CLAIM_CUTOFF,
+        long_locktime: LONG_LOCKTIME,
+        taker_claim_cutoff: TAKER_CLAIM_CUTOFF,
+        reservation_expires_at: RESERVATION_EXPIRES_AT,
+        base_lock: {
+          schema: "zwap/atomic-swap-body/v1",
+          htlc_id: completed.htlcId,
+          validation_commitment: completed.summary.validationCommitment,
+          settlement_hash: HTLC_HASH,
+          chain_id: "1",
+          token_standard: ZNN_ZTS,
+          amount: "20",
+          hash_locked_address: addresses.taker,
+          time_locked_address: addresses.maker,
+          expiration_time: LONG_LOCKTIME
+        }
+      };
+      // A taker that has only sent reserve_propose: it knows neither the
+      // maker's settlement address nor the hash lock until this message.
+      const session = boundSession("taker", addresses, {
+        privateState: {
+          counterpartyAddress: null,
+          htlcHash: null,
+          transcript: {
+            choreography: {
+              phase: "awaiting_reserve_accept",
+              orderProjectionId: RESERVE_PROJECTION_ID,
+              orderRevision: "1"
+            }
+          }
+        },
+        evidence: { commitments: [] }
+      });
+      // Everything the acceptance is about to establish is still absent.
+      const choreography = session.privateState.transcript.choreography;
+      delete choreography.settlementHash;
+      delete choreography.reserveProjectionId;
+      delete choreography.reserveProjectionRevision;
+      delete choreography.shortLocktime;
+      delete choreography.longLocktime;
+      delete choreography.participants.makerSessionPubkey;
+      delete choreography.participants.makerAddress;
+      const message: ZwapTradeMessage = {
+        schema: "granola/dm/v1",
+        deployment: NETWORK,
+        type: "reserve_accept",
+        message_id: "11111111-1111-4111-8111-111111111117",
+        session_id: FIXTURE_SESSION_ID,
+        reservation_id: FIXTURE_RESERVATION_ID,
+        order_address: FIXTURE_ORDER_ADDRESS,
+        order_projection_id: RESERVE_PROJECTION_ID,
+        order_revision: "1",
+        maker_order_pubkey: FIXTURE_MAKER_PUBKEY,
+        author_pubkey: FIXTURE_MAKER_PUBKEY,
+        recipient_pubkey: FIXTURE_SESSION_PUBKEY,
+        sequence: "1",
+        previous_message_id: LAST_MESSAGE_ID,
+        previous_transcript_hash: LAST_TRANSCRIPT_HASH,
+        sent_at: NOW - 10,
+        expires_at: NOW + 300,
+        terms_hash: TERMS_HASH,
+        terms: clone(TERMS),
+        body
+      };
+      const opened = {
+        wrapper: event(1059, "a6", [["p", FIXTURE_SESSION_PUBKEY]]),
+        seal: event(13, "a5"),
+        rumor: {
+          kind: 14 as const,
+          created_at: NOW - 10,
+          tags: [["p", FIXTURE_SESSION_PUBKEY]],
+          content: "encrypted-rumor",
+          id: "a4".repeat(32),
+          pubkey: FIXTURE_MAKER_PUBKEY
+        },
+        message,
+        transcriptHash: "7a".repeat(32)
+      };
+      Object.assign(taker.effects, { openIncoming: async () => clone(opened) });
+      const pending = clone(session);
+      pending.privateState.pendingIncoming = {
+        ...clone(opened),
+        receivedAt: NOW - 5,
+        validation: { status: "unvalidated", checkedAt: null, error: null }
+      };
+      return { context, pending, body };
+    }
+
+    it("binds the maker address, hash lock and base leg from the acceptance", async () => {
+      const { context, pending, body } = await acceptance("20");
+
+      const validated = await context.taker.effects.performExternal(
+        externalInput({ kind: "validate_incoming" }, pending)
+      );
+
+      expect(validated.privateState.counterpartyAddress)
+        .toBe(context.addresses.maker);
+      expect(validated.privateState.htlcHash).toBe(body.settlement_hash);
+      expect(validated.evidence.commitments).toEqual([body.settlement_hash]);
+      expect(validated.privateState.legs.base.htlcId)
+        .toBe(body.base_lock.htlc_id);
+      expect(validated.privateState.legs.base.expected)
+        .toEqual(expectedFor("base", context.addresses));
+      expect(validated.evidence.legs.base).toMatchObject({
+        htlcId: body.base_lock.htlc_id,
+        validationCommitment: body.base_lock.validation_commitment,
+        htlcState: "LOCKED",
+        observedAt: NOW
+      });
+      expect(validated.privateState.pendingIncoming?.validation.status)
+        .toBe("validated");
+    });
+
+    it("rejects a nested base_lock whose on-chain amount was tampered with", async () => {
+      const { context, pending } = await acceptance("19");
 
       const failure = await context.taker.effects.performExternal(
         externalInput({ kind: "validate_incoming" }, pending)
@@ -891,6 +1190,36 @@ describe("ZwapCoordinatorEffects", () => {
 
       expect(observed.evidence.legs.quote.htlcState).toBe("UNLOCKED");
       expect(observed.privateState.preimage).toBeNull();
+    });
+
+    it("keeps a settled spend when a later reading comes back inconclusive", async () => {
+      const { context, takerSession, htlcId } = await lockedQuote();
+      await context.node.signer(context.addresses.maker).send({
+        kind: "htlc_unlock",
+        id: htlcId,
+        preimage: PREIMAGE
+      });
+      const spent = await context.taker.effects.performExternal(
+        externalInput({ kind: "observe_quote" }, takerSession)
+      );
+      expect(independentlySpent(spent, "quote")).toBe(true);
+
+      // The HTLC is gone from state and the account index has not caught up,
+      // so the node can only answer UNKNOWN. That must not retract the spend.
+      context.nodeFaults.blindScans = 3;
+      const inconclusive = await context.taker.effects.performExternal(
+        externalInputAt({ kind: "observe_quote" }, spent, NOW + 1)
+      );
+
+      expect(inconclusive.privateState.legs.quote.observations.at(-1))
+        .toEqual({ observedAt: NOW + 1, state: "UNKNOWN", witnessCommitment: null });
+      expect(inconclusive.evidence.legs.quote).toMatchObject({
+        htlcState: "UNLOCKED",
+        observedAt: NOW,
+        spendCommitment: spent.evidence.legs.quote.spendCommitment
+      });
+      expect(independentlySpent(inconclusive, "quote")).toBe(true);
+      expect(inconclusive.privateState.preimage).toBe(PREIMAGE);
     });
 
     it("freezes the session when the observed HTLC contradicts the agreed terms", async () => {
@@ -1111,7 +1440,7 @@ describe("ZwapCoordinatorEffects", () => {
           maker_order_pubkey: FIXTURE_MAKER_PUBKEY,
           author_pubkey: FIXTURE_SESSION_PUBKEY,
           recipient_pubkey: COUNTERPARTY_PUBKEY,
-          sequence: "3",
+          sequence: "1",
           previous_message_id: LAST_MESSAGE_ID,
           previous_transcript_hash: LAST_TRANSCRIPT_HASH,
           sent_at: NOW - 10,

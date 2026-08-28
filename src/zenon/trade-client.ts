@@ -1,6 +1,6 @@
 import { sha256Text } from "./hex.js";
 import { findUnlockPreimage, htlcValidationCommitment, validateHtlcInfo, type ExpectedZenonLock, type UnlockDecoder } from "./htlc.js";
-import type { HtlcState, ZenonNodePort, ZenonSigner } from "./types.js";
+import { HTLC_ADDRESS, type HtlcState, type ZenonNodePort, type ZenonSigner } from "./types.js";
 
 export interface PreparedChainOperation {
   version: 1;
@@ -72,9 +72,50 @@ export class ZenonTradeClient {
     return this.artifact("lock", expected, null);
   }
 
+  /**
+   * Finds an HTLC this account already created for exactly these terms.
+   *
+   * An HTLC's id is the hash of the create block, so a send whose read-back
+   * failed leaves a fully valid, discoverable lock on chain. Adopting it keeps
+   * `completeLock` idempotent: a retry after a transient node failure returns
+   * the original lock instead of funding a second one and orphaning the first.
+   */
+  private async adoptExistingLock(expected: ExpectedZenonLock): Promise<CompletedLock | null> {
+    for (let page = 0; page < this.scanPages; page += 1) {
+      const blocks = await this.deps.node.listAccountBlocks(this.address(), page, this.pageSize);
+      for (const block of blocks) {
+        if (
+          block.toAddress !== HTLC_ADDRESS ||
+          block.tokenStandard !== expected.tokenStandard ||
+          block.amount !== expected.amount
+        ) continue;
+        const info = await this.deps.node.getHtlc(block.hash);
+        if (!info) continue;
+        try {
+          validateHtlcInfo(info, expected);
+        } catch {
+          continue;
+        }
+        return {
+          blockHash: block.hash,
+          htlcId: block.hash,
+          summary: {
+            htlcId: block.hash,
+            validationCommitment: await htlcValidationCommitment(info),
+            observedAt: this.deps.now()
+          }
+        };
+      }
+      if (blocks.length < this.pageSize) break;
+    }
+    return null;
+  }
+
   async completeLock(artifact: PreparedChainOperation): Promise<CompletedLock> {
     this.assertArtifact(artifact, "lock");
     const e = artifact.expected;
+    const adopted = await this.adoptExistingLock(e);
+    if (adopted) return adopted;
     const { blockHash } = await this.deps.signer.send({
       kind: "htlc_create", tokenStandard: e.tokenStandard, amount: e.amount, hashLocked: e.hashLockedAddress,
       expirationTime: e.expirationTime, hashType: e.hashType, keyMaxSize: e.keyMaxSize, hashLock: e.hashLock

@@ -3,7 +3,7 @@ import { FakeZenonNode } from "./fake-node.js";
 import { fakeUnlockDecoder, type ExpectedZenonLock } from "./htlc.js";
 import { createHtlcMaterial } from "./htlc-material.js";
 import { ZenonTradeClient } from "./trade-client.js";
-import { QSR_ZTS, ZNN_ZTS } from "./types.js";
+import { HTLC_ADDRESS, QSR_ZTS, ZNN_ZTS, type ZenonNodePort } from "./types.js";
 
 function harness() {
   let now = 1_000_000;
@@ -17,6 +17,32 @@ function harness() {
   const takerClient = new ZenonTradeClient({ node, signer: node.signer(taker), decodeUnlock: fakeUnlockDecoder, now: clock });
   const binding = { protocolVersion: "1" as const, network: "zenon-mainnet", orderId: "o", sessionId: "s", reservationId: "r", transcriptHash: "cd".repeat(32) };
   return { node, maker, taker, makerClient, takerClient, binding, tick: (s: number) => { now += s; }, now: clock };
+}
+
+/**
+ * Delegates to the fake node but makes the first `failures` `getHtlc` calls
+ * throw, which is exactly how a transient node error hits `completeLock`: the
+ * `htlc_create` block is already on chain, only the read-back fails.
+ */
+function withFailingReadBack(node: FakeZenonNode, failures: number): ZenonNodePort {
+  let remaining = failures;
+  return {
+    chainIdentifier: () => node.chainIdentifier(),
+    frontierMomentum: () => node.frontierMomentum(),
+    getHtlc: async (id) => {
+      if (remaining > 0) {
+        remaining -= 1;
+        throw new Error("network unreachable");
+      }
+      return node.getHtlc(id);
+    },
+    getAccountBlock: (hash) => node.getAccountBlock(hash),
+    listAccountBlocks: (address, page, size) => node.listAccountBlocks(address, page, size),
+    getBalances: (address) => node.getBalances(address),
+    listUnreceived: (address) => node.listUnreceived(address),
+    getTokenDecimals: (zts) => node.getTokenDecimals(zts),
+    getPlasma: (address) => node.getPlasma(address)
+  };
 }
 
 describe("ZenonTradeClient", () => {
@@ -73,5 +99,58 @@ describe("ZenonTradeClient", () => {
     await expect(h.takerClient.validateIncomingLock(lock.htlcId, { ...expected, amount: "2" })).rejects.toThrow(expect.objectContaining({ code: "htlc-amount" }));
     await expect(h.takerClient.prepareClaim({ htlcId: lock.htlcId, expected: { ...expected, amount: "1" }, preimage: m.preimage, now: expected.expirationTime - 60, claimCutoff: expected.expirationTime - 120 })).rejects.toThrow(expect.objectContaining({ code: "claim-cutoff" }));
     await expect(h.takerClient.validateIncomingLock("00".repeat(32), expected)).rejects.toThrow(expect.objectContaining({ code: "htlc-missing" }));
+  });
+
+  it("adopts its own existing HTLC instead of creating a second one after a failed read-back", async () => {
+    const h = harness();
+    const m = await createHtlcMaterial();
+    const expected: ExpectedZenonLock = {
+      leg: "base", chainId: "1", tokenStandard: ZNN_ZTS, amount: "100000000", hashLock: m.hash,
+      hashType: 1, keyMaxSize: 32, hashLockedAddress: h.taker, timeLockedAddress: h.maker,
+      expirationTime: h.now() + 3600, binding: h.binding
+    };
+    const client = new ZenonTradeClient({
+      node: withFailingReadBack(h.node, 1),
+      signer: h.node.signer(h.maker),
+      decodeUnlock: fakeUnlockDecoder,
+      now: h.now
+    });
+    const artifact = await client.prepareLock({ expected, now: h.now() });
+
+    // The send lands; only the read-back fails, so nothing is returned.
+    await expect(client.completeLock(artifact)).rejects.toThrow(/network unreachable/);
+
+    const retry = await client.completeLock(artifact);
+    const second = await client.completeLock(artifact);
+
+    const created = (await h.node.listAccountBlocks(h.maker, 0, 100))
+      .filter((block) => block.toAddress === HTLC_ADDRESS && block.amount === expected.amount);
+    expect(created).toHaveLength(1);
+    expect(retry.htlcId).toBe(created[0]!.hash);
+    expect(second.htlcId).toBe(retry.htlcId);
+    expect(second.summary.validationCommitment).toBe(retry.summary.validationCommitment);
+    expect(await h.node.getHtlc(retry.htlcId)).not.toBeNull();
+  });
+
+  it("never adopts an HTLC that does not match the expected terms", async () => {
+    const h = harness();
+    const m = await createHtlcMaterial();
+    const expected: ExpectedZenonLock = {
+      leg: "base", chainId: "1", tokenStandard: ZNN_ZTS, amount: "5", hashLock: m.hash,
+      hashType: 1, keyMaxSize: 32, hashLockedAddress: h.taker, timeLockedAddress: h.maker,
+      expirationTime: h.now() + 3600, binding: h.binding
+    };
+    const other = await createHtlcMaterial();
+    const decoy = await h.makerClient.completeLock(
+      await h.makerClient.prepareLock({ expected: { ...expected, hashLock: other.hash }, now: h.now() })
+    );
+
+    const lock = await h.makerClient.completeLock(
+      await h.makerClient.prepareLock({ expected, now: h.now() })
+    );
+
+    expect(lock.htlcId).not.toBe(decoy.htlcId);
+    expect((await h.node.getHtlc(decoy.htlcId))?.hashLock).toBe(other.hash);
+    expect((await h.node.getHtlc(lock.htlcId))?.hashLock).toBe(m.hash);
   });
 });

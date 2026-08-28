@@ -64,6 +64,7 @@ import {
 import { advanceTrade } from "./model.js";
 import type {
   ChainOperationResult,
+  PersistedHtlcState,
   TradeSession
 } from "./session.js";
 import { verifyEvent } from "nostr-tools/pure";
@@ -345,6 +346,17 @@ function localNostrPubkey(session: TradeSession): string {
     key.fill(0);
   }
 }
+
+/**
+ * How far a leg has progressed. The evidence summary never moves backwards
+ * through this order, so an inconclusive reading cannot retract a settled one.
+ */
+const HTLC_STATE_RANK: Record<PersistedHtlcState, number> = {
+  UNKNOWN: 0,
+  LOCKED: 1,
+  RECLAIMED: 2,
+  UNLOCKED: 3
+};
 
 type ProtocolSlot = "base" | "quote";
 
@@ -1788,12 +1800,17 @@ export class ZwapCoordinatorEffects implements CoordinatorEffectPort {
       state: observed.state,
       witnessCommitment: observed.witnessCommitment
     });
-    next.evidence.legs[leg] = {
-      ...next.evidence.legs[leg],
-      htlcState: observed.state,
-      observedAt: now,
-      spendCommitment: observed.witnessCommitment
-    };
+    // The observation log keeps every reading, but the evidence summary only
+    // ever moves forward: a transient UNKNOWN after a settled UNLOCKED must not
+    // retract the spend the counterparty is entitled to rely on.
+    if (HTLC_STATE_RANK[observed.state] >= HTLC_STATE_RANK[evidence.htlcState]) {
+      next.evidence.legs[leg] = {
+        ...next.evidence.legs[leg],
+        htlcState: observed.state,
+        observedAt: now,
+        spendCommitment: observed.witnessCommitment ?? evidence.spendCommitment
+      };
+    }
     if (observed.state === "UNLOCKED") {
       const preimage = observed.preimage;
       if (preimage === null || !(await verifyHtlcMaterial(preimage, expected.hashLock))) {
