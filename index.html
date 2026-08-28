@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' ws://localhost:4870 https://testnut.cashu.space https://nofee.testnut.cashu.space https://auth.nostr1.com https://nos.lol https://relay.primal.net https://offchain.pub wss://auth.nostr1.com wss://nos.lol wss://relay.primal.net wss://offchain.pub; object-src 'none'; base-uri 'self'; form-action 'self'"
+    />
+    <meta name="description" content="Granola is a decentralized exchange layer on top of Cashu." />
+    <title>Granola / Interconnected Cashu exchange</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <header class="masthead">
+      <a class="wordmark" href="./" aria-label="Granola home">GRANOLA<span>/00</span></a>
+      <div class="environment"><i></i> TESTNET ONLY · TESTNUT ECASH</div>
+      <p id="profile-label">Wallet profile: …</p>
+    </header>
+
+    <main>
+      <section class="exchange" aria-labelledby="orderbook-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">01 / Public order book</p>
+            <h2 id="orderbook-title">Swap Deez Nuts</h2>
+          </div>
+          <button id="refresh-orderbook" class="quiet" type="button">Refresh orders</button>
+        </div>
+        <div class="market-wallet">
+          <div id="wallet-summary" aria-label="Wallet balances"></div>
+          <div id="mint-actions" class="mint-actions" aria-label="Get test ecash"></div>
+          <button id="refresh" class="quiet" type="button">Refresh balances</button>
+        </div>
+        <div id="orderbook"></div>
+
+        <section class="order-entry" aria-labelledby="send-order-title">
+          <div class="order-entry__heading">
+            <div>
+              <p class="eyebrow">Send an order</p>
+              <h3 id="send-order-title">Post an order</h3>
+            </div>
+            <p class="hint">Your balance is checked before the signed order is published.</p>
+          </div>
+          <form id="order-form">
+            <div class="field-pair">
+              <label>Side
+                <select name="side"><option value="sell">Sell SAT</option><option value="buy">Buy SAT</option></select>
+              </label>
+              <label>Size (SAT)
+                <input name="amount" inputmode="numeric" pattern="[1-9][0-9]*" value="2000" required />
+              </label>
+            </div>
+            <div class="field-pair">
+              <label>Limit price (USD / BTC)
+                <input name="fiatPrice" inputmode="decimal" pattern="(?:0|[1-9][0-9]*)(?:\.[0-9]{1,2})?" value="50500.00" required />
+              </label>
+              <label>Good for (days)
+                <input name="days" type="number" min="1" max="30" value="30" required />
+              </label>
+            </div>
+            <p id="order-settlement-hint" class="hint" aria-live="polite">An order is a public signed intention. Funds move only during the verified settlement flow. Granola converts the price to an exact cents-per-SAT ratio before signing.</p>
+            <button type="submit">Sign &amp; post order</button>
+          </form>
+        </section>
+        <div id="pending-publications" class="pending-publications" hidden></div>
+      </section>
+
+      <section class="hero" aria-labelledby="hero-title">
+        <p class="eyebrow">A peer-to-peer Cashu exchange</p>
+        <h1 id="hero-title">Public orders.<br /><em>Private settlement.</em></h1>
+        <p class="lede">Granola is a decentralized exchange layer on top of Cashu. Nostr carries public orders and private coordination; Cashu settles atomic swaps between wallets and across mints.</p>
+        <aside class="warning"><strong>Testnet only.</strong> Testnut tokens are unbacked and may disappear. <strong>No escrow.</strong> Only you and the mint custody your funds.</aside>
+      </section>
+
+      <section class="ledger" aria-labelledby="balances-title">
+        <div class="section-heading">
+          <div><p class="eyebrow">02 / Wallet</p><h2 id="balances-title">Your Cashu balance</h2></div>
+        </div>
+        <div id="dashboard"></div>
+      </section>
+
+      <section class="settlement" aria-labelledby="trades-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">03 / Private settlement</p>
+            <h2 id="trades-title">Settle the trade</h2>
+          </div>
+          <div class="section-actions">
+            <button id="refresh-trades" class="quiet" type="button">Refresh swaps</button>
+          </div>
+        </div>
+        <p class="section-intro">Granola connects Cashu wallets across mints. Nostr carries the market and private coordination. The protocol ensures no token gets lost and no additional party gets added.</p>
+        <div id="trades"></div>
+      </section>
+
+      <div class="work-grid">
+        <section class="panel" aria-labelledby="custody-title">
+          <p class="eyebrow">04 / Custody</p>
+          <h2 id="custody-title">Back up or delete your wallet</h2>
+          <p>Your proofs live only in this browser profile’s IndexedDB. A backup contains spendable bearer tokens.</p>
+          <button id="backup" type="button">Download bearer backup</button>
+          <details>
+            <summary>Danger zone</summary>
+            <button id="clear-wallet" class="danger" type="button">Erase local wallet</button>
+            <button id="reset-profile" class="danger" type="button">Erase everything &amp; restart</button>
+          </details>
+        </section>
+
+        <section class="panel log-panel" aria-labelledby="log-title">
+          <p class="eyebrow">05 / Trace</p>
+          <h2 id="log-title">Local activity</h2>
+          <ol id="activity-log" aria-live="polite"></ol>
+          <p class="hint">Secrets, encoded tokens, and mint quote IDs stay out of this log.</p>
+        </section>
+      </div>
+
+      <section class="agent-strip" aria-labelledby="agent-title">
+        <p class="eyebrow">For agents, too</p>
+        <h2 id="agent-title">A wallet agents can call.</h2>
+        <p>Open developer tools and use <code>window.granola</code>. Read redacted state, publish orders, and advance swaps without exposing bearer material.</p>
+        <p>
+          <a href="https://github.com/brenorb/granola/blob/main/docs/guides/manual-testnet-swap.md">Manual test tutorial ↗</a>
+          ·
+          <a href="https://github.com/brenorb/granola/blob/main/docs/guides/agent-api.md">Read the API contract ↗</a>
+        </p>
+      </section>
+
+      <section class="protocol-section" aria-labelledby="protocol-diagram-title">
+        <p class="eyebrow">Protocol flow</p>
+        <h2 id="protocol-diagram-title">How a Cashu swap crosses mints</h2>
+        <p class="protocol-section__intro">Nostr carries the order and the private coordination. The same hash links both Cashu legs: one party reveals the preimage on the first mint, and the other uses it to claim the second leg.</p>
+        <div class="protocol-diagram" role="img" aria-labelledby="protocol-diagram-title protocol-diagram-description">
+          <p id="protocol-diagram-description" class="sr-only">Sequence diagram showing Alice publishing an order through Nostr, Carol creating a matching atomic swap, and both parties settling linked HTLCs through a Cashu mint.</p>
+          <div class="protocol-diagram__frame">
+            <svg class="protocol-diagram__svg" viewBox="0 0 1200 860" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+              <defs>
+                <marker id="protocol-arrow" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto" markerUnits="strokeWidth">
+                  <path d="M0,0 L7,3.5 L0,7 Z" />
+                </marker>
+              </defs>
+              <g class="protocol-diagram__participant">
+                <rect x="55" y="36" width="130" height="48" />
+                <rect x="335" y="36" width="130" height="48" />
+                <rect x="615" y="36" width="130" height="48" />
+                <rect x="895" y="36" width="130" height="48" />
+                <text x="120" y="66">Alice</text>
+                <text x="400" y="66">Nostr</text>
+                <text x="680" y="66">Carol</text>
+                <text x="960" y="66">Mint</text>
+              </g>
+              <g class="protocol-diagram__lifeline">
+                <line x1="120" y1="84" x2="120" y2="820" />
+                <line x1="400" y1="84" x2="400" y2="820" />
+                <line x1="680" y1="84" x2="680" y2="820" />
+                <line x1="960" y1="84" x2="960" y2="820" />
+              </g>
+              <g class="protocol-diagram__message">
+                <line x1="120" y1="135" x2="400" y2="135" marker-end="url(#protocol-arrow)" />
+                <text x="260" y="121">Generate ephemeral pubkey</text>
+
+                <line x1="120" y1="195" x2="400" y2="195" marker-end="url(#protocol-arrow)" />
+                <text x="260" y="181">Publish order</text>
+
+                <line x1="400" y1="255" x2="680" y2="255" marker-end="url(#protocol-arrow)" />
+                <text x="540" y="226">Fetch events · see order</text>
+
+                <line x1="680" y1="315" x2="400" y2="315" marker-end="url(#protocol-arrow)" />
+                <text x="540" y="301">Generate ephemeral pubkey</text>
+
+                <line x1="680" y1="375" x2="120" y2="375" marker-end="url(#protocol-arrow)" />
+                <text x="400" y="347">Send DM with pay request</text>
+
+                <line x1="120" y1="435" x2="680" y2="435" marker-end="url(#protocol-arrow)" />
+                <text x="400" y="407">Generate H · send HTLC_c</text>
+
+                <line x1="680" y1="495" x2="960" y2="495" marker-end="url(#protocol-arrow)" />
+                <text x="820" y="481">Verify HTLC_c</text>
+
+                <line x1="680" y1="555" x2="120" y2="555" marker-end="url(#protocol-arrow)" />
+                <text x="400" y="527">Send HTLC_a with same H</text>
+
+                <line x1="680" y1="615" x2="960" y2="615" marker-end="url(#protocol-arrow)" />
+                <text x="820" y="601">Subscribe to HTLC_a</text>
+
+                <line x1="120" y1="675" x2="960" y2="675" marker-end="url(#protocol-arrow)" />
+                <text x="540" y="647">Swap HTLC_a · reveal preimage</text>
+
+                <line x1="960" y1="735" x2="680" y2="735" marker-end="url(#protocol-arrow)" />
+                <text x="820" y="721">State change with preimage</text>
+
+                <line x1="680" y1="795" x2="960" y2="795" marker-end="url(#protocol-arrow)" />
+                <text x="820" y="781">Swap HTLC_c</text>
+              </g>
+            </svg>
+          </div>
+        </div>
+        <details class="protocol-source">
+          <summary>View Mermaid source</summary>
+          <pre><code>sequenceDiagram
+    actor Alice
+    participant Nostr
+    actor Carol
+    participant Mint
+
+    Alice--&gt;&gt;Nostr: Generate new \n ephemeral PubKey
+    Alice-&gt;&gt;Nostr: Publish Order
+
+    Nostr-&gt;&gt;Carol: Fetches 8338 events \n Sees order
+    Carol--&gt;&gt;Nostr: Generate new \n ephemeral PubKey
+    Carol-&gt;&gt;Alice: Sends DM \n with pay request \n via Nostr
+    Alice-&gt;&gt;Carol: Generates H\n sends HTLC_c to PubKey
+    Carol--&gt;&gt;Mint: Verify HTLC_c
+    Carol-&gt;&gt;Alice: Sends HTLC_a with the same H
+    Carol--&gt;&gt;Mint: Subscribe \n to HTLC_a
+    Alice-&gt;&gt;Mint: Swaps HTLC_a token revealing preimage
+    Mint--&gt;&gt;Carol: State change with preimage
+    Carol-&gt;&gt;Mint: Swaps HTLC_c token</code></pre>
+        </details>
+        <details class="protocol-messages">
+          <summary>
+            <span>Three private messages</span>
+            <small>Open the settlement handshake</small>
+          </summary>
+          <p class="protocol-messages__intro">Granola’s current settlement flow uses three authenticated DMs. After the third message, both wallets advance from independently verified mint state — no private ACK or receipt messages are needed.</p>
+          <ol class="protocol-messages__list">
+            <li class="protocol-message">
+              <div class="protocol-message__index">01</div>
+              <div>
+                <p class="protocol-message__route">Taker → maker order key</p>
+                <h3><code>reserve_propose</code></h3>
+                <p>Requests this exact order and fill amount. It binds the current public projection, trade terms, and the taker’s fresh session, Cashu settlement, and refund keys.</p>
+              </div>
+            </li>
+            <li class="protocol-message">
+              <div class="protocol-message__index">02</div>
+              <div>
+                <p class="protocol-message__route">Maker order key → taker session</p>
+                <h3><code>reserve_accept</code></h3>
+                <p>Publishes the reserved projection and carries the maker’s offer-side HTLC. The lock, deadlines, mint/keyset, and settlement hash are signed together.</p>
+              </div>
+            </li>
+            <li class="protocol-message">
+              <div class="protocol-message__index">03</div>
+              <div>
+                <p class="protocol-message__route">Taker session → maker session</p>
+                <h3><code>quote_lock</code></h3>
+                <p>After validating the first leg, the taker creates the payment-side HTLC with the same hash. This is the final private message.</p>
+              </div>
+            </li>
+          </ol>
+          <div class="protocol-messages__after">
+            <p class="protocol-message__route">After <code>quote_lock</code></p>
+            <p>The maker claims the payment leg. The taker learns the preimage from the mint witness and claims the offer leg. The maker publishes the signed fill projection; the taker verifies it.</p>
+          </div>
+        </details>
+        <section class="protocol-notes" aria-labelledby="protocol-notes-title">
+          <div class="protocol-notes__heading">
+            <p class="eyebrow">What matters</p>
+            <h2 id="protocol-notes-title">Know the trust boundary.</h2>
+          </div>
+          <div class="protocol-notes__grid">
+            <article class="protocol-note">
+              <p class="protocol-note__number">01</p>
+              <h3>Trust the mint, not the user.</h3>
+              <p>A peer message is coordination, not proof. Verified mint state and the spend witness decide whether a leg actually settled.</p>
+            </article>
+            <article class="protocol-note">
+              <p class="protocol-note__number">02</p>
+              <h3>Ephemeral keys, no management.</h3>
+              <p>Every reservation gets fresh Nostr, Cashu settlement, and refund keys. Granola scopes and stores them for the swap; you never manage a key ceremony.</p>
+            </article>
+            <article class="protocol-note">
+              <p class="protocol-note__number">03</p>
+              <h3>Nostr coordinates. It does not custody.</h3>
+              <p>Relays carry orders and encrypted coordination. Proofs, preimages, balances, and private keys stay out of public events.</p>
+            </article>
+            <article class="protocol-note">
+              <p class="protocol-note__number">04</p>
+              <h3>Atomic under mint assumptions.</h3>
+              <p>One hash links both legs and bounded locktimes provide recovery. Safety still depends on participating mints enforcing the required Cashu capabilities.</p>
+            </article>
+            <article class="protocol-note">
+              <p class="protocol-note__number">05</p>
+              <h3>All local, no servers.</h3>
+              <p>Your wallet and session state run in the browser. Granola has no account, matching, or custody server; Nostr relays and Cashu mints are the external protocol infrastructure.</p>
+            </article>
+            <article class="protocol-note">
+              <p class="protocol-note__number">06</p>
+              <h3>No escrow.</h3>
+              <p>Only you and the mint custody your funds.</p>
+            </article>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <div id="status" role="status" aria-live="polite"></div>
+    <script>
+      if (
+        window.location.protocol === "http:" &&
+        window.location.hostname !== "localhost" &&
+        window.location.hostname !== "127.0.0.1"
+      ) {
+        window.location.replace(`https://${window.location.host}${window.location.pathname}${window.location.search}${window.location.hash}`);
+      }
+    </script>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
