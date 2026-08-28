@@ -11,9 +11,11 @@ Nostr DMs, and settles atomically with hash-linked HTLCs — for the **Zenon
 Network of Momentum**. Both legs of every swap are Zenon ZTS tokens (ZNN, QSR,
 or any ZTS) settled through Zenon's native HTLC embedded contract.
 
-Target: the public Zenon testnet (chain identifier `73404`, node
-`172.245.236.40`, HTTP `:35997`, WS `:35998`). Mainnet is a configuration
-change, not a code change.
+Target: **Zenon mainnet** (chain identifier `1`, node
+`wss://node.zenon.network:35998`), tested with small real amounts, because the
+public testnet (chain `73404`, node `172.245.236.40`, HTTP `:35997`, WS
+`:35998`) has no plasma bot or faucet yet. The testnet remains a supported
+alternate configuration; switching is a `.env` change, not a code change.
 
 ## 2. Approach
 
@@ -85,7 +87,7 @@ Details:
   publication. The `lock` DM carries `{chainId, htlcId, tokenStandard, amount,
   expirationTime, hashLock}`; the counterparty never trusts the DM alone — it
   re-reads the HTLC from the node.
-- Locktimes are configurable; testnet defaults: short 30 min, long 60 min.
+- Locktimes are configurable; defaults: short 30 min, long 60 min.
   `createSettlementPlan` keeps its shape (anchor, short/long locktimes, claim
   cutoffs) but uses momentum timestamps from the node instead of mint clocks.
 - Unlocked and reclaimed funds arrive as unreceived blocks; `zenon/account`
@@ -105,7 +107,8 @@ Details:
   market at a time, selectable; any ZTS pair is allowed by the data model.
 - Price = exact rational quote-per-base in minor units (replaces
   `priceCentsPerBtc`). Token decimals are fetched from `token.getByZts` and cached.
-- Nostr order events keep kind `8338`, schema `zwap/order/v1`, tags: `chain`,
+- Nostr order events keep granola's addressable kind `30078`, schema
+  `zwap/order/v1`, tags: `chain`,
   `base`, `quote`, `side`, `price`, `amount`, `expiry`, `execution`, `min`.
 - Makers still sign orders with an ephemeral per-order Nostr key. Zenon
   addresses appear only inside encrypted DMs (reserve-accept / lock messages).
@@ -115,18 +118,24 @@ Details:
 `.env` (Vite):
 
 ```
-VITE_ZENON_NODE_WS=ws://172.245.236.40:35998
-VITE_ZENON_NODE_HTTP=http://172.245.236.40:35997
-VITE_ZENON_CHAIN_ID=73404
+# mainnet (default, .env.example)
+VITE_ZENON_NODE_WS=wss://node.zenon.network:35998
+VITE_ZENON_CHAIN_ID=1
 VITE_PLASMA_BOT_URL=https://plazma.bot
-VITE_NOSTR_RELAYS=wss://...,wss://...
+VITE_NOSTR_RELAYS=wss://relay.primal.net,wss://nos.lol,wss://offchain.pub
+VITE_NOSTR_INBOX_RELAY=wss://auth.nostr1.com
+
+# testnet (.env.testnet, no plasma bot / faucet yet)
+VITE_ZENON_NODE_WS=ws://172.245.236.40:35998
+VITE_ZENON_CHAIN_ID=73404
+VITE_PLASMA_BOT_URL=
 ```
 
 The chain id is verified on connect; a mismatch blocks trading. The plasma
-button is hidden when plazma.bot's network is not the configured chain (open
-question: whether plazma.bot offers a testnet instance). go-syrius is the
-documented companion wallet for funding the browser address on this testnet
-(it supports the same node and chain id).
+button is shown only when `VITE_PLASMA_BOT_URL` is set (plazma.bot fuses on
+mainnet only). The UI shows a persistent "mainnet — real funds" badge when
+chain id is `1`. go-syrius is the documented companion wallet for funding the
+browser address (it supports both networks).
 
 ## 6. UI and design system
 
@@ -155,13 +164,13 @@ take order, list trades, account (address, balances, receive, plasma status,
   HTLC contract (create/unlock/reclaim/getById, expirations, proxy-unlock
   default), account balances, unreceived blocks and subscriptions. The full
   happy path and both refund paths run against it.
-- One integration test gated by `ZENON_INTEGRATION=1` performing a real swap on
-  the testnet between two keystores (funded seeds via env); documented in
-  `docs/guides/manual-testnet-swap.md`.
+- One integration test gated by `ZENON_INTEGRATION=1` performing a real swap
+  between two keystores (funded seeds via env, small amounts, either network);
+  documented in `docs/guides/manual-swap.md`.
 - `npm run typecheck` + `npm test` in CI; `pages.yml` kept for static deploy.
 
 ## 9. Out of scope (this phase)
 
 External wallet signing (nom-webwallet has no provider API; go-syrius
-WalletConnect is restricted to bridge methods), cross-chain legs, mainnet
-funds, order matching beyond granola's maker/taker model.
+WalletConnect is restricted to bridge methods), cross-chain legs, a testnet
+faucet/plasma bot, order matching beyond granola's maker/taker model.
