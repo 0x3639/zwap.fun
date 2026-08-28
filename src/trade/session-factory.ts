@@ -112,7 +112,7 @@ function assertOpenOrder(
     throw new Error("Order authority or projection ID is invalid");
   }
   const expectedAddress =
-    `30078:${order.makerPubkey}:granola:order:v1:${order.state.order_id}`;
+    `30078:${order.makerPubkey}:zwap:order:v1:${order.state.order_id}`;
   if (order.address !== expectedAddress) throw new Error("Order address does not match its authority");
   const state = order.state;
   if (

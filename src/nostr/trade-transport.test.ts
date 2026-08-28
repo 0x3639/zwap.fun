@@ -412,7 +412,7 @@ describe("Nostr trade transport", () => {
       message_id: "11111111-1111-4111-8111-111111111111",
       session_id: "11".repeat(32),
       reservation_id: "22222222-2222-4222-8222-222222222222",
-      order_address: `30078:${maker}:granola:order:v1:33333333-3333-4333-8333-333333333333`,
+      order_address: `30078:${maker}:zwap:order:v1:33333333-3333-4333-8333-333333333333`,
       order_projection_id: "44".repeat(32),
       order_revision: "0",
       maker_order_pubkey: maker,

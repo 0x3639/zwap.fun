@@ -156,7 +156,7 @@ function baseSession(): TradeSession {
     reservationId: "11111111-1111-4111-8111-111111111111",
     role: "maker",
     phase: "base_locked",
-    orderAddress: `30078:${MAKER}:granola:order:v1:${ORDER_ID}`,
+    orderAddress: `30078:${MAKER}:zwap:order:v1:${ORDER_ID}`,
     offeredProjectionId: "33".repeat(32),
     offeredProjectionRevision: "0",
     reserveProjectionId: "34".repeat(32),
@@ -526,7 +526,7 @@ async function takerAwaitingFillVerification(): Promise<{
   current.role = "taker";
   current.phase = "quote_locked";
   current.orderAddress =
-    `30078:${publication.projection.pubkey}:granola:order:v1:${ORDER_ID}`;
+    `30078:${publication.projection.pubkey}:zwap:order:v1:${ORDER_ID}`;
   current.offeredProjectionId = "31".repeat(32);
   current.offeredProjectionRevision = "0";
   current.reserveProjectionId = "32".repeat(32);

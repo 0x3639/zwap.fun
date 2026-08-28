@@ -12,7 +12,7 @@ const EVENT: NostrEvent = {
   tags: [["m", "d".repeat(64)]],
   content: "{}"
 };
-const ADDRESS = `30078:${"b".repeat(64)}:granola:order:v1:11111111-1111-4111-8111-111111111111`;
+const ADDRESS = `30078:${"b".repeat(64)}:zwap:order:v1:11111111-1111-4111-8111-111111111111`;
 
 class FakePool implements RelayPoolPort {
   destroyed = false;
@@ -112,7 +112,7 @@ describe("relay client", () => {
       filter: {
         kinds: [30078],
         authors: ["b".repeat(64)],
-        "#d": ["granola:order:v1:11111111-1111-4111-8111-111111111111"],
+        "#d": ["zwap:order:v1:11111111-1111-4111-8111-111111111111"],
         limit: 10
       },
       maxWait: 3210

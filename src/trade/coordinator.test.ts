@@ -22,7 +22,7 @@ function session(): TradeSession {
     role: "maker",
     phase: "negotiating",
     orderAddress:
-      `30078:${"22".repeat(32)}:granola:order:v1:22222222-2222-4222-8222-222222222222`,
+      `30078:${"22".repeat(32)}:zwap:order:v1:22222222-2222-4222-8222-222222222222`,
     offeredProjectionId: "33".repeat(32),
     offeredProjectionRevision: "0",
     reserveProjectionId: null,

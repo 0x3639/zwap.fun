@@ -97,7 +97,7 @@ function order(overrides: Partial<OrderRecord> = {}): OrderRecord {
     priceCentsPerBtc: "2000000"
   });
   return {
-    address: `30078:${maker}:granola:order:v1:${orderId}`,
+    address: `30078:${maker}:zwap:order:v1:${orderId}`,
     eventId: "44".repeat(32),
     makerPubkey: maker,
     verified: true,

@@ -38,23 +38,41 @@ export class FakeZenonNode implements ZenonNodePort {
   private readonly failures = new Map<ZenonTemplate["kind"], Error>();
   private height = 1;
   private addressCounter = 0;
+  private readonly issuedAddresses = new Set<string>();
 
   constructor(options: { chainId?: number; now?: () => number } = {}) {
     this.chainId = options.chainId ?? 1;
     this.now = options.now ?? (() => Math.floor(Date.now() / 1000));
   }
 
+  /**
+   * Derives a distinct bech32-charset address per call. The digest is FNV-1a
+   * seeded and advanced with xorshift, and each character reads the high bits
+   * so the alphabet is not driven by a short low-bit cycle. A per-instance set
+   * of issued addresses re-salts on the (astronomically unlikely) collision, so
+   * distinct calls can never hand back the same address.
+   */
   createAddress(label = `addr${this.addressCounter}`): string {
     this.addressCounter += 1;
     const alphabet = "023456789acdefghjklmnpqrstuvwxyz";
-    let seed = 0;
-    for (const ch of `${label}:${this.addressCounter}`) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
-    let body = "";
-    for (let i = 0; i < 38; i += 1) {
-      seed = (seed * 1103515245 + 12345) >>> 0;
-      body += alphabet[seed % alphabet.length];
+    for (let salt = 0; ; salt += 1) {
+      let state = 2_166_136_261;
+      for (const ch of `${label}:${this.addressCounter}:${salt}`) {
+        state = Math.imul(state ^ ch.charCodeAt(0), 16_777_619) >>> 0;
+      }
+      let body = "";
+      for (let index = 0; index < 38; index += 1) {
+        state = (state ^ (state << 13)) >>> 0;
+        state = state ^ (state >>> 17);
+        state = (state ^ (state << 5)) >>> 0;
+        body += alphabet.charAt((state >>> 11) % alphabet.length);
+      }
+      const address = `z1${body}`;
+      if (!this.issuedAddresses.has(address)) {
+        this.issuedAddresses.add(address);
+        return address;
+      }
     }
-    return `z1${body}`;
   }
 
   fund(address: string, zts: string, amount: string): void {

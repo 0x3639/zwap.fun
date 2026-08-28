@@ -14,7 +14,8 @@ import type {
   TradeSession,
   TradeTranscriptJournal
 } from "../trade/session.js";
-import { TRADE_MESSAGE_TYPES } from "../trade/messages.js";
+import { deploymentFor, TRADE_MESSAGE_TYPES } from "../trade/messages.js";
+import { CLAIM_CUTOFF_MARGIN, RESERVATION_GRACE_SECONDS } from "../trade/model.js";
 import { EncryptedStorageDriver } from "./encrypted-storage.js";
 import type { StorageDriver } from "./driver.js";
 
@@ -23,7 +24,7 @@ const HEX_32 = /^[0-9a-f]{64}$/;
 const HEX_64 = /^[0-9a-f]{128}$/;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ORDER_ADDRESS = new RegExp(
-  `^30078:[0-9a-f]{64}:granola:order:v1:${UUID_V4.source.slice(1, -1)}$`
+  `^30078:[0-9a-f]{64}:zwap:order:v1:${UUID_V4.source.slice(1, -1)}$`
 );
 const CANONICAL_INTEGER = /^(0|[1-9]\d*)$/;
 const POSITIVE_INTEGER = /^[1-9]\d*$/;
@@ -238,7 +239,7 @@ function validateReceipts(
   return receipts;
 }
 
-function validateChoreography(value: unknown): void {
+function validateChoreography(value: unknown, expectedDeployment: string): void {
   const choreography = object(value, "Trade choreography");
   exactAllowedKeys(
     choreography,
@@ -265,6 +266,11 @@ function validateChoreography(value: unknown): void {
     ],
     "Trade choreography"
   );
+  if (
+    choreography.deployment !== undefined &&
+    (typeof choreography.deployment !== "string" ||
+      choreography.deployment !== expectedDeployment)
+  ) throw new Error("Trade choreography deployment does not match the trade terms chain");
   if (
     typeof choreography.phase !== "string" ||
     !CHOREOGRAPHY_PHASES.has(choreography.phase) ||
@@ -306,7 +312,10 @@ function validateChoreography(value: unknown): void {
   ) throw new Error("Trade participants are invalid");
 }
 
-function validateTranscript(value: unknown): asserts value is TradeTranscriptJournal {
+function validateTranscript(
+  value: unknown,
+  expectedDeployment: string
+): asserts value is TradeTranscriptJournal {
   const transcript = object(value, "Trade transcript");
   exactKeys(transcript, [
     "choreography",
@@ -316,7 +325,7 @@ function validateTranscript(value: unknown): asserts value is TradeTranscriptJou
     "lastTranscriptHash",
     "accepted"
   ], "Trade transcript");
-  validateChoreography(transcript.choreography);
+  validateChoreography(transcript.choreography, expectedDeployment);
   if (typeof transcript.nextSequence !== "string" || !CANONICAL_INTEGER.test(transcript.nextSequence)) {
     throw new Error("Trade transcript sequence is invalid");
   }
@@ -409,7 +418,10 @@ function validateMessage(value: unknown): void {
   ) throw new Error("Trade outbox message is invalid");
 }
 
-function validateOutbox(value: unknown): asserts value is TradeOutboxJournal {
+function validateOutbox(
+  value: unknown,
+  expectedDeployment: string
+): asserts value is TradeOutboxJournal {
   const outbox = object(value, "Trade outbox");
   exactKeys(outbox, [
     "message",
@@ -438,7 +450,7 @@ function validateOutbox(value: unknown): asserts value is TradeOutboxJournal {
   if (
     (outbox.status === "acknowledged" && !receipts.some(({ ok }) => ok))
   ) throw new Error("Trade outbox status does not match its receipts");
-  validateChoreography(outbox.nextChoreography);
+  validateChoreography(outbox.nextChoreography, expectedDeployment);
 }
 
 function validateExpectedLock(value: unknown): void {
@@ -878,7 +890,7 @@ function validatePendingOrderPublication(
     addressParts.length !== 6 ||
     addressParts[0] !== "30078" ||
     addressParts[1] !== context.makerPubkey ||
-    addressParts[2] !== "granola" ||
+    addressParts[2] !== "zwap" ||
     addressParts[3] !== "order" ||
     addressParts[4] !== "v1" ||
     typeof addressOrderId !== "string" ||
@@ -886,7 +898,7 @@ function validatePendingOrderPublication(
     pending.orderId !== addressOrderId ||
     projection.pubkey !== context.makerPubkey ||
     eventTag(projection, "d") !==
-      `granola:order:v1:${String(pending.orderId)}`
+      `zwap:order:v1:${String(pending.orderId)}`
   ) throw new Error("Pending order publication artifacts disagree");
   if (
     (pending.operation === "reserve" && (
@@ -1049,6 +1061,7 @@ async function assertSession(value: unknown): Promise<TradeSession> {
     !isAmount(terms.quoteAmount) ||
     !isAmount(terms.price)
   ) throw new Error("Trade terms are invalid");
+  const expectedDeployment = deploymentFor(terms.chainId as string);
 
   const plan = object(session.plan, "Settlement plan");
   for (const field of [
@@ -1057,10 +1070,11 @@ async function assertSession(value: unknown): Promise<TradeSession> {
   ]) safeTime(plan[field], `Settlement plan ${field}`);
   if (
     (plan.shortLocktime as number) <= (plan.anchor as number) ||
-    (plan.longLocktime as number) <= (plan.shortLocktime as number) ||
-    plan.makerClaimCutoff !== (plan.shortLocktime as number) - 120 ||
-    plan.takerClaimCutoff !== (plan.longLocktime as number) - 120 ||
-    plan.reservationExpiresAt !== (plan.longLocktime as number) + 600 ||
+    (plan.longLocktime as number) - (plan.shortLocktime as number) < CLAIM_CUTOFF_MARGIN ||
+    plan.makerClaimCutoff !== (plan.shortLocktime as number) - CLAIM_CUTOFF_MARGIN ||
+    plan.takerClaimCutoff !== (plan.longLocktime as number) - CLAIM_CUTOFF_MARGIN ||
+    plan.reservationExpiresAt !==
+      (plan.longLocktime as number) + RESERVATION_GRACE_SECONDS ||
     plan.refundGuardSeconds !== 60
   ) throw new Error("Settlement plan profile is invalid");
 
@@ -1258,7 +1272,7 @@ async function assertSession(value: unknown): Promise<TradeSession> {
         pending.validation.checkedAt > updatedAt)
     ) throw new Error("Pending incoming message is newer than its session");
   }
-  validateTranscript(privateState.transcript);
+  validateTranscript(privateState.transcript, expectedDeployment);
   const transcript = privateState.transcript as TradeTranscriptJournal;
   if (reservation.abortSeal !== null) {
     const participants = transcript.choreography.participants;
@@ -1332,7 +1346,7 @@ async function assertSession(value: unknown): Promise<TradeSession> {
     ) throw new Error("Validated incoming message is not signed by the counterparty");
   }
   if (privateState.outbox !== null) {
-    validateOutbox(privateState.outbox);
+    validateOutbox(privateState.outbox, expectedDeployment);
     if (privateState.pendingIncoming !== null) {
       throw new Error("Trade session cannot stage incoming and outgoing messages together");
     }
@@ -1438,6 +1452,22 @@ async function assertSession(value: unknown): Promise<TradeSession> {
       privateState.settlementTranscriptHash === null ||
       expected.binding.transcriptHash !== privateState.settlementTranscriptHash
     )) throw new Error("Expected Zenon lock disagrees with the trade session");
+    if (expected !== null) {
+      // The maker offer leg carries the long locktime whichever way round the
+      // published order sits, exactly as `lockReady` reads it.
+      const makerOfferLeg = session.orderSide === "buy" ? "quote" : "base";
+      if (
+        expected.expirationTime !== (legName === makerOfferLeg
+          ? (plan.longLocktime as number)
+          : (plan.shortLocktime as number))
+      ) throw new Error("Expected Zenon lock expiry disagrees with the settlement plan");
+      const lockAddresses = [expected.hashLockedAddress, expected.timeLockedAddress];
+      const counterpartyAddress = privateState.counterpartyAddress as string | null;
+      if (
+        !lockAddresses.includes(privateState.localAddress as string) ||
+        (counterpartyAddress !== null && !lockAddresses.includes(counterpartyAddress))
+      ) throw new Error("Expected Zenon lock is not bound to the session settlement addresses");
+    }
     if (
       evidenceLeg.htlcId !== null &&
       (privateLeg.htlcId !== evidenceLeg.htlcId ||

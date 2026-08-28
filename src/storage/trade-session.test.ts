@@ -96,7 +96,7 @@ const wrongRegistrationSigner = structuredClone(finalizeEvent({
 const projection = structuredClone(finalizeEvent({
   kind: 30078,
   created_at: FIXTURE_ANCHOR + 5,
-  tags: [["d", `granola:order:v1:${orderId}`]],
+  tags: [["d", `zwap:order:v1:${orderId}`]],
   content: "exact-signed-order-projection"
 }, makerSecret));
 const wrapper = structuredClone(finalizeEvent({
@@ -292,7 +292,7 @@ const session: TradeSession = sessionFixture({
         tokenStandard: ZNN_ZTS,
         amount: "20",
         htlcId: null,
-        expected: expectedBaseLock,
+        expected: structuredClone(expectedBaseLock),
         operationCommitment: "0d".repeat(32)
       },
       result: {
@@ -305,7 +305,7 @@ const session: TradeSession = sessionFixture({
     legs: {
       base: {
         htlcId: baseHtlcId,
-        expected: expectedBaseLock,
+        expected: structuredClone(expectedBaseLock),
         observations: [{
           observedAt: FIXTURE_ANCHOR + 9,
           state: "LOCKED",
@@ -599,7 +599,7 @@ describe("zwap trade session repository", () => {
     const releaseProjection = structuredClone(finalizeEvent({
       kind: 30078,
       created_at: FIXTURE_ANCHOR + 5,
-      tags: [["d", `granola:order:v1:${orderId}`]],
+      tags: [["d", `zwap:order:v1:${orderId}`]],
       content: "exact-signed-release-projection"
     }, makerSecret));
     candidate.pendingOrderPublication = {
@@ -1220,7 +1220,25 @@ describe("zwap trade session repository", () => {
     }, /require their exact HTLC ID/i],
     ["an evidence HTLC ID that leaves its private lock", (candidate: TradeSession) => {
       candidate.evidence.legs.base.htlcId = "1f".repeat(32);
-    }, /lacks exact private lock evidence/i]
+    }, /lacks exact private lock evidence/i],
+    ["a choreography deployment from another chain", (candidate: TradeSession) => {
+      candidate.privateState.transcript.choreography.deployment = deploymentFor("9");
+    }, /choreography deployment does not match/i],
+    ["an outbox next-choreography deployment from another chain", (candidate: TradeSession) => {
+      candidate.privateState.outbox!.nextChoreography.deployment = deploymentFor("9");
+    }, /choreography deployment does not match/i],
+    ["a lock expiry that is not the maker offer locktime", (candidate: TradeSession) => {
+      candidate.privateState.legs.base.expected!.expirationTime =
+        candidate.plan.shortLocktime;
+    }, /lock expiry disagrees with the settlement plan/i],
+    ["a lock whose hash-locked address is a third party", (candidate: TradeSession) => {
+      candidate.privateState.legs.base.expected!.hashLockedAddress =
+        FIXTURE_THIRD_ADDRESS;
+    }, /not bound to the session settlement addresses/i],
+    ["a lock whose time-locked address is not the local address", (candidate: TradeSession) => {
+      candidate.privateState.legs.base.expected!.timeLockedAddress =
+        FIXTURE_THIRD_ADDRESS;
+    }, /not bound to the session settlement addresses/i]
   ])("fails closed on %s", async (_label, mutate, pattern) => {
     const corrupt = structuredClone(session);
     mutate(corrupt);
@@ -1239,6 +1257,11 @@ describe("zwap trade session repository", () => {
       },
       (candidate: TradeSession) => {
         candidate.plan.longLocktime = candidate.plan.shortLocktime;
+      },
+      (candidate: TradeSession) => {
+        candidate.plan.longLocktime = candidate.plan.shortLocktime + 60;
+        candidate.plan.takerClaimCutoff = candidate.plan.longLocktime - 120;
+        candidate.plan.reservationExpiresAt = candidate.plan.longLocktime + 600;
       }
     ]) {
       const corrupt = structuredClone(session);

@@ -225,7 +225,7 @@ async function message<T extends AtomicSwapMessageType>(
     message_id: ids[index] ?? "00000000-0000-4000-8000-00000000000b",
     session_id: sessionId,
     reservation_id: reservationId,
-    order_address: `30078:${makerOrder}:granola:order:v1:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb`,
+    order_address: `30078:${makerOrder}:zwap:order:v1:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb`,
     order_projection_id:
       type === "reserve_propose" ? proposalHead :
       type === "settlement_ack" ? "20".repeat(32) :

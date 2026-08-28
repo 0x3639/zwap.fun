@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { FakeZenonNode } from "./fake-node.js";
 import { ZNN_ZTS, QSR_ZTS } from "./types.js";
 import { createHtlcMaterial } from "./htlc-material.js";
+import { isZenonAddress } from "./validate.js";
 
 async function setup() {
   let now = 1_000_000;
@@ -65,5 +66,27 @@ describe("FakeZenonNode", () => {
     node.failNext("send", new Error("node down"));
     await expect(node.signer(alice).send({ kind: "send", toAddress: bob, tokenStandard: ZNN_ZTS, amount: "1" })).rejects.toThrow("node down");
     await node.signer(alice).send({ kind: "send", toAddress: bob, tokenStandard: ZNN_ZTS, amount: "1" });
+  });
+});
+
+describe("fake node addresses", () => {
+  it("issues distinct valid Zenon addresses for every call", () => {
+    const node = new FakeZenonNode();
+    const addresses = Array.from({ length: 50 }, () => node.createAddress());
+
+    expect(new Set(addresses).size).toBe(50);
+    for (const address of addresses) expect(isZenonAddress(address)).toBe(true);
+  });
+
+  it("keeps labelled addresses distinct and deterministic per instance", () => {
+    const first = new FakeZenonNode();
+    const second = new FakeZenonNode();
+    const labels = ["maker", "taker", "counterparty", "maker"];
+
+    const left = labels.map((label) => first.createAddress(label));
+    const right = labels.map((label) => second.createAddress(label));
+
+    expect(left).toEqual(right);
+    expect(new Set(left).size).toBe(labels.length);
   });
 });

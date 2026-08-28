@@ -29,7 +29,7 @@ const postProposal: AtomicSwapChoreography = {
   participants: { makerOrderPubkey: maker, takerSessionPubkey: taker },
   sessionId: "33".repeat(32),
   reservationId: "11111111-1111-4111-8111-111111111111",
-  orderAddress: `30078:${maker}:granola:order:v1:22222222-2222-4222-8222-222222222222`,
+  orderAddress: `30078:${maker}:zwap:order:v1:22222222-2222-4222-8222-222222222222`,
   orderProjectionId: "44".repeat(32),
   orderRevision: "0",
   termsHash: "55".repeat(32),

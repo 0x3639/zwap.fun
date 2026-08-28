@@ -348,7 +348,7 @@ async function assertMessage(value: unknown): Promise<ZwapTradeMessage> {
   requiredString(message.order_projection_id, "Order projection ID", HEX_32);
   requiredString(message.order_revision, "Order revision", CANONICAL_INTEGER);
   const orderAddress = requiredString(message.order_address, "Order address");
-  const addressPattern = new RegExp(`^30078:${maker}:granola:order:v1:${UUID_V4_BODY}$`);
+  const addressPattern = new RegExp(`^30078:${maker}:zwap:order:v1:${UUID_V4_BODY}$`);
   if (!addressPattern.test(orderAddress)) throw new Error("Order address is invalid");
   const sequence = requiredString(message.sequence, "Sequence", CANONICAL_INTEGER);
   const sentAt = safeTimestamp(message.sent_at, "sent_at");

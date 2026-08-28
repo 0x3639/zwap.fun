@@ -35,7 +35,7 @@ export const FIXTURE_RESERVATION_ID = "11111111-1111-4111-8111-111111111111";
 export const FIXTURE_ORDER_ID = "22222222-2222-4222-8222-222222222222";
 export const FIXTURE_OFFERED_PROJECTION_ID = "33".repeat(32);
 export const FIXTURE_ORDER_ADDRESS =
-  `30078:${FIXTURE_MAKER_PUBKEY}:granola:order:v1:${FIXTURE_ORDER_ID}`;
+  `30078:${FIXTURE_MAKER_PUBKEY}:zwap:order:v1:${FIXTURE_ORDER_ID}`;
 export const FIXTURE_INBOX_RELAY = "wss://inbox-one.example";
 export const FIXTURE_DISCOVERY_RELAY = "wss://discovery-one.example";
 

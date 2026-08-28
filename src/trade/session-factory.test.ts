@@ -88,7 +88,7 @@ function record(overrides: Partial<OrderRecord> = {}): OrderRecord {
     price: "2000000"
   });
   return {
-    address: `30078:${maker}:granola:order:v1:${orderId}`,
+    address: `30078:${maker}:zwap:order:v1:${orderId}`,
     eventId: "44".repeat(32),
     makerPubkey: maker,
     verified: true,
@@ -296,6 +296,12 @@ describe("trade session factory", () => {
       makerAddress,
       takerAddress
     });
+    expect(session.privateState.transcript.choreography.deployment)
+      .toBe(deploymentFor(chainId));
+
+    const repository = new TradeSessionRepository(new MemoryStorageDriver());
+    expect(await repository.createMakerForOrder(session)).toEqual(session);
+    expect(await repository.get(session.sessionId)).toEqual(session);
   });
 
   it("derives independent HTLC material by default", async () => {
