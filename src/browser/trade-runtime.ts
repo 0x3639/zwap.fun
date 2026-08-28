@@ -23,10 +23,8 @@ import type { NostrOrderService } from "../order/service.js";
 import type { OrderOutboxRepository } from "../storage/order-outbox.js";
 import { ProofReservationRepository } from "../storage/proof-reservation-repository.js";
 import { TradeSessionRepository } from "../storage/trade-session.js";
-import type {
-  StorageDriver,
-  WalletRepository
-} from "../storage/wallet-repository.js";
+import type { StorageDriver } from "../storage/driver.js";
+import type { WalletRepository } from "../storage/wallet-repository.js";
 import { TradeCoordinator } from "../trade/coordinator.js";
 import { GranolaCoordinatorEffects } from "../trade/effects.js";
 import {

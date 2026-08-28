@@ -9,7 +9,7 @@ import {
   canonicalOrderPublicationCompatibility,
   type OrderPublicationIntent
 } from "./order-outbox.js";
-import type { StorageDriver } from "./wallet-repository.js";
+import type { StorageDriver } from "./driver.js";
 
 const MAKER = "a".repeat(64);
 const ORDER_ID = "11111111-1111-4111-8111-111111111111";

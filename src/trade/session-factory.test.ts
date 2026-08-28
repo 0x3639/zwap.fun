@@ -1,19 +1,23 @@
-import { createHTLCHash, getPubKeyFromPrivKey } from "@cashu/cashu-ts";
 import { getPublicKey } from "nostr-tools/pure";
 import { describe, expect, it } from "vitest";
 
 import { createOrderState, type OrderRecord } from "../order/model.js";
+import { MemoryStorageDriver } from "../storage/driver.js";
 import { EncryptedStorageDriver } from "../storage/encrypted-storage.js";
 import { TradeSessionRepository } from "../storage/trade-session.js";
-import { MemoryStorageDriver } from "../storage/wallet-repository.js";
+import { createHtlcMaterial } from "../zenon/htlc-material.js";
+import { QSR_ZTS, ZNN_ZTS } from "../zenon/types.js";
+import { ATOMIC_SWAP_BODY_SCHEMA } from "./atomic-messages.js";
 import {
   createTradeRumor,
+  deploymentFor,
   termsHash,
   unwrapInitialReserveProposal,
   wrapTradeRumor,
-  type GranolaTradeMessage,
   type SignedNostrEvent,
-  type VerifiedInitialReserveProposal
+  type VerifiedInitialReserveProposal,
+  type ZwapTradeMessage,
+  type ZwapTradeTerms
 } from "./messages.js";
 import {
   createMakerSession,
@@ -21,56 +25,53 @@ import {
   type SessionFactoryEntropy,
   type SessionMarketSelection
 } from "./session-factory.js";
-
-const now = 1_800_000_000;
-const baseMint = "https://testnut.cashu.space";
-const quoteMint = "https://nofee.testnut.cashu.space";
-const baseKeyset = "00deadbeefcafeee";
-const quoteKeyset = "00deadbeefcafeff";
-const orderId = "11111111-1111-4111-8111-111111111111";
-const sessionId = "22".repeat(32);
-const reservationId = "33333333-3333-4333-8333-333333333333";
-const secp256k1Order =
-  0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
-const makerOrderSecret = Uint8Array.from({ length: 32 }, (_, index) => index === 31 ? 9 : 0);
-const maker = getPublicKey(makerOrderSecret);
-
-const market: SessionMarketSelection = {
-  baseMint,
-  baseUnit: "sat",
-  baseKeyset,
-  quoteMint,
-  quoteUnit: "usd",
-  quoteKeyset
-};
-
-function hexKey(last: number): string {
-  const bytes = new Uint8Array(32);
-  bytes[31] = last;
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
+import {
+  FIXTURE_COUNTERPARTY_ADDRESS,
+  FIXTURE_LOCAL_ADDRESS,
+  FIXTURE_THIRD_ADDRESS
+} from "./test-fixtures.js";
 
 function bytes(hex: string): Uint8Array {
   return Uint8Array.from(hex.match(/../g) ?? [], (part) => Number.parseInt(part, 16));
 }
 
-function cashuPubkey(privateKey: string): string {
-  return [...getPubKeyFromPrivKey(bytes(privateKey))]
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes(value) as BufferSource);
+  return [...new Uint8Array(digest)]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
 }
 
+const now = 1_800_000_000;
+const chainId = "1";
+const orderId = "11111111-1111-4111-8111-111111111111";
+const sessionId = "22".repeat(32);
+const reservationId = "33333333-3333-4333-8333-333333333333";
+const makerOrderSecret = Uint8Array.from({ length: 32 }, (_, index) => index === 31 ? 9 : 0);
+const maker = getPublicKey(makerOrderSecret);
+const takerAddress = FIXTURE_COUNTERPARTY_ADDRESS;
+const makerAddress = FIXTURE_LOCAL_ADDRESS;
+const preimage = "ab".repeat(32);
+const fixedMaterial = { preimage, hash: await sha256Hex(preimage) };
+
+const market: SessionMarketSelection = {
+  chainId,
+  baseToken: ZNN_ZTS,
+  quoteToken: QSR_ZTS
+};
+
+function hexKey(last: number): string {
+  const key = new Uint8Array(32);
+  key[31] = last;
+  return [...key].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 function entropy(offset = 0): SessionFactoryEntropy {
-  const keys = {
-    nostr: hexKey(1 + offset),
-    cashu: hexKey(2 + offset),
-    refund: hexKey(3 + offset)
-  };
   return {
     sessionId: () => sessionId,
     reservationId: () => reservationId,
-    privateKey: (purpose) => keys[purpose],
-    htlcMaterial: () => createHTLCHash("ab".repeat(32))
+    privateKey: () => hexKey(1 + offset),
+    htlcMaterial: async () => fixedMaterial
   };
 }
 
@@ -80,17 +81,15 @@ function record(overrides: Partial<OrderRecord> = {}): OrderRecord {
     createdAt: now - 100,
     expiresAt: now + 9 * 86_400,
     side: "sell",
-    baseUnit: "sat",
-    quoteUnit: "usd",
-    offered: { unit: "sat", mint: baseMint },
-    requested: { unit: "usd", acceptableMints: [quoteMint] },
+    chainId,
+    baseToken: ZNN_ZTS,
+    quoteToken: QSR_ZTS,
     amount: "1000",
-    priceCentsPerBtc: "2000000"
+    price: "2000000"
   });
-  const head = "44".repeat(32);
   return {
     address: `30078:${maker}:granola:order:v1:${orderId}`,
-    eventId: head,
+    eventId: "44".repeat(32),
     makerPubkey: maker,
     verified: true,
     state,
@@ -100,8 +99,7 @@ function record(overrides: Partial<OrderRecord> = {}): OrderRecord {
 
 const clocks = {
   localNow: now,
-  baseMintNow: now + 1,
-  quoteMintNow: now - 1
+  chainNow: now + 1
 };
 
 async function wrappedProposal(
@@ -111,23 +109,20 @@ async function wrappedProposal(
   proposal: VerifiedInitialReserveProposal;
   wrapper: SignedNostrEvent;
 }> {
-  const takerEntropy = entropy();
-  const takerSecret = bytes(takerEntropy.privateKey("nostr"));
-  const takerNostr = getPublicKey(bytes(takerEntropy.privateKey("nostr")));
-  const terms = {
-    base_unit: "sat",
-    base_mint: baseMint,
-    base_keyset: baseKeyset,
-    quote_unit: "usd",
-    quote_mint: quoteMint,
-    quote_keyset: quoteKeyset,
+  const takerSecret = bytes(hexKey(1));
+  const takerNostr = getPublicKey(takerSecret);
+  const terms: ZwapTradeTerms = {
+    maker_side: "sell",
+    chain_id: chainId,
+    base_token: ZNN_ZTS,
+    quote_token: QSR_ZTS,
     base_amount: "1000",
     quote_amount: "20",
-    price_cents_per_btc: "2000000"
+    price: "2000000"
   };
-  const message: GranolaTradeMessage = {
+  const message: ZwapTradeMessage = {
     schema: "granola/dm/v1",
-    deployment: "cashu-testnet-v1",
+    deployment: deploymentFor(chainId),
     type: "reserve_propose",
     message_id: "66666666-6666-4666-8666-666666666666",
     session_id: sessionId,
@@ -146,10 +141,9 @@ async function wrappedProposal(
     terms_hash: await termsHash(terms),
     terms,
     body: {
-      schema: "granola/atomic-swap-body/v1",
+      schema: ATOMIC_SWAP_BODY_SCHEMA,
       taker_session_pubkey: takerNostr,
-      taker_cashu_pubkey: cashuPubkey(takerEntropy.privateKey("cashu")),
-      taker_refund_pubkey: cashuPubkey(takerEntropy.privateKey("refund")),
+      taker_address: takerAddress,
       fill_amount: "1000",
       ...bodyOverrides
     }
@@ -191,7 +185,8 @@ describe("trade session factory", () => {
       expectedOrderRevision: "0",
       market,
       fillBaseAmount: "1000",
-      clocks
+      clocks,
+      localAddress: takerAddress
     }, entropy());
     const raw = new MemoryStorageDriver();
     const repository = new TradeSessionRepository(
@@ -201,18 +196,33 @@ describe("trade session factory", () => {
 
     expect(await repository.get(session.sessionId)).toEqual(session);
     expect(session).toMatchObject({
-      schema: "granola/trade-session/v2",
+      schema: "zwap/trade-session/v1",
       revision: 0,
       role: "taker",
       phase: "negotiating",
       offeredProjectionId: "44".repeat(32),
       reserveProjectionId: null,
       reserveProjectionRevision: null,
-      terms: { baseAmount: "1000", quoteAmount: "20" },
+      terms: {
+        makerSide: "sell",
+        chainId,
+        baseToken: ZNN_ZTS,
+        baseAmount: "1000",
+        quoteToken: QSR_ZTS,
+        quoteAmount: "20",
+        price: "2000000"
+      },
       privateState: {
+        localAddress: takerAddress,
+        counterpartyAddress: null,
         preimage: null,
         htlcHash: null,
         settlementTranscriptHash: null,
+        chainOperation: null,
+        legs: {
+          base: { htlcId: null, expected: null, observations: [] },
+          quote: { htlcId: null, expected: null, observations: [] }
+        },
         inbox: {
           status: "unregistered",
           quorum: 1,
@@ -239,7 +249,8 @@ describe("trade session factory", () => {
       order: record(),
       proposal: opened,
       market,
-      clocks
+      clocks,
+      localAddress: makerAddress
     }, entropy(3));
 
     expect(session).toMatchObject({
@@ -249,7 +260,7 @@ describe("trade session factory", () => {
       phase: "negotiating",
       offeredProjectionId: "44".repeat(32),
       evidence: {
-        commitments: [entropy(3).htlcMaterial().hash],
+        commitments: [fixedMaterial.hash],
         reservation: {
           proposalSealId: opened.seal.id,
           takerCommitment: null,
@@ -257,22 +268,12 @@ describe("trade session factory", () => {
         }
       },
       privateState: {
-        preimage: entropy(3).htlcMaterial().preimage,
-        htlcHash: entropy(3).htlcMaterial().hash,
+        localAddress: makerAddress,
+        counterpartyAddress: takerAddress,
+        preimage: fixedMaterial.preimage,
+        htlcHash: fixedMaterial.hash,
         settlementTranscriptHash: opened.transcriptHash,
-        inbox: {
-          status: "unregistered",
-          quorum: 1,
-          event: null,
-          discoveryRelays: [],
-          inboxRelays: [],
-          receipts: [],
-          readbacks: [],
-          stagedAt: null,
-          acknowledgedAt: null,
-          registeredAt: null
-        },
-        pendingIncoming: null,
+        chainOperation: null,
         transcript: {
           nextSequence: "1",
           lastRumorId: opened.rumor.id,
@@ -288,6 +289,20 @@ describe("trade session factory", () => {
         }
       }
     });
+    expect(session.privateState.transcript.choreography.participants).toMatchObject({
+      makerOrderPubkey: maker,
+      makerSessionPubkey: getPublicKey(bytes(hexKey(4))),
+      takerSessionPubkey: getPublicKey(bytes(hexKey(1))),
+      makerAddress,
+      takerAddress
+    });
+  });
+
+  it("derives independent HTLC material by default", async () => {
+    const material = await createHtlcMaterial();
+    expect(material.preimage).not.toBe(material.hash);
+    expect(material.preimage).toMatch(/^[0-9a-f]{64}$/);
+    expect(material.hash).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("accepts only the opaque result of a cryptographically verified initial unwrap", async () => {
@@ -304,7 +319,8 @@ describe("trade session factory", () => {
       order: record(),
       proposal: partial,
       market,
-      clocks
+      clocks,
+      localAddress: makerAddress
     }, entropy(3))).rejects.toThrow(/verified initial/i);
 
     await expect(createMakerSession({
@@ -314,7 +330,8 @@ describe("trade session factory", () => {
         rumor: { ...opened.rumor, id: "99".repeat(32) }
       } as VerifiedInitialReserveProposal,
       market,
-      clocks
+      clocks,
+      localAddress: makerAddress
     }, entropy(3))).rejects.toThrow(/verified initial/i);
 
     await expect(createMakerSession({
@@ -324,7 +341,8 @@ describe("trade session factory", () => {
         transcriptHash: "aa".repeat(32)
       } as VerifiedInitialReserveProposal,
       market,
-      clocks
+      clocks,
+      localAddress: makerAddress
     }, entropy(3))).rejects.toThrow(/verified initial/i);
 
     await expect(unwrapInitialReserveProposal(
@@ -346,7 +364,8 @@ describe("trade session factory", () => {
       order: record(),
       proposal: opened,
       market,
-      clocks
+      clocks,
+      localAddress: makerAddress
     }, entropy(3));
 
     expect(() => {
@@ -392,23 +411,23 @@ describe("trade session factory", () => {
       expectedOrderRevision: "0",
       market,
       fillBaseAmount: "1000",
-      clocks
+      clocks,
+      localAddress: takerAddress
     }, entropy())).rejects.toThrow();
   });
 
-  it("accepts bids and rejects wrong mints, unsafe clocks, and non-canonical keysets", async () => {
+  it("accepts bids and rejects wrong tokens, chains, and unsafe clocks", async () => {
     const bid = record({
       state: createOrderState({
         orderId,
         createdAt: now - 100,
         expiresAt: now + 9 * 86_400,
         side: "buy",
-        baseUnit: "sat",
-        quoteUnit: "usd",
-        offered: { unit: "usd", mint: quoteMint },
-        requested: { unit: "sat", acceptableMints: [baseMint] },
+        chainId,
+        baseToken: ZNN_ZTS,
+        quoteToken: QSR_ZTS,
         amount: "1000",
-        priceCentsPerBtc: "2000000"
+        price: "2000000"
       })
     });
     const bidSession = await createTakerSession({
@@ -417,47 +436,75 @@ describe("trade session factory", () => {
       expectedOrderRevision: "0",
       market,
       fillBaseAmount: "1000",
-      clocks
+      clocks,
+      localAddress: takerAddress
     }, entropy());
     expect(bidSession.orderSide).toBe("buy");
     expect(bidSession.terms).toMatchObject({ baseAmount: "1000", quoteAmount: "20" });
+
     await expect(createTakerSession({
       order: record(),
       expectedOrderProjectionId: "44".repeat(32),
       expectedOrderRevision: "0",
-      market: { ...market, quoteMint: "https://other.example" },
+      market: { ...market, quoteToken: `zts1${"q".repeat(22)}` },
       fillBaseAmount: "1000",
-      clocks
+      clocks,
+      localAddress: takerAddress
     }, entropy())).rejects.toThrow(/assets|market/i);
+
+    await expect(createTakerSession({
+      order: record(),
+      expectedOrderProjectionId: "44".repeat(32),
+      expectedOrderRevision: "0",
+      market: { ...market, chainId: "3" },
+      fillBaseAmount: "1000",
+      clocks,
+      localAddress: takerAddress
+    }, entropy())).rejects.toThrow(/chain/i);
+
     await expect(createTakerSession({
       order: record(),
       expectedOrderProjectionId: "44".repeat(32),
       expectedOrderRevision: "0",
       market,
       fillBaseAmount: "1000",
-      clocks: { ...clocks, baseMintNow: now + 31 }
+      clocks: { ...clocks, chainNow: now + 121 },
+      localAddress: takerAddress
     }, entropy())).rejects.toThrow(/clock/i);
+  });
+
+  it.each([
+    ["a non-canonical chain ID", { chainId: "01" }],
+    ["a non-canonical token standard", { baseToken: ZNN_ZTS.toUpperCase() }],
+    ["identical base and quote tokens", { quoteToken: ZNN_ZTS }]
+  ] as const)("rejects %s", async (_label, override) => {
     await expect(createTakerSession({
       order: record(),
       expectedOrderProjectionId: "44".repeat(32),
       expectedOrderRevision: "0",
-      market: { ...market, baseKeyset: "UPPERCASE" },
+      market: { ...market, ...override },
       fillBaseAmount: "1000",
-      clocks
-    }, entropy())).rejects.toThrow(/keyset/i);
-    await expect(createTakerSession({
-      order: record({
-        state: {
-          ...record().state,
-          offered: { unit: "sat", mint: `${baseMint}/` }
-        }
-      }),
-      expectedOrderProjectionId: "44".repeat(32),
-      expectedOrderRevision: "0",
-      market,
-      fillBaseAmount: "1000",
-      clocks
-    }, entropy())).rejects.toThrow(/canonical/i);
+      clocks,
+      localAddress: takerAddress
+    }, entropy())).rejects.toThrow(/canonical|differ/i);
+  });
+
+  it("rejects a settlement address that is not a canonical Zenon address", async () => {
+    for (const localAddress of [
+      "",
+      "z1qzal6c5s9rjnnxd2z7dvdhjxpmmj4fmw56a0m",
+      "0xdeadbeef"
+    ]) {
+      await expect(createTakerSession({
+        order: record(),
+        expectedOrderProjectionId: "44".repeat(32),
+        expectedOrderRevision: "0",
+        market,
+        fillBaseAmount: "1000",
+        clocks,
+        localAddress
+      }, entropy())).rejects.toThrow(/canonical Zenon address/i);
+    }
   });
 
   it("rejects invalid all-or-none fills and partial-fill dust", async () => {
@@ -467,7 +514,8 @@ describe("trade session factory", () => {
       expectedOrderRevision: "0",
       market,
       fillBaseAmount: "500",
-      clocks
+      clocks,
+      localAddress: takerAddress
     }, entropy())).rejects.toThrow(/all-or-none/i);
 
     const partial = record({
@@ -483,39 +531,15 @@ describe("trade session factory", () => {
       expectedOrderRevision: "0",
       market,
       fillBaseAmount: "800",
-      clocks
+      clocks,
+      localAddress: takerAddress
     }, entropy())).rejects.toThrow(/dust/i);
   });
 
-  it("rejects reused local keys and maker keys that collide with the taker", async () => {
-    const reused = entropy();
-    const same: SessionFactoryEntropy = {
-      ...reused,
-      privateKey: () => hexKey(1)
-    };
-    await expect(createTakerSession({
-      order: record(),
-      expectedOrderProjectionId: "44".repeat(32),
-      expectedOrderRevision: "0",
-      market,
-      fillBaseAmount: "1000",
-      clocks
-    }, same)).rejects.toThrow(/independent/i);
-
-    await expect(createMakerSession({
-      order: record(),
-      proposal: await proposal(),
-      market,
-      clocks
-    }, entropy())).rejects.toThrow(/counterparty/i);
-
-    const negated: SessionFactoryEntropy = {
+  it("rejects a session Nostr key equivalent to the maker order authority", async () => {
+    const colliding: SessionFactoryEntropy = {
       ...entropy(),
-      privateKey: (purpose) => purpose === "nostr"
-        ? hexKey(1)
-        : purpose === "cashu"
-          ? (secp256k1Order - 1n).toString(16).padStart(64, "0")
-          : hexKey(3)
+      privateKey: () => hexKey(9)
     };
     await expect(createTakerSession({
       order: record(),
@@ -523,100 +547,65 @@ describe("trade session factory", () => {
       expectedOrderRevision: "0",
       market,
       fillBaseAmount: "1000",
-      clocks
-    }, negated)).rejects.toThrow(/independent/i);
-  });
+      clocks,
+      localAddress: takerAddress
+    }, colliding)).rejects.toThrow(/order authority/i);
 
-  it("allows both settlement legs to use one mint", async () => {
-    const oneMint = { ...market, quoteMint: market.baseMint };
-    const oneMintOrder = record({
-      state: createOrderState({
-        orderId,
-        createdAt: now - 100,
-        expiresAt: now + 9 * 86_400,
-        side: "sell",
-        baseUnit: "sat",
-        quoteUnit: "usd",
-        offered: { unit: "sat", mint: baseMint },
-        requested: { unit: "usd", acceptableMints: [baseMint] },
-        amount: "1000",
-        priceCentsPerBtc: "2000000"
-      })
-    });
-    const session = await createTakerSession({
-      order: oneMintOrder,
-      expectedOrderProjectionId: "44".repeat(32),
-      expectedOrderRevision: "0",
-      market: oneMint,
-      fillBaseAmount: "1000",
-      clocks
-    }, entropy());
-
-    expect(session.terms.baseMint).toBe(oneMint.baseMint);
-    expect(session.terms.quoteMint).toBe(oneMint.quoteMint);
-  });
-
-  it.each([
-    ["nostr", "nostr"],
-    ["cashu", "cashu"],
-    ["refund", "refund"]
-  ] as const)("rejects a taker %s key equivalent to the maker order authority", async (
-    _label,
-    purpose
-  ) => {
-    const separated = entropy();
-    const colliding: SessionFactoryEntropy = {
-      ...separated,
-      privateKey: (requested) =>
-        requested === purpose ? hexKey(9) : separated.privateKey(requested)
-    };
-    await expect(createTakerSession({
+    await expect(createMakerSession({
       order: record(),
-      expectedOrderProjectionId: "44".repeat(32),
-      expectedOrderRevision: "0",
+      proposal: await proposal(),
       market,
-      fillBaseAmount: "1000",
-      clocks
+      clocks,
+      localAddress: makerAddress
     }, colliding)).rejects.toThrow(/order authority/i);
   });
 
-  it("rejects a maker session Nostr key equivalent to its persistent order authority", async () => {
-    const separated = entropy(3);
-    const colliding: SessionFactoryEntropy = {
-      ...separated,
-      privateKey: (purpose) =>
-        purpose === "nostr" ? hexKey(9) : separated.privateKey(purpose)
+  it("rejects maker session keys or addresses that collide with the counterparty", async () => {
+    await expect(createMakerSession({
+      order: record(),
+      proposal: await proposal(),
+      market,
+      clocks,
+      localAddress: makerAddress
+    }, entropy())).rejects.toThrow(/collide/i);
+
+    await expect(createMakerSession({
+      order: record(),
+      proposal: await proposal(),
+      market,
+      clocks,
+      localAddress: takerAddress
+    }, entropy(3))).rejects.toThrow(/collides with the counterparty/i);
+  });
+
+  it("binds the maker session to the proposal's exact taker address", async () => {
+    const relocated = (await wrappedProposal(record(), {
+      taker_address: FIXTURE_THIRD_ADDRESS
+    })).proposal;
+    const session = await createMakerSession({
+      order: record(),
+      proposal: relocated,
+      market,
+      clocks,
+      localAddress: makerAddress
+    }, entropy(3));
+    expect(session.privateState.counterpartyAddress).toBe(FIXTURE_THIRD_ADDRESS);
+    expect(session.privateState.transcript.choreography.participants.takerAddress)
+      .toBe(FIXTURE_THIRD_ADDRESS);
+  });
+
+  it("rejects maker HTLC material that does not verify", async () => {
+    const broken: SessionFactoryEntropy = {
+      ...entropy(3),
+      htlcMaterial: async () => ({ preimage, hash: "cc".repeat(32) })
     };
     await expect(createMakerSession({
       order: record(),
       proposal: await proposal(),
       market,
-      clocks
-    }, colliding)).rejects.toThrow(/order authority/i);
-  });
-
-  it("rejects authenticated proposals with cross-role or parity-equivalent taker keys", async () => {
-    const takerX = getPublicKey(bytes(hexKey(1)));
-    const oppositeParity = `03${takerX}`;
-    const duplicate = (await wrappedProposal(record(), {
-      taker_cashu_pubkey: oppositeParity
-    })).proposal;
-    await expect(createMakerSession({
-      order: record(),
-      proposal: duplicate,
-      market,
-      clocks
-    }, entropy(3))).rejects.toThrow(/taker keys.*independent/i);
-
-    const authorityCollision = (await wrappedProposal(record(), {
-      taker_refund_pubkey: cashuPubkey(hexKey(9))
-    })).proposal;
-    await expect(createMakerSession({
-      order: record(),
-      proposal: authorityCollision,
-      market,
-      clocks
-    }, entropy(3))).rejects.toThrow(/order authority/i);
+      clocks,
+      localAddress: makerAddress
+    }, broken)).rejects.toThrow(/HTLC material is invalid/i);
   });
 
   it("rejects a proposal that expired after it was opened", async () => {
@@ -629,7 +618,8 @@ describe("trade session factory", () => {
       order: record(),
       proposal: expired,
       market,
-      clocks
+      clocks,
+      localAddress: makerAddress
     }, entropy(3))).rejects.toThrow(/verified initial/i);
   });
 });

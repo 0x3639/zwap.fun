@@ -1,10 +1,11 @@
-import { verifyHTLCHash } from "@cashu/cashu-ts";
 import { getEventHash, getPublicKey, verifyEvent } from "nostr-tools";
 
 import { normalizePublicRelay } from "../nostr/relay.js";
 import type { NostrEvent } from "../order/events.js";
+import { verifyHtlcMaterial } from "../zenon/htlc-material.js";
+import { isAmount, isHex32, isTokenStandard, isZenonAddress } from "../zenon/validate.js";
 import type {
-  CashuOperationJournal,
+  ChainOperationJournal,
   PrivateLegJournal,
   TradeInboxJournal,
   TradePendingIncomingJournal,
@@ -15,7 +16,7 @@ import type {
 } from "../trade/session.js";
 import { TRADE_MESSAGE_TYPES } from "../trade/messages.js";
 import { EncryptedStorageDriver } from "./encrypted-storage.js";
-import type { StorageDriver } from "./wallet-repository.js";
+import type { StorageDriver } from "./driver.js";
 
 const TRADE_SESSIONS_KEY = "granola.trade-sessions.v2";
 const HEX_32 = /^[0-9a-f]{64}$/;
@@ -26,7 +27,8 @@ const ORDER_ADDRESS = new RegExp(
 );
 const CANONICAL_INTEGER = /^(0|[1-9]\d*)$/;
 const POSITIVE_INTEGER = /^[1-9]\d*$/;
-const KEYSET = /^[0-9a-f]{16,66}$/;
+const CHAIN_ID = /^[1-9]\d*$/;
+const ZENON_NETWORK = /^zenon-[a-z0-9-]+$/;
 const TRADE_PHASES = new Set([
   "negotiating", "reserved", "base_locked", "quote_locked", "quote_claimed",
   "base_claimed", "filled", "waiting_quote_refund", "waiting_base_refund",
@@ -38,7 +40,7 @@ const CHOREOGRAPHY_PHASES = new Set([
   "awaiting_quote_lock_ack", "awaiting_claim_notice", "awaiting_fill_request",
   "awaiting_settlement_ack", "settling", "settled", "refunding", "failed"
 ]);
-const MINT_STATES = new Set(["UNKNOWN", "UNSPENT", "PENDING", "SPENT"]);
+const HTLC_STATES = new Set(["UNKNOWN", "LOCKED", "UNLOCKED", "RECLAIMED"]);
 
 function clone<T>(value: T): T {
   return structuredClone(value);
@@ -124,25 +126,6 @@ function uniqueStrings(
   ) {
     throw new Error(`${label} is invalid`);
   }
-  return value;
-}
-
-function normalizedHttps(value: unknown, label: string): string {
-  if (typeof value !== "string") throw new Error(`${label} is invalid`);
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new Error(`${label} is invalid`);
-  }
-  if (
-    parsed.protocol !== "https:" ||
-    parsed.username ||
-    parsed.password ||
-    parsed.search ||
-    parsed.hash ||
-    parsed.toString().replace(/\/$/, "") !== value
-  ) throw new Error(`${label} is invalid`);
   return value;
 }
 
@@ -261,6 +244,7 @@ function validateChoreography(value: unknown): void {
     choreography,
     ["phase", "participants", "refundedLegs"],
     [
+      "deployment",
       "sessionId",
       "reservationId",
       "orderAddress",
@@ -274,9 +258,9 @@ function validateChoreography(value: unknown): void {
       "reserveProjectionRevision",
       "shortLocktime",
       "longLocktime",
-      "baseTokenCommitment",
+      "baseHtlcId",
       "baseValidationCommitment",
-      "quoteTokenCommitment",
+      "quoteHtlcId",
       "quoteValidationCommitment"
     ],
     "Trade choreography"
@@ -295,10 +279,8 @@ function validateChoreography(value: unknown): void {
     [
       "makerSessionPubkey",
       "takerSessionPubkey",
-      "makerCashuPubkey",
-      "makerRefundPubkey",
-      "takerCashuPubkey",
-      "takerRefundPubkey"
+      "makerAddress",
+      "takerAddress"
     ],
     "Trade participants"
   );
@@ -312,18 +294,16 @@ function validateChoreography(value: unknown): void {
       throw new Error("Trade participants are invalid");
     }
   }
-  for (const field of [
-    "makerCashuPubkey",
-    "makerRefundPubkey",
-    "takerCashuPubkey",
-    "takerRefundPubkey"
-  ] as const) {
+  for (const field of ["makerAddress", "takerAddress"] as const) {
     if (
       participants[field] !== undefined &&
-      (typeof participants[field] !== "string" ||
-        !/^(02|03)[0-9a-f]{64}$/.test(participants[field] as string))
+      !isZenonAddress(participants[field])
     ) throw new Error("Trade participants are invalid");
   }
+  if (
+    participants.makerAddress !== undefined &&
+    participants.makerAddress === participants.takerAddress
+  ) throw new Error("Trade participants are invalid");
 }
 
 function validateTranscript(value: unknown): asserts value is TradeTranscriptJournal {
@@ -414,7 +394,8 @@ function validateMessage(value: unknown): void {
   const message = object(value, "Trade outbox message");
   if (
     message.schema !== "granola/dm/v1" ||
-    message.deployment !== "cashu-testnet-v1" ||
+    typeof message.deployment !== "string" ||
+    !/^zenon-[1-9]\d*-v1$/.test(message.deployment) ||
     typeof message.message_id !== "string" ||
     !UUID_V4.test(message.message_id) ||
     typeof message.session_id !== "string" ||
@@ -461,199 +442,145 @@ function validateOutbox(value: unknown): asserts value is TradeOutboxJournal {
 }
 
 function validateExpectedLock(value: unknown): void {
-  const expected = object(value, "Expected HTLC lock");
+  const expected = object(value, "Expected Zenon lock");
   exactKeys(expected, [
-    "mintUrl",
-    "unit",
-    "binding",
-    "amount",
-    "hash",
-    "receiverPubkey",
-    "refundPubkey",
-    "locktime",
     "leg",
-    "refundHorizon",
-    "deadlines"
-  ], "Expected HTLC lock");
-  normalizedHttps(expected.mintUrl, "Expected HTLC mint");
+    "chainId",
+    "tokenStandard",
+    "amount",
+    "hashLock",
+    "hashType",
+    "keyMaxSize",
+    "hashLockedAddress",
+    "timeLockedAddress",
+    "expirationTime",
+    "binding"
+  ], "Expected Zenon lock");
   if (
-    typeof expected.unit !== "string" ||
-    !/^[a-z][a-z0-9_-]{0,31}$/.test(expected.unit) ||
-    typeof expected.amount !== "string" ||
-    !POSITIVE_INTEGER.test(expected.amount) ||
-    typeof expected.hash !== "string" ||
-    !HEX_32.test(expected.hash) ||
-    typeof expected.receiverPubkey !== "string" ||
-    !/^(02|03)[0-9a-f]{64}$/.test(expected.receiverPubkey) ||
-    typeof expected.refundPubkey !== "string" ||
-    !/^(02|03)[0-9a-f]{64}$/.test(expected.refundPubkey) ||
-    (expected.leg !== "base" && expected.leg !== "quote")
-  ) throw new Error("Expected HTLC lock is invalid");
-  safeTime(expected.locktime, "Expected HTLC locktime");
-  safeTime(expected.refundHorizon, "Expected HTLC refund horizon");
-  const binding = object(expected.binding, "Expected HTLC binding");
+    (expected.leg !== "base" && expected.leg !== "quote") ||
+    typeof expected.chainId !== "string" ||
+    !CHAIN_ID.test(expected.chainId) ||
+    !isTokenStandard(expected.tokenStandard) ||
+    !isAmount(expected.amount) ||
+    !isHex32(expected.hashLock) ||
+    expected.hashType !== 1 ||
+    expected.keyMaxSize !== 32 ||
+    !isZenonAddress(expected.hashLockedAddress) ||
+    !isZenonAddress(expected.timeLockedAddress) ||
+    expected.hashLockedAddress === expected.timeLockedAddress
+  ) throw new Error("Expected Zenon lock is invalid");
+  if (safeTime(expected.expirationTime, "Expected Zenon lock expiration") === 0) {
+    throw new Error("Expected Zenon lock expiration is invalid");
+  }
+  const binding = object(expected.binding, "Expected Zenon lock binding");
   exactKeys(binding, [
     "protocolVersion",
     "network",
     "orderId",
     "reservationId",
     "sessionId",
-    "direction",
     "transcriptHash"
-  ], "Expected HTLC binding");
+  ], "Expected Zenon lock binding");
   if (
+    binding.protocolVersion !== "1" ||
+    typeof binding.network !== "string" ||
+    !ZENON_NETWORK.test(binding.network) ||
+    typeof binding.orderId !== "string" || !UUID_V4.test(binding.orderId) ||
     typeof binding.sessionId !== "string" || !HEX_32.test(binding.sessionId) ||
     typeof binding.reservationId !== "string" || !UUID_V4.test(binding.reservationId) ||
-    typeof binding.transcriptHash !== "string" || !HEX_32.test(binding.transcriptHash) ||
-    binding.direction !== expected.leg
-  ) throw new Error("Expected HTLC binding is invalid");
-  const deadlines = object(expected.deadlines, "Expected HTLC deadlines");
-  exactKeys(deadlines, ["short", "long", "minimumGap"], "Expected HTLC deadlines");
-  const short = safeTime(deadlines.short, "Expected HTLC short deadline");
-  const long = safeTime(deadlines.long, "Expected HTLC long deadline");
-  const gap = long - short;
-  if (
-    (deadlines.minimumGap !== 600 && deadlines.minimumGap !== 3 * 86_400) ||
-    deadlines.minimumGap !== gap
-  ) {
-    throw new Error("Expected HTLC deadlines are invalid");
-  }
+    !isHex32(binding.transcriptHash)
+  ) throw new Error("Expected Zenon lock binding is invalid");
 }
 
-function validateCashuOperation(value: unknown): asserts value is CashuOperationJournal {
-  const operation = object(value, "Cashu operation journal");
+function validateChainOperation(value: unknown): asserts value is ChainOperationJournal {
+  const operation = object(value, "Chain operation journal");
   exactKeys(operation, [
     "operationId",
     "leg",
     "kind",
     "status",
     "preparedAt",
-    "inputsReserved",
+    "fundsReserved",
     "artifact",
     "result"
-  ], "Cashu operation journal");
+  ], "Chain operation journal");
   if (
     typeof operation.operationId !== "string" ||
     !UUID_V4.test(operation.operationId) ||
     (operation.leg !== "base" && operation.leg !== "quote") ||
-    !["outgoing-lock", "claim", "refund"].includes(operation.kind as string) ||
-    !["prepared", "completed", "wallet_applied"].includes(operation.status as string) ||
-    typeof operation.inputsReserved !== "boolean"
-  ) throw new Error("Cashu operation metadata is invalid");
-  safeTime(operation.preparedAt, "Cashu operation prepared time");
-  if (operation.status !== "prepared" && operation.inputsReserved !== true) {
-    throw new Error("Completed Cashu operation requires reserved inputs");
+    !["lock", "claim", "refund"].includes(operation.kind as string) ||
+    !["prepared", "completed", "account_applied"].includes(operation.status as string) ||
+    typeof operation.fundsReserved !== "boolean"
+  ) throw new Error("Chain operation metadata is invalid");
+  safeTime(operation.preparedAt, "Chain operation prepared time");
+  if (operation.status !== "prepared" && operation.fundsReserved !== true) {
+    throw new Error("Completed chain operation requires reserved funds");
   }
-  const artifact = object(operation.artifact, "Cashu operation artifact");
+  const artifact = object(operation.artifact, "Chain operation artifact");
   exactKeys(artifact, [
     "version",
     "kind",
-    "mintUrl",
-    "unit",
-    "preview",
-    "spentSecrets",
+    "chainId",
+    "tokenStandard",
+    "amount",
+    "htlcId",
     "expected",
     "operationCommitment"
-  ], "Cashu operation artifact");
+  ], "Chain operation artifact");
   if (
     artifact.version !== 1 ||
     artifact.kind !== operation.kind ||
-    typeof artifact.mintUrl !== "string" ||
-    typeof artifact.unit !== "string" ||
-    typeof artifact.operationCommitment !== "string" ||
-    !HEX_32.test(artifact.operationCommitment) ||
-    !Array.isArray(artifact.spentSecrets) ||
-    artifact.spentSecrets.length === 0 ||
-    artifact.spentSecrets.some((secret) => typeof secret !== "string" || !secret) ||
-    new Set(artifact.spentSecrets).size !== artifact.spentSecrets.length
-  ) throw new Error("Cashu operation artifact is invalid");
-  object(artifact.preview, "Cashu operation preview");
+    typeof artifact.chainId !== "string" ||
+    !CHAIN_ID.test(artifact.chainId) ||
+    !isTokenStandard(artifact.tokenStandard) ||
+    !isAmount(artifact.amount) ||
+    !(artifact.htlcId === null || isHex32(artifact.htlcId)) ||
+    !isHex32(artifact.operationCommitment)
+  ) throw new Error("Chain operation artifact is invalid");
   validateExpectedLock(artifact.expected);
   const expected = artifact.expected as Record<string, unknown>;
   if (
-    artifact.mintUrl !== expected.mintUrl ||
-    artifact.unit !== expected.unit ||
+    artifact.chainId !== expected.chainId ||
+    artifact.tokenStandard !== expected.tokenStandard ||
+    artifact.amount !== expected.amount ||
     operation.leg !== expected.leg
-  ) throw new Error("Cashu operation artifact disagrees with its expected lock");
+  ) throw new Error("Chain operation artifact disagrees with its expected lock");
+  if (operation.kind !== "lock" && artifact.htlcId === null) {
+    throw new Error("Claim or refund artifacts require their exact HTLC ID");
+  }
   if (operation.status === "prepared" && operation.result !== null) {
-    throw new Error("Prepared Cashu operation cannot have a completed result");
+    throw new Error("Prepared chain operation cannot have a completed result");
   }
   if (operation.status !== "prepared" && operation.result === null) {
-    throw new Error("Completed Cashu operation requires an exact result");
+    throw new Error("Completed chain operation requires an exact result");
   }
   if (operation.result !== null) {
-    const result = object(operation.result, "Cashu operation result");
+    const result = object(operation.result, "Chain operation result");
     exactKeys(result, [
-      "walletMutation",
-      "mintUrl",
-      "unit",
-      "proofs",
-      "lockedToken",
-      "amount",
-      "proofCount"
-    ], "Cashu operation result");
+      "blockHash",
+      "htlcId",
+      "tokenStandard",
+      "amount"
+    ], "Chain operation result");
     if (
-      (result.walletMutation !== "replace" && result.walletMutation !== "receive") ||
-      typeof result.mintUrl !== "string" ||
-      typeof result.unit !== "string" ||
-      !Array.isArray(result.proofs) ||
-      result.proofs.some((proof) => {
-        if (!proof || typeof proof !== "object") return true;
-        const item = proof as Record<string, unknown>;
-        try {
-          exactAllowedKeys(
-            item,
-            ["amount", "id", "secret", "C"],
-            ["dleq"],
-            "Cashu operation proof"
-          );
-          if (item.dleq !== undefined) {
-            exactKeys(
-              object(item.dleq, "Cashu operation proof DLEQ"),
-              ["e", "s", "r"],
-              "Cashu operation proof DLEQ"
-            );
-          }
-        } catch {
-          return true;
-        }
-        return typeof item.amount !== "string" || !POSITIVE_INTEGER.test(item.amount) ||
-          typeof item.id !== "string" || typeof item.secret !== "string" ||
-          typeof item.C !== "string";
-      }) ||
-      !(typeof result.lockedToken === "string" || result.lockedToken === null) ||
-      typeof result.amount !== "string" ||
-      !POSITIVE_INTEGER.test(result.amount) ||
-      !Number.isSafeInteger(result.proofCount) ||
-      (result.proofCount as number) < 1
-    ) throw new Error("Cashu operation result is invalid");
+      !isHex32(result.blockHash) ||
+      !isHex32(result.htlcId) ||
+      !isTokenStandard(result.tokenStandard) ||
+      !isAmount(result.amount)
+    ) throw new Error("Chain operation result is invalid");
     if (
-      result.mintUrl !== artifact.mintUrl ||
-      result.unit !== artifact.unit ||
-      result.amount !== expected.amount
-    ) throw new Error("Cashu operation result disagrees with its prepared artifact");
-    if (operation.kind === "outgoing-lock") {
-      if (
-        result.walletMutation !== "replace" ||
-        typeof result.lockedToken !== "string" ||
-        result.lockedToken.length === 0
-      ) throw new Error("Outgoing lock result must retain its exact locked token");
-    } else if (
-      result.walletMutation !== "receive" ||
-      result.lockedToken !== null ||
-      (result.proofs as unknown[]).length === 0 ||
-      result.proofCount !== (result.proofs as unknown[]).length
-    ) {
-      throw new Error("Claim or refund result must contain its exact received proofs");
-    }
+      result.tokenStandard !== artifact.tokenStandard ||
+      result.amount !== expected.amount ||
+      (artifact.htlcId !== null && result.htlcId !== artifact.htlcId)
+    ) throw new Error("Chain operation result disagrees with its prepared artifact");
   }
 }
 
 function validatePrivateLeg(value: unknown): asserts value is PrivateLegJournal {
   const leg = object(value, "Private trade leg");
-  exactKeys(leg, ["token", "expected", "observations"], "Private trade leg");
-  if (!(leg.token === null || (typeof leg.token === "string" && leg.token.length > 0))) {
-    throw new Error("Private trade token is invalid");
+  exactKeys(leg, ["htlcId", "expected", "observations"], "Private trade leg");
+  if (!(leg.htlcId === null || isHex32(leg.htlcId))) {
+    throw new Error("Private trade HTLC ID is invalid");
   }
   if (leg.expected !== null) validateExpectedLock(leg.expected);
   if (!Array.isArray(leg.observations)) {
@@ -667,7 +594,7 @@ function validatePrivateLeg(value: unknown): asserts value is PrivateLegJournal 
       try {
         exactKeys(
           item,
-          ["observedAt", "state", "proofCount", "witnessCommitment"],
+          ["observedAt", "state", "witnessCommitment"],
           "Private trade observation"
         );
       } catch {
@@ -680,11 +607,9 @@ function validatePrivateLeg(value: unknown): asserts value is PrivateLegJournal 
         (item.observedAt as number) < 0 ||
         (previous !== undefined &&
           (item.observedAt as number) < (previous.observedAt as number)) ||
-        typeof item.state !== "string" || !MINT_STATES.has(item.state) ||
-        !Number.isSafeInteger(item.proofCount) || (item.proofCount as number) < 1 ||
-        !(item.witnessCommitment === null ||
-          (typeof item.witnessCommitment === "string" && HEX_32.test(item.witnessCommitment))) ||
-        (item.state === "SPENT") !== (item.witnessCommitment !== null);
+        typeof item.state !== "string" || !HTLC_STATES.has(item.state) ||
+        !(item.witnessCommitment === null || isHex32(item.witnessCommitment)) ||
+        (item.state === "UNLOCKED") !== (item.witnessCommitment !== null);
     })
   ) throw new Error("Private trade observations are invalid");
 }
@@ -1014,42 +939,31 @@ function validatePendingOrderPublication(
 function validateLegEvidence(value: unknown): asserts value is TradeLegEvidence {
   const leg = object(value, "Trade leg evidence");
   exactKeys(leg, [
-    "tokenCommitment",
+    "htlcId",
     "validationCommitment",
-    "keysetId",
-    "proofCount",
-    "fee",
-    "mintState",
+    "htlcState",
     "observedAt",
     "spendCommitment",
     "claimOperationCommitment",
     "refundOperationCommitment"
   ], "Trade leg evidence");
-  optionalHex(leg.tokenCommitment, "Token commitment");
+  optionalHex(leg.htlcId, "HTLC ID");
   optionalHex(leg.validationCommitment, "Validation commitment");
   optionalHex(leg.spendCommitment, "Spend commitment");
   optionalHex(leg.claimOperationCommitment, "Claim operation commitment");
   optionalHex(leg.refundOperationCommitment, "Refund operation commitment");
   if (
-    typeof leg.keysetId !== "string" ||
-    !KEYSET.test(leg.keysetId) ||
-    !(leg.proofCount === null || (Number.isSafeInteger(leg.proofCount) && (leg.proofCount as number) > 0)) ||
-    !(leg.fee === null || (typeof leg.fee === "string" && CANONICAL_INTEGER.test(leg.fee))) ||
-    typeof leg.mintState !== "string" ||
-    !MINT_STATES.has(leg.mintState) ||
+    typeof leg.htlcState !== "string" ||
+    !HTLC_STATES.has(leg.htlcState) ||
     !(leg.observedAt === null || (Number.isSafeInteger(leg.observedAt) && (leg.observedAt as number) >= 0))
   ) throw new Error("Trade leg evidence is invalid");
   if (
-    (leg.mintState === "UNKNOWN" && (
+    (leg.htlcState === "UNKNOWN" && (
       leg.observedAt !== null ||
-      leg.proofCount !== null ||
       leg.spendCommitment !== null
     )) ||
-    (leg.mintState !== "UNKNOWN" && (
-      leg.observedAt === null ||
-      leg.proofCount === null
-    )) ||
-    (leg.mintState === "SPENT") !== (leg.spendCommitment !== null)
+    (leg.htlcState !== "UNKNOWN" && leg.observedAt === null) ||
+    (leg.htlcState === "UNLOCKED") !== (leg.spendCommitment !== null)
   ) throw new Error("Trade leg evidence state is inconsistent");
 }
 
@@ -1057,7 +971,7 @@ function validateObservedEvidence(
   evidence: TradeLegEvidence,
   privateLeg: PrivateLegJournal
 ): void {
-  if (evidence.mintState === "UNKNOWN") {
+  if (evidence.htlcState === "UNKNOWN") {
     if (privateLeg.observations.length !== 0) {
       throw new Error("UNKNOWN trade evidence contains private observations");
     }
@@ -1065,20 +979,19 @@ function validateObservedEvidence(
   }
   const observation = privateLeg.observations.at(-1);
   const matchesPrivateObservation = observation !== undefined &&
-    observation.state === evidence.mintState &&
+    observation.state === evidence.htlcState &&
     observation.observedAt === evidence.observedAt &&
-    observation.proofCount === evidence.proofCount &&
     observation.witnessCommitment === (
-      evidence.mintState === "SPENT" ? evidence.spendCommitment : null
+      evidence.htlcState === "UNLOCKED" ? evidence.spendCommitment : null
     );
   if (!matchesPrivateObservation) {
     throw new Error("Trade evidence lacks its matching private observation");
   }
 }
 
-function assertSession(value: unknown): asserts value is TradeSession {
+async function assertSession(value: unknown): Promise<TradeSession> {
   const session = object(value, "Trade session storage");
-  if (session.schema !== "granola/trade-session/v2") {
+  if (session.schema !== "zwap/trade-session/v1") {
     throw new Error(`Unsupported trade session schema: ${String(session.schema)}`);
   }
   if (
@@ -1118,23 +1031,23 @@ function assertSession(value: unknown): asserts value is TradeSession {
   if (updatedAt < createdAt) throw new Error("Trade update time is invalid");
 
   const terms = object(session.terms, "Trade terms");
-  normalizedHttps(terms.baseMint, "Base mint");
-  normalizedHttps(terms.quoteMint, "Quote mint");
+  exactAllowedKeys(
+    terms,
+    ["chainId", "baseToken", "baseAmount", "quoteToken", "quoteAmount", "price"],
+    ["makerSide"],
+    "Trade terms"
+  );
   if (
     (terms.makerSide !== undefined &&
       terms.makerSide !== "buy" && terms.makerSide !== "sell") ||
-    typeof terms.baseUnit !== "string" ||
-    typeof terms.quoteUnit !== "string" ||
-    typeof terms.baseKeyset !== "string" ||
-    !KEYSET.test(terms.baseKeyset) ||
-    typeof terms.quoteKeyset !== "string" ||
-    !KEYSET.test(terms.quoteKeyset) ||
-    typeof terms.baseAmount !== "string" ||
-    !POSITIVE_INTEGER.test(terms.baseAmount) ||
-    typeof terms.quoteAmount !== "string" ||
-    !POSITIVE_INTEGER.test(terms.quoteAmount) ||
-    typeof terms.priceCentsPerBtc !== "string" ||
-    !POSITIVE_INTEGER.test(terms.priceCentsPerBtc)
+    typeof terms.chainId !== "string" ||
+    !CHAIN_ID.test(terms.chainId) ||
+    !isTokenStandard(terms.baseToken) ||
+    !isTokenStandard(terms.quoteToken) ||
+    terms.baseToken === terms.quoteToken ||
+    !isAmount(terms.baseAmount) ||
+    !isAmount(terms.quoteAmount) ||
+    !isAmount(terms.price)
   ) throw new Error("Trade terms are invalid");
 
   const plan = object(session.plan, "Settlement plan");
@@ -1142,12 +1055,12 @@ function assertSession(value: unknown): asserts value is TradeSession {
     "anchor", "shortLocktime", "makerClaimCutoff", "longLocktime",
     "takerClaimCutoff", "reservationExpiresAt", "refundGuardSeconds"
   ]) safeTime(plan[field], `Settlement plan ${field}`);
-  const locktimeGap =
-    (plan.longLocktime as number) - (plan.shortLocktime as number);
   if (
+    (plan.shortLocktime as number) <= (plan.anchor as number) ||
+    (plan.longLocktime as number) <= (plan.shortLocktime as number) ||
     plan.makerClaimCutoff !== (plan.shortLocktime as number) - 120 ||
-    (locktimeGap !== 600 && locktimeGap !== 3 * 86_400) ||
     plan.takerClaimCutoff !== (plan.longLocktime as number) - 120 ||
+    plan.reservationExpiresAt !== (plan.longLocktime as number) + 600 ||
     plan.refundGuardSeconds !== 60
   ) throw new Error("Settlement plan profile is invalid");
 
@@ -1155,7 +1068,7 @@ function assertSession(value: unknown): asserts value is TradeSession {
   exactKeys(evidence, [
     "makerPubkey",
     "commitments",
-    "mintStates",
+    "chainStates",
     "reserveProjectionId",
     "reserveProjectionRevision",
     "fillProjectionId",
@@ -1168,8 +1081,8 @@ function assertSession(value: unknown): asserts value is TradeSession {
     !HEX_32.test(evidence.makerPubkey) ||
     !Array.isArray(evidence.commitments) ||
     evidence.commitments.some((item) => typeof item !== "string" || !HEX_32.test(item)) ||
-    !Array.isArray(evidence.mintStates) ||
-    evidence.mintStates.some((item) => typeof item !== "string")
+    !Array.isArray(evidence.chainStates) ||
+    evidence.chainStates.some((item) => typeof item !== "string")
   ) throw new Error("Trade evidence is invalid");
   optionalHex(evidence.reserveProjectionId, "Reserve projection evidence");
   optionalHex(evidence.fillProjectionId, "Fill projection evidence");
@@ -1235,10 +1148,6 @@ function assertSession(value: unknown): asserts value is TradeSession {
   const evidenceLegs = object(evidence.legs, "Trade evidence legs");
   validateLegEvidence(evidenceLegs.base);
   validateLegEvidence(evidenceLegs.quote);
-  if (
-    (evidenceLegs.base as TradeLegEvidence).keysetId !== terms.baseKeyset ||
-    (evidenceLegs.quote as TradeLegEvidence).keysetId !== terms.quoteKeyset
-  ) throw new Error("Trade evidence keysets disagree with negotiated terms");
 
   if (session.pendingOrderPublication !== null) {
     validatePendingOrderPublication(session.pendingOrderPublication, {
@@ -1261,10 +1170,33 @@ function assertSession(value: unknown): asserts value is TradeSession {
   }
 
   const privateState = object(session.privateState, "Trade private state");
-  for (const field of ["nostrPrivateKey", "cashuPrivateKey", "refundPrivateKey"]) {
-    if (typeof privateState[field] !== "string" || !HEX_32.test(privateState[field] as string)) {
-      throw new Error("Trade private key is invalid");
-    }
+  exactKeys(privateState, [
+    "nostrPrivateKey",
+    "localAddress",
+    "counterpartyAddress",
+    "preimage",
+    "htlcHash",
+    "settlementTranscriptHash",
+    "inbox",
+    "pendingIncoming",
+    "transcript",
+    "outbox",
+    "chainOperation",
+    "legs"
+  ], "Trade private state");
+  if (
+    typeof privateState.nostrPrivateKey !== "string" ||
+    !HEX_32.test(privateState.nostrPrivateKey)
+  ) throw new Error("Trade private key is invalid");
+  if (!isZenonAddress(privateState.localAddress)) {
+    throw new Error("Trade local settlement address is invalid");
+  }
+  if (
+    privateState.counterpartyAddress !== null &&
+    !isZenonAddress(privateState.counterpartyAddress)
+  ) throw new Error("Trade counterparty settlement address is invalid");
+  if (privateState.counterpartyAddress === privateState.localAddress) {
+    throw new Error("Trade settlement addresses must remain distinct");
   }
   const nostrKey = hexBytes(privateState.nostrPrivateKey as string);
   let localNostrPubkey: string;
@@ -1281,7 +1213,10 @@ function assertSession(value: unknown): asserts value is TradeSession {
   ) throw new Error("Trade preimage lacks its HTLC hash");
   if (
     privateState.preimage !== null &&
-    !verifyHTLCHash(privateState.preimage as string, privateState.htlcHash as string)
+    !(await verifyHtlcMaterial(
+      privateState.preimage as string,
+      privateState.htlcHash as string
+    ))
   ) throw new Error("Trade preimage does not match its HTLC hash");
   if (
     privateState.htlcHash !== null &&
@@ -1458,26 +1393,26 @@ function assertSession(value: unknown): asserts value is TradeSession {
         messageId === outbox.message.message_id || rumorId === outbox.rumor.id)
     ) throw new Error("Trade outbox artifacts disagree with the durable transcript");
   }
-  if (privateState.cashuOperation !== null) {
-    validateCashuOperation(privateState.cashuOperation);
-    if (privateState.cashuOperation.preparedAt > updatedAt) {
-      throw new Error("Cashu operation preparation time is in the future");
+  if (privateState.chainOperation !== null) {
+    validateChainOperation(privateState.chainOperation);
+    if (privateState.chainOperation.preparedAt > updatedAt) {
+      throw new Error("Chain operation preparation time is in the future");
     }
-    const operationEvidence = privateState.cashuOperation.leg === "base"
+    const operationEvidence = privateState.chainOperation.leg === "base"
       ? evidenceLegs.base as TradeLegEvidence
       : evidenceLegs.quote as TradeLegEvidence;
-    const commitment = privateState.cashuOperation.artifact.operationCommitment;
-    const expected = privateState.cashuOperation.artifact.expected;
+    const commitment = privateState.chainOperation.artifact.operationCommitment;
+    const expected = privateState.chainOperation.artifact.expected;
     if (
       expected.binding.sessionId !== session.sessionId ||
       expected.binding.reservationId !== session.reservationId ||
       expected.binding.transcriptHash !== privateState.settlementTranscriptHash ||
-      expected.hash !== privateState.htlcHash ||
-      (privateState.cashuOperation.kind === "claim" &&
+      expected.hashLock !== privateState.htlcHash ||
+      (privateState.chainOperation.kind === "claim" &&
         operationEvidence.claimOperationCommitment !== commitment) ||
-      (privateState.cashuOperation.kind === "refund" &&
+      (privateState.chainOperation.kind === "refund" &&
         operationEvidence.refundOperationCommitment !== commitment)
-    ) throw new Error("Cashu operation lacks matching public commitment evidence");
+    ) throw new Error("Chain operation lacks matching public commitment evidence");
   }
   const privateLegs = object(privateState.legs, "Private trade legs");
   const privateBase = privateLegs.base;
@@ -1493,29 +1428,36 @@ function assertSession(value: unknown): asserts value is TradeSession {
     const expected = privateLeg.expected;
     if (expected !== null && (
       expected.leg !== legName ||
-      expected.mintUrl !== (legName === "base" ? terms.baseMint : terms.quoteMint) ||
-      expected.unit !== (legName === "base" ? terms.baseUnit : terms.quoteUnit) ||
+      expected.chainId !== terms.chainId ||
+      expected.tokenStandard !==
+        (legName === "base" ? terms.baseToken : terms.quoteToken) ||
       expected.amount !== (legName === "base" ? terms.baseAmount : terms.quoteAmount) ||
+      expected.hashLock !== privateState.htlcHash ||
       expected.binding.sessionId !== session.sessionId ||
       expected.binding.reservationId !== session.reservationId ||
       privateState.settlementTranscriptHash === null ||
       expected.binding.transcriptHash !== privateState.settlementTranscriptHash
-    )) throw new Error("Expected HTLC lock disagrees with the trade session");
+    )) throw new Error("Expected Zenon lock disagrees with the trade session");
     if (
-      evidenceLeg.tokenCommitment !== null &&
-      (privateLeg.token === null || evidenceLeg.validationCommitment === null)
-    ) throw new Error("Trade token commitment lacks exact private token evidence");
+      evidenceLeg.htlcId !== null &&
+      (privateLeg.htlcId !== evidenceLeg.htlcId ||
+        evidenceLeg.validationCommitment === null)
+    ) throw new Error("Trade HTLC evidence lacks exact private lock evidence");
   }
+  return session as unknown as TradeSession;
 }
 
-function assertSessions(value: unknown): asserts value is TradeSession[] {
+async function assertSessions(value: unknown): Promise<TradeSession[]> {
   if (!Array.isArray(value)) throw new Error("Trade session storage is corrupt");
   const seen = new Set<string>();
-  for (const session of value) {
-    assertSession(session);
+  const sessions: TradeSession[] = [];
+  for (const candidate of value) {
+    const session = await assertSession(candidate);
     if (seen.has(session.sessionId)) throw new Error("Trade session storage has duplicate IDs");
     seen.add(session.sessionId);
+    sessions.push(session);
   }
+  return sessions;
 }
 
 export interface TakerStartIntent {
@@ -1531,7 +1473,7 @@ interface StoredTakerStartBinding extends TakerStartIntent {
 }
 
 interface TradeSessionStore {
-  schema: "granola/trade-session-store/v1";
+  schema: "zwap/trade-session-store/v1";
   sessions: TradeSession[];
   takerStarts: StoredTakerStartBinding[];
 }
@@ -1579,19 +1521,17 @@ function sameTakerStartIntent(
     left.fillBaseAmount === right.fillBaseAmount;
 }
 
-function assertTradeSessionStore(value: unknown): asserts value is TradeSessionStore {
+async function assertTradeSessionStore(value: unknown): Promise<TradeSessionStore> {
   const store = object(value, "Trade session store");
   exactKeys(store, ["schema", "sessions", "takerStarts"], "Trade session store");
-  if (store.schema !== "granola/trade-session-store/v1") {
+  if (store.schema !== "zwap/trade-session-store/v1") {
     throw new Error("Trade session store schema is invalid");
   }
-  assertSessions(store.sessions);
+  const validated = await assertSessions(store.sessions);
   if (!Array.isArray(store.takerStarts)) {
     throw new Error("Trade session start bindings are invalid");
   }
-  const sessions = new Map(
-    (store.sessions as TradeSession[]).map((item) => [item.sessionId, item])
-  );
+  const sessions = new Map(validated.map((item) => [item.sessionId, item]));
   const requestIds = new Set<string>();
   const boundSessions = new Set<string>();
   for (const value of store.takerStarts) {
@@ -1613,11 +1553,12 @@ function assertTradeSessionStore(value: unknown): asserts value is TradeSessionS
     requestIds.add(binding.requestId);
     boundSessions.add(binding.sessionId);
   }
+  return store as unknown as TradeSessionStore;
 }
 
 function emptyTradeSessionStore(): TradeSessionStore {
   return {
-    schema: "granola/trade-session-store/v1",
+    schema: "zwap/trade-session-store/v1",
     sessions: [],
     takerStarts: []
   };
@@ -1635,10 +1576,10 @@ const OUTBOX_STATUS_RANK: Record<TradeOutboxJournal["status"], number> = {
   acknowledged: 1
 };
 
-const CASHU_STATUS_RANK: Record<CashuOperationJournal["status"], number> = {
+const CHAIN_STATUS_RANK: Record<ChainOperationJournal["status"], number> = {
   prepared: 0,
   completed: 1,
-  wallet_applied: 2
+  account_applied: 2
 };
 
 const ORDER_STATUS_RANK: Record<
@@ -1739,20 +1680,20 @@ function assertMonotonicUpdate(current: TradeSession, next: TradeSession): void 
     throw new Error("A staged trade outbox cannot be cleared before acknowledgement");
   }
 
-  const currentCashu = current.privateState.cashuOperation;
-  const nextCashu = next.privateState.cashuOperation;
-  if (currentCashu && nextCashu) {
-    const advance = CASHU_STATUS_RANK[nextCashu.status] -
-      CASHU_STATUS_RANK[currentCashu.status];
+  const currentChain = current.privateState.chainOperation;
+  const nextChain = next.privateState.chainOperation;
+  if (currentChain && nextChain) {
+    const advance = CHAIN_STATUS_RANK[nextChain.status] -
+      CHAIN_STATUS_RANK[currentChain.status];
     if (
-      currentCashu.operationId !== nextCashu.operationId ||
-      currentCashu.artifact.operationCommitment !==
-        nextCashu.artifact.operationCommitment ||
+      currentChain.operationId !== nextChain.operationId ||
+      currentChain.artifact.operationCommitment !==
+        nextChain.artifact.operationCommitment ||
       advance < 0 ||
       advance > 1
-    ) throw new Error("Cashu operation checkpoint regressed or changed");
-  } else if (currentCashu && currentCashu.status !== "wallet_applied") {
-    throw new Error("Cashu operation cannot be cleared before wallet application");
+    ) throw new Error("Chain operation checkpoint regressed or changed");
+  } else if (currentChain && currentChain.status !== "account_applied") {
+    throw new Error("Chain operation cannot be cleared before account application");
   }
 
   const currentOrder = current.pendingOrderPublication;
@@ -1776,9 +1717,9 @@ function assertMonotonicUpdate(current: TradeSession, next: TradeSession): void 
         current.privateState.legs[leg].observations,
         next.privateState.legs[leg].observations
       ) ||
-      (current.evidence.legs[leg].mintState === "SPENT" &&
-        next.evidence.legs[leg].mintState !== "SPENT")
-    ) throw new Error(`Trade ${leg} mint evidence regressed`);
+      (current.evidence.legs[leg].htlcState === "UNLOCKED" &&
+        next.evidence.legs[leg].htlcState !== "UNLOCKED")
+    ) throw new Error(`Trade ${leg} chain evidence regressed`);
   }
 }
 
@@ -1863,15 +1804,13 @@ export class TradeSessionRepository {
     );
     if (stored === undefined || stored === null) return emptyTradeSessionStore();
     if (Array.isArray(stored)) {
-      assertSessions(stored);
       return {
-        schema: "granola/trade-session-store/v1",
-        sessions: clone(stored),
+        schema: "zwap/trade-session-store/v1",
+        sessions: clone(await assertSessions(stored)),
         takerStarts: []
       };
     }
-    assertTradeSessionStore(stored);
-    return clone(stored);
+    return clone(await assertTradeSessionStore(stored));
   }
 
   async list(): Promise<TradeSession[]> {
@@ -1904,7 +1843,7 @@ export class TradeSessionRepository {
     session: TradeSession
   ): Promise<TradeSession> {
     assertTakerStartIntent(intent, "Taker start intent", false);
-    assertSession(session);
+    await assertSession(session);
     if (
       session.revision !== 0 ||
       session.role !== "taker"
@@ -1939,14 +1878,14 @@ export class TradeSessionRepository {
         ...clone(intent),
         sessionId: session.sessionId
       });
-      assertTradeSessionStore(store);
+      await assertTradeSessionStore(store);
       await this.driver.set(TRADE_SESSIONS_KEY, store);
       return clone(session);
     });
   }
 
   async createMakerForOrder(session: TradeSession): Promise<TradeSession> {
-    assertSession(session);
+    await assertSession(session);
     if (session.revision !== 0 || session.role !== "maker") {
       throw new Error("Maker start requires a revision-zero maker session");
     }
@@ -1972,14 +1911,14 @@ export class TradeSessionRepository {
         throw new Error("Order is already being taken by another trader");
       }
       store.sessions.push(clone(session));
-      assertTradeSessionStore(store);
+      await assertTradeSessionStore(store);
       await this.driver.set(TRADE_SESSIONS_KEY, store);
       return clone(session);
     });
   }
 
   async save(session: TradeSession, expectedRevision: number | null): Promise<void> {
-    assertSession(session);
+    await assertSession(session);
     await this.runExclusive(async () => {
       const store = await this.loadStore();
       const sessions = store.sessions;
@@ -2004,7 +1943,7 @@ export class TradeSessionRepository {
         assertMonotonicUpdate(current, session);
         sessions[index] = clone(session);
       }
-      assertTradeSessionStore(store);
+      await assertTradeSessionStore(store);
       await this.driver.set(TRADE_SESSIONS_KEY, store);
     });
   }

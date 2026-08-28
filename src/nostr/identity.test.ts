@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { MemoryStorageDriver } from "../storage/wallet-repository.js";
+import { MemoryStorageDriver } from "../storage/driver.js";
 import { MakerIdentity } from "./identity.js";
 
 const ORDER_A = "11111111-1111-4111-8111-111111111111";

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { NostrEvent, UnsignedNostrEvent } from "../order/events.js";
 import { NostrOrderService, type OrderRelayPort } from "../order/service.js";
 import { OrderOutboxRepository } from "../storage/order-outbox.js";
-import type { StorageDriver } from "../storage/wallet-repository.js";
+import type { StorageDriver } from "../storage/driver.js";
 import { OrderApi } from "./order-api.js";
 
 const MAKER = "a".repeat(64);

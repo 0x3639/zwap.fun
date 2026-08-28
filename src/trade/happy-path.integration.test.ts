@@ -29,10 +29,8 @@ import {
 import { OrderOutboxRepository } from "../storage/order-outbox.js";
 import { ProofReservationRepository } from "../storage/proof-reservation-repository.js";
 import { TradeSessionRepository } from "../storage/trade-session.js";
-import {
-  MemoryStorageDriver,
-  WalletRepository
-} from "../storage/wallet-repository.js";
+import { MemoryStorageDriver } from "../storage/driver.js";
+import { WalletRepository } from "../storage/wallet-repository.js";
 import { nextCoordinatorAction } from "./coordinator-plan.js";
 import { TradeCoordinator } from "./coordinator.js";
 import { GranolaCoordinatorEffects } from "./effects.js";

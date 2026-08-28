@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { EncryptedStorageDriver } from "./encrypted-storage.js";
-import { MemoryStorageDriver } from "./wallet-repository.js";
+import { MemoryStorageDriver } from "./driver.js";
 
 describe("encrypted private storage", () => {
   it("round-trips structured data without storing plaintext recovery material", async () => {

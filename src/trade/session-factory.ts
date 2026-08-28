@@ -1,12 +1,8 @@
-import {
-  createHTLCHash,
-  getPubKeyFromPrivKey,
-  verifyHTLCHash
-} from "@cashu/cashu-ts";
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
 
-import { normalizeMintUrl } from "../core/wallet.js";
 import type { OrderRecord } from "../order/model.js";
+import { createHtlcMaterial, verifyHtlcMaterial } from "../zenon/htlc-material.js";
+import { isTokenStandard, isZenonAddress } from "../zenon/validate.js";
 import {
   advanceAtomicSwapChoreography,
   initialAtomicSwapChoreography,
@@ -30,21 +26,18 @@ import type {
 } from "./session.js";
 
 export interface SessionMarketSelection {
-  baseMint: string;
-  baseUnit: string;
-  baseKeyset: string;
-  quoteMint: string;
-  quoteUnit: string;
-  quoteKeyset: string;
+  chainId: string;
+  baseToken: string;
+  quoteToken: string;
 }
 
-export type SessionKeyPurpose = "nostr" | "cashu" | "refund";
+export type SessionKeyPurpose = "nostr";
 
 export interface SessionFactoryEntropy {
   sessionId(): string;
   reservationId(): string;
   privateKey(purpose: SessionKeyPurpose): string;
-  htlcMaterial(): { preimage: string; hash: string };
+  htlcMaterial(): Promise<{ preimage: string; hash: string }>;
 }
 
 export interface TakerSessionInput {
@@ -54,6 +47,7 @@ export interface TakerSessionInput {
   market: SessionMarketSelection;
   fillBaseAmount: string;
   clocks: Omit<SettlementPlanInput, "orderExpiresAt">;
+  localAddress: string;
 }
 
 export interface MakerSessionInput {
@@ -61,12 +55,12 @@ export interface MakerSessionInput {
   proposal: VerifiedInitialReserveProposal;
   market: SessionMarketSelection;
   clocks: Omit<SettlementPlanInput, "orderExpiresAt">;
+  localAddress: string;
 }
 
 const HEX_32 = /^[0-9a-f]{64}$/;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const KEYSET = /^[0-9a-f]{16,66}$/;
-const UNIT = /^[a-z][a-z0-9_-]{0,15}$/;
+const CHAIN_ID = /^[1-9]\d*$/;
 
 function hex(bytes: Uint8Array): string {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -81,23 +75,21 @@ const defaultEntropy: SessionFactoryEntropy = {
   sessionId: () => hex(generateSecretKey()),
   reservationId: () => crypto.randomUUID(),
   privateKey: () => hex(generateSecretKey()),
-  htlcMaterial: () => createHTLCHash()
+  htlcMaterial: () => createHtlcMaterial()
 };
 
 function canonicalMarket(input: SessionMarketSelection): SessionMarketSelection {
-  const baseMint = normalizeMintUrl(input.baseMint);
-  const quoteMint = normalizeMintUrl(input.quoteMint);
-  if (baseMint !== input.baseMint || quoteMint !== input.quoteMint) {
-    throw new Error("Session market mint URLs must be canonical");
+  if (!CHAIN_ID.test(input.chainId)) throw new Error("Session chain ID is not canonical");
+  for (const [label, token] of [
+    ["Base", input.baseToken],
+    ["Quote", input.quoteToken]
+  ] as const) {
+    if (!isTokenStandard(token)) throw new Error(`${label} token standard is not canonical`);
   }
-  for (const [label, unit] of [["Base", input.baseUnit], ["Quote", input.quoteUnit]] as const) {
-    if (!UNIT.test(unit)) throw new Error(`${label} unit is not canonical`);
+  if (input.baseToken === input.quoteToken) {
+    throw new Error("Base and quote token standards must differ");
   }
-  if (input.baseUnit === input.quoteUnit) throw new Error("Base and quote units must differ");
-  if (!KEYSET.test(input.baseKeyset) || !KEYSET.test(input.quoteKeyset)) {
-    throw new Error("Session keyset IDs must be canonical lowercase hex");
-  }
-  return { ...input, baseMint, quoteMint };
+  return { chainId: input.chainId, baseToken: input.baseToken, quoteToken: input.quoteToken };
 }
 
 function assertOpenOrder(
@@ -124,7 +116,7 @@ function assertOpenOrder(
   if (order.address !== expectedAddress) throw new Error("Order address does not match its authority");
   const state = order.state;
   if (
-    state.schema !== "granola/order/v1" ||
+    state.schema !== "zwap/order/v1" ||
     (state.side !== "sell" && state.side !== "buy") ||
     state.status !== "open"
   ) throw new Error("Session factory accepts only open maker orders");
@@ -136,24 +128,17 @@ function assertOpenOrder(
   if (!Number.isSafeInteger(now) || now < 0 || now >= state.expires_at) {
     throw new Error("Order has expired");
   }
-  if (normalizeMintUrl(state.offered.mint) !== state.offered.mint) {
-    throw new Error("Order offered mint must be canonical");
+  if (state.chain_id !== market.chainId) {
+    throw new Error("Order chain does not match the selected market");
   }
-  if (state.requested.acceptable_mints.some(
-    (mint) => normalizeMintUrl(mint) !== mint
-  )) throw new Error("Order acceptable mints must be canonical");
   if (
-    state.base_unit !== market.baseUnit ||
-    state.quote_unit !== market.quoteUnit ||
+    state.base_token !== market.baseToken ||
+    state.quote_token !== market.quoteToken ||
     (state.side === "sell"
-      ? state.offered.unit !== market.baseUnit ||
-        state.offered.mint !== market.baseMint ||
-        state.requested.unit !== market.quoteUnit ||
-        !state.requested.acceptable_mints.includes(market.quoteMint)
-      : state.offered.unit !== market.quoteUnit ||
-        state.offered.mint !== market.quoteMint ||
-        state.requested.unit !== market.baseUnit ||
-        !state.requested.acceptable_mints.includes(market.baseMint))
+      ? state.offered.token !== market.baseToken ||
+        state.requested.token !== market.quoteToken
+      : state.offered.token !== market.quoteToken ||
+        state.requested.token !== market.baseToken)
   ) throw new Error("Order assets do not match the selected market");
   return market;
 }
@@ -162,7 +147,7 @@ function amounts(order: OrderRecord, fillBaseAmount: string): { base: string; qu
   const result = settlementAmounts({
     remainingBaseAmount: order.state.remaining_amount,
     fillBaseAmount,
-    priceCentsPerBtc: order.state.price_cents_per_btc,
+    price: order.state.price,
     execution: order.state.execution,
     minimumFillAmount: order.state.minimum_fill_amount
   });
@@ -176,52 +161,28 @@ function amounts(order: OrderRecord, fillBaseAmount: string): { base: string; qu
 interface LocalKeys {
   nostrPrivateKey: string;
   nostrPubkey: string;
-  cashuPrivateKey: string;
-  cashuPubkey: string;
-  refundPrivateKey: string;
-  refundPubkey: string;
+  localAddress: string;
 }
 
-function localKeys(entropy: SessionFactoryEntropy): LocalKeys {
-  const nostrPrivateKey = entropy.privateKey("nostr");
-  const cashuPrivateKey = entropy.privateKey("cashu");
-  const refundPrivateKey = entropy.privateKey("refund");
-  if (new Set([nostrPrivateKey, cashuPrivateKey, refundPrivateKey]).size !== 3) {
-    throw new Error("Nostr, Cashu settlement, and refund keys must be independent");
+function localKeys(entropy: SessionFactoryEntropy, localAddress: string): LocalKeys {
+  if (!isZenonAddress(localAddress)) {
+    throw new Error("Session local address is not a canonical Zenon address");
   }
+  const nostrPrivateKey = entropy.privateKey("nostr");
   const nostrBytes = fromHex(nostrPrivateKey, "Nostr private key");
-  const cashuBytes = fromHex(cashuPrivateKey, "Cashu private key");
-  const refundBytes = fromHex(refundPrivateKey, "Refund private key");
   let nostrPubkey: string;
-  let cashuPubkey: string;
-  let refundPubkey: string;
   try {
     nostrPubkey = getPublicKey(nostrBytes);
-    cashuPubkey = hex(getPubKeyFromPrivKey(cashuBytes));
-    refundPubkey = hex(getPubKeyFromPrivKey(refundBytes));
   } catch {
     throw new Error("Session private key is not a valid secp256k1 scalar");
+  } finally {
+    nostrBytes.fill(0);
   }
-  const publicIdentities = [nostrPubkey, cashuPubkey.slice(2), refundPubkey.slice(2)];
-  if (new Set(publicIdentities).size !== publicIdentities.length) {
-    throw new Error("Nostr, Cashu settlement, and refund keys must be independent");
-  }
-  return {
-    nostrPrivateKey,
-    nostrPubkey,
-    cashuPrivateKey,
-    cashuPubkey,
-    refundPrivateKey,
-    refundPubkey
-  };
-}
-
-function keyIdentities(keys: LocalKeys): string[] {
-  return [keys.nostrPubkey, keys.cashuPubkey.slice(2), keys.refundPubkey.slice(2)];
+  return { nostrPrivateKey, nostrPubkey, localAddress };
 }
 
 function assertSeparatedFromOrderAuthority(keys: LocalKeys, makerPubkey: string): void {
-  if (keyIdentities(keys).includes(makerPubkey)) {
+  if (keys.nostrPubkey === makerPubkey) {
     throw new Error("Session keys must be independent from the maker order authority");
   }
 }
@@ -233,26 +194,20 @@ function tradeTerms(
 ): TradeTerms {
   return {
     makerSide: order.state.side,
-    baseMint: market.baseMint,
-    baseUnit: market.baseUnit,
-    baseKeyset: market.baseKeyset,
+    chainId: market.chainId,
+    baseToken: market.baseToken,
     baseAmount: selected.base,
-    quoteMint: market.quoteMint,
-    quoteUnit: market.quoteUnit,
-    quoteKeyset: market.quoteKeyset,
+    quoteToken: market.quoteToken,
     quoteAmount: selected.quote,
-    priceCentsPerBtc: order.state.price_cents_per_btc
+    price: order.state.price
   };
 }
 
-function emptyEvidence(order: OrderRecord, market: SessionMarketSelection): TradeEvidence {
-  const leg = (keysetId: string) => ({
-    tokenCommitment: null,
+function emptyEvidence(order: OrderRecord): TradeEvidence {
+  const leg = () => ({
+    htlcId: null,
     validationCommitment: null,
-    keysetId,
-    proofCount: null,
-    fee: null,
-    mintState: "UNKNOWN" as const,
+    htlcState: "UNKNOWN" as const,
     observedAt: null,
     spendCommitment: null,
     claimOperationCommitment: null,
@@ -261,7 +216,7 @@ function emptyEvidence(order: OrderRecord, market: SessionMarketSelection): Trad
   return {
     makerPubkey: order.makerPubkey,
     commitments: [],
-    mintStates: [],
+    chainStates: [],
     reserveProjectionId: null,
     reserveProjectionRevision: null,
     fillProjectionId: null,
@@ -272,8 +227,8 @@ function emptyEvidence(order: OrderRecord, market: SessionMarketSelection): Trad
       abortSeal: null
     },
     legs: {
-      base: leg(market.baseKeyset),
-      quote: leg(market.quoteKeyset)
+      base: leg(),
+      quote: leg()
     }
   };
 }
@@ -286,6 +241,7 @@ function baseSession(input: {
   terms: TradeTerms;
   plan: ReturnType<typeof createSettlementPlan>;
   keys: LocalKeys;
+  counterpartyAddress: string | null;
   transcript: TradeTranscriptJournal;
   evidence: TradeEvidence;
   preimage: string | null;
@@ -295,7 +251,7 @@ function baseSession(input: {
   if (!HEX_32.test(input.sessionId)) throw new Error("Session ID is invalid");
   if (!UUID_V4.test(input.reservationId)) throw new Error("Reservation ID is invalid");
   return {
-    schema: "granola/trade-session/v2",
+    schema: "zwap/trade-session/v1",
     revision: 0,
     sessionId: input.sessionId,
     reservationId: input.reservationId,
@@ -317,8 +273,8 @@ function baseSession(input: {
     evidence: input.evidence,
     privateState: {
       nostrPrivateKey: input.keys.nostrPrivateKey,
-      cashuPrivateKey: input.keys.cashuPrivateKey,
-      refundPrivateKey: input.keys.refundPrivateKey,
+      localAddress: input.keys.localAddress,
+      counterpartyAddress: input.counterpartyAddress,
       preimage: input.preimage,
       htlcHash: input.htlcHash,
       settlementTranscriptHash: null,
@@ -337,10 +293,10 @@ function baseSession(input: {
       pendingIncoming: null,
       transcript: input.transcript,
       outbox: null,
-      cashuOperation: null,
+      chainOperation: null,
       legs: {
-        base: { token: null, expected: null, observations: [] },
-        quote: { token: null, expected: null, observations: [] }
+        base: { htlcId: null, expected: null, observations: [] },
+        quote: { htlcId: null, expected: null, observations: [] }
       }
     }
   };
@@ -362,7 +318,7 @@ export async function createTakerSession(
     input.clocks.localNow
   );
   const selected = amounts(input.order, input.fillBaseAmount);
-  const keys = localKeys(entropy);
+  const keys = localKeys(entropy, input.localAddress);
   assertSeparatedFromOrderAuthority(keys, input.order.makerPubkey);
   const sessionId = entropy.sessionId();
   const reservationId = entropy.reservationId();
@@ -374,6 +330,7 @@ export async function createTakerSession(
     terms: tradeTerms(market, selected, input.order),
     plan: plan(input.order, input.clocks),
     keys,
+    counterpartyAddress: null,
     transcript: {
       choreography: initialAtomicSwapChoreography(input.order.makerPubkey),
       nextSequence: "0",
@@ -382,7 +339,7 @@ export async function createTakerSession(
       lastTranscriptHash: null,
       accepted: []
     },
-    evidence: emptyEvidence(input.order, market),
+    evidence: emptyEvidence(input.order),
     preimage: null,
     htlcHash: null,
     createdAt: input.clocks.localNow
@@ -424,57 +381,47 @@ export async function createMakerSession(
   const terms = message.terms!;
   if (
     (terms.maker_side ?? "sell") !== input.order.state.side ||
-    terms.base_mint !== market.baseMint ||
-    terms.base_unit !== market.baseUnit ||
-    terms.base_keyset !== market.baseKeyset ||
-    terms.quote_mint !== market.quoteMint ||
-    terms.quote_unit !== market.quoteUnit ||
-    terms.quote_keyset !== market.quoteKeyset ||
+    terms.chain_id !== market.chainId ||
+    terms.base_token !== market.baseToken ||
+    terms.quote_token !== market.quoteToken ||
     terms.base_amount !== selected.base ||
     terms.quote_amount !== selected.quote ||
-    terms.price_cents_per_btc !== input.order.state.price_cents_per_btc
+    terms.price !== input.order.state.price
   ) throw new Error("Reserve proposal terms do not match the selected order market");
 
   const choreography = await advanceAtomicSwapChoreography(
     initialAtomicSwapChoreography(input.order.makerPubkey),
     message
   );
-  const keys = localKeys(entropy);
+  const keys = localKeys(entropy, input.localAddress);
   assertSeparatedFromOrderAuthority(keys, input.order.makerPubkey);
-  const makerIdentities = keyIdentities(keys);
-  const takerIdentities = [
-    proposalBody.taker_session_pubkey,
-    proposalBody.taker_cashu_pubkey.slice(2),
-    proposalBody.taker_refund_pubkey.slice(2)
-  ];
-  if (
-    new Set(takerIdentities).size !== takerIdentities.length ||
-    takerIdentities.includes(input.order.makerPubkey)
-  ) {
-    throw new Error("Taker keys must be independent from each other and the maker order authority");
+  const takerAddress = proposalBody.taker_address;
+  if (!isZenonAddress(takerAddress)) {
+    throw new Error("Reserve proposal taker address is not a canonical Zenon address");
   }
-  if (makerIdentities.some((identity) => takerIdentities.includes(identity))) {
+  if (takerAddress === keys.localAddress) {
+    throw new Error("Maker settlement address collides with the counterparty address");
+  }
+  if (proposalBody.taker_session_pubkey === input.order.makerPubkey) {
+    throw new Error("Taker keys must be independent from the maker order authority");
+  }
+  if (proposalBody.taker_session_pubkey === keys.nostrPubkey) {
     throw new Error("Maker keys collide with counterparty session keys");
   }
 
-  const material = entropy.htlcMaterial();
+  const material = await entropy.htlcMaterial();
   if (
     !HEX_32.test(material.preimage) ||
     !HEX_32.test(material.hash) ||
-    !verifyHTLCHash(material.preimage, material.hash)
+    !(await verifyHtlcMaterial(material.preimage, material.hash))
   ) throw new Error("Maker HTLC material is invalid");
-  if ([
-    keys.nostrPrivateKey,
-    keys.cashuPrivateKey,
-    keys.refundPrivateKey,
-    message.session_id
-  ].includes(material.preimage)) {
+  if ([keys.nostrPrivateKey, message.session_id].includes(material.preimage)) {
     throw new Error("Maker HTLC preimage must be independent");
   }
   if (!HEX_32.test(input.proposal.rumor.id) || !HEX_32.test(input.proposal.transcriptHash)) {
     throw new Error("Validated proposal transcript identifiers are invalid");
   }
-  const evidence = emptyEvidence(input.order, market);
+  const evidence = emptyEvidence(input.order);
   evidence.commitments = [material.hash];
   evidence.reservation.proposalSealId = input.proposal.seal.id;
   const session = baseSession({
@@ -485,6 +432,7 @@ export async function createMakerSession(
     terms: tradeTerms(market, selected, input.order),
     plan: plan(input.order, input.clocks),
     keys,
+    counterpartyAddress: takerAddress,
     transcript: {
       choreography,
       nextSequence: "1",
@@ -510,8 +458,8 @@ export async function createMakerSession(
   session.privateState.transcript.choreography.participants = {
     ...session.privateState.transcript.choreography.participants,
     makerSessionPubkey: keys.nostrPubkey,
-    makerCashuPubkey: keys.cashuPubkey,
-    makerRefundPubkey: keys.refundPubkey
+    makerAddress: keys.localAddress,
+    takerAddress
   };
   return session;
 }

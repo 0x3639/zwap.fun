@@ -1,4 +1,4 @@
-import type { StorageDriver } from "./wallet-repository.js";
+import type { StorageDriver } from "./driver.js";
 
 interface EncryptedEnvelope {
   version: 1;

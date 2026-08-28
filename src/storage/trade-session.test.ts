@@ -1,90 +1,120 @@
-import { createHTLCHash } from "@cashu/cashu-ts";
-import { finalizeEvent, getEventHash, getPublicKey } from "nostr-tools";
+import { finalizeEvent, getEventHash } from "nostr-tools";
 import { describe, expect, it } from "vitest";
 
 import { createOrderState, type OrderRecord } from "../order/model.js";
+import { deploymentFor, type ZwapTradeMessage } from "../trade/messages.js";
 import { publicTradeView, type TradeSession } from "../trade/session.js";
-import type { GranolaTradeMessage } from "../trade/messages.js";
 import {
   createTakerSession,
   type SessionFactoryEntropy
 } from "../trade/session-factory.js";
+import {
+  FIXTURE_ANCHOR,
+  FIXTURE_COUNTERPARTY_ADDRESS,
+  FIXTURE_LOCAL_ADDRESS,
+  FIXTURE_MAKER_PUBKEY,
+  FIXTURE_MAKER_SECRET,
+  FIXTURE_OFFERED_PROJECTION_ID,
+  FIXTURE_ORDER_ADDRESS,
+  FIXTURE_ORDER_ID,
+  FIXTURE_RESERVATION_ID,
+  FIXTURE_SESSION_ID,
+  FIXTURE_SESSION_PUBKEY,
+  FIXTURE_SESSION_SECRET,
+  FIXTURE_THIRD_ADDRESS,
+  sessionFixture
+} from "../trade/test-fixtures.js";
+import { QSR_ZTS, ZNN_ZTS } from "../zenon/types.js";
+import { MemoryStorageDriver } from "./driver.js";
 import { EncryptedStorageDriver } from "./encrypted-storage.js";
-import { MemoryStorageDriver } from "./wallet-repository.js";
 import {
   TradeSessionRepository,
   type TakerStartIntent,
   type TradeSessionExclusiveRunner
 } from "./trade-session.js";
 
+const STORAGE_KEY = "granola.trade-sessions.v2";
+
 function fixedKey(byte: number): Uint8Array {
   return new Uint8Array(32).fill(byte);
 }
 
-function hex(bytes: Uint8Array): string {
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+function bytes(hex: string): Uint8Array {
+  return Uint8Array.from(hex.match(/../g) ?? [], (part) => Number.parseInt(part, 16));
 }
 
-const makerSecret = fixedKey(2);
-const sessionSecret = fixedKey(1);
+async function sha256Hex(hex: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes(hex) as BufferSource);
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+const makerSecret = FIXTURE_MAKER_SECRET;
+const sessionSecret = FIXTURE_SESSION_SECRET;
 const outerSecret = fixedKey(3);
 const remoteSecret = fixedKey(4);
 const incomingOuterSecret = fixedKey(5);
-const maker = getPublicKey(makerSecret);
-const sessionPubkey = getPublicKey(sessionSecret);
-const remotePubkey = getPublicKey(remoteSecret);
-const sessionPrivateKey = hex(sessionSecret);
-const sessionId = "11".repeat(32);
-const reservationId = "11111111-1111-4111-8111-111111111111";
+const maker = FIXTURE_MAKER_PUBKEY;
+const sessionPubkey = FIXTURE_SESSION_PUBKEY;
+const remotePubkey = finalizeEvent(
+  { kind: 1, created_at: 0, tags: [], content: "" },
+  remoteSecret
+).pubkey;
+
+const sessionId = FIXTURE_SESSION_ID;
+const reservationId = FIXTURE_RESERVATION_ID;
 const messageId = "33333333-3333-4333-8333-333333333333";
 const acceptedMessageId = "55555555-5555-4555-8555-555555555555";
 const acceptedRumorId = "19".repeat(32);
-const orderId = "22222222-2222-4222-8222-222222222222";
-const offeredProjectionId = "33".repeat(32);
+const orderId = FIXTURE_ORDER_ID;
+const offeredProjectionId = FIXTURE_OFFERED_PROJECTION_ID;
+const orderAddress = FIXTURE_ORDER_ADDRESS;
 const operationId = "44444444-4444-4444-8444-444444444444";
-const htlcMaterial = createHTLCHash("04".repeat(32));
-const orderAddress = `30078:${maker}:granola:order:v1:${orderId}`;
+const preimage = "04".repeat(32);
+const htlcHash = await sha256Hex(preimage);
+const baseHtlcId = "1e".repeat(32);
+const transcriptHash = "05".repeat(32);
+
 const publicationRelays = [
   "wss://discovery-one.example",
   "wss://discovery-two.example"
 ];
-const inboxRelays = [
-  "wss://inbox-one.example",
-  "wss://inbox-two.example"
-];
+const inboxRelays = ["wss://inbox-one.example", "wss://inbox-two.example"];
 const registration = structuredClone(finalizeEvent({
   kind: 10050,
-  created_at: 1_700_000_000,
+  created_at: FIXTURE_ANCHOR,
   tags: inboxRelays.map((relay) => ["relay", relay]),
   content: ""
 }, sessionSecret));
 const wrongRegistrationSigner = structuredClone(finalizeEvent({
   kind: 10050,
-  created_at: 1_700_000_000,
+  created_at: FIXTURE_ANCHOR,
   tags: inboxRelays.map((relay) => ["relay", relay]),
   content: ""
 }, makerSecret));
 const projection = structuredClone(finalizeEvent({
   kind: 30078,
-  created_at: 1_700_000_005,
+  created_at: FIXTURE_ANCHOR + 5,
   tags: [["d", `granola:order:v1:${orderId}`]],
   content: "exact-signed-order-projection"
 }, makerSecret));
 const wrapper = structuredClone(finalizeEvent({
   kind: 1059,
-  created_at: 1_700_000_000,
+  created_at: FIXTURE_ANCHOR,
   tags: [["p", "55".repeat(32)], ["expiration", "1700007200"]],
   content: "encrypted-private-wrapper"
 }, outerSecret));
 const seal = structuredClone(finalizeEvent({
   kind: 13,
-  created_at: 1_700_000_000,
+  created_at: FIXTURE_ANCHOR,
   tags: [],
   content: "encrypted-private-seal"
 }, sessionSecret));
-const outboxMessage: GranolaTradeMessage = {
+
+const outboxMessage: ZwapTradeMessage = {
   schema: "granola/dm/v1",
-  deployment: "cashu-testnet-v1",
+  deployment: deploymentFor("1"),
   type: "base_lock",
   message_id: messageId,
   session_id: sessionId,
@@ -97,24 +127,21 @@ const outboxMessage: GranolaTradeMessage = {
   recipient_pubkey: "55".repeat(32),
   sequence: "1",
   previous_message_id: acceptedMessageId,
-  previous_transcript_hash: "05".repeat(32),
-  sent_at: 1_700_000_000,
-  expires_at: 1_700_003_600,
+  previous_transcript_hash: transcriptHash,
+  sent_at: FIXTURE_ANCHOR,
+  expires_at: FIXTURE_ANCHOR + 3_600,
   terms_hash: "07".repeat(32),
-  body: { cashu_token: "cashu-private-token" }
+  body: { htlc_id: baseHtlcId }
 };
 const rumorTemplate = {
   pubkey: sessionPubkey,
-  created_at: 1_700_000_000,
+  created_at: FIXTURE_ANCHOR,
   kind: 14 as const,
-  tags: [
-    ["p", "55".repeat(32)],
-    ["e", acceptedRumorId, "", "reply"]
-  ],
+  tags: [["p", "55".repeat(32)], ["e", acceptedRumorId, "", "reply"]],
   content: JSON.stringify(outboxMessage)
 };
 const rumor = { ...rumorTemplate, id: getEventHash(rumorTemplate) };
-const incomingMessage: GranolaTradeMessage = {
+const incomingMessage: ZwapTradeMessage = {
   ...outboxMessage,
   message_id: "77777777-7777-4777-8777-777777777777",
   author_pubkey: remotePubkey,
@@ -124,10 +151,7 @@ const incomingRumorTemplate = {
   pubkey: remotePubkey,
   created_at: incomingMessage.sent_at,
   kind: 14 as const,
-  tags: [
-    ["p", sessionPubkey],
-    ["e", acceptedRumorId, "", "reply"]
-  ],
+  tags: [["p", sessionPubkey], ["e", acceptedRumorId, "", "reply"]],
   content: JSON.stringify(incomingMessage)
 };
 const incomingRumor = {
@@ -136,71 +160,58 @@ const incomingRumor = {
 };
 const incomingSeal = structuredClone(finalizeEvent({
   kind: 13,
-  created_at: 1_700_000_000,
+  created_at: FIXTURE_ANCHOR,
   tags: [],
   content: "encrypted-incoming-seal"
 }, remoteSecret));
 const incomingWrapper = structuredClone(finalizeEvent({
   kind: 1059,
-  created_at: 1_700_000_000,
+  created_at: FIXTURE_ANCHOR,
   tags: [["p", sessionPubkey], ["expiration", "1700007200"]],
   content: "encrypted-incoming-wrapper"
 }, incomingOuterSecret));
 
-const session: TradeSession = {
-  schema: "granola/trade-session/v2",
-  revision: 0,
-  sessionId,
-  reservationId,
-  role: "maker",
+const plan = sessionFixture().plan;
+const expectedBaseLock = {
+  leg: "base" as const,
+  chainId: "1",
+  tokenStandard: ZNN_ZTS,
+  amount: "20",
+  hashLock: htlcHash,
+  hashType: 1 as const,
+  keyMaxSize: 32 as const,
+  hashLockedAddress: FIXTURE_COUNTERPARTY_ADDRESS,
+  timeLockedAddress: FIXTURE_LOCAL_ADDRESS,
+  expirationTime: plan.longLocktime,
+  binding: {
+    protocolVersion: "1" as const,
+    network: "zenon-1",
+    orderId,
+    reservationId,
+    sessionId,
+    transcriptHash
+  }
+};
+
+const session: TradeSession = sessionFixture({
   phase: "base_locked",
-  orderAddress,
-  offeredProjectionId,
-  offeredProjectionRevision: "0",
   reserveProjectionId: projection.id,
   reserveProjectionRevision: "1",
-  fillProjectionId: null,
-  fillProjectionRevision: null,
   pendingOrderPublication: {
     operation: "reserve",
     orderId,
     projection,
     receipts: publicationRelays.map((relay) => ({ relay, ok: true, message: "stored" })),
     status: "acknowledged",
-    stagedAt: 1_700_000_005,
-    acknowledgedAt: 1_700_000_006,
+    stagedAt: FIXTURE_ANCHOR + 5,
+    acknowledgedAt: FIXTURE_ANCHOR + 6,
     committedAt: null
   },
-  createdAt: 1_700_000_000,
-  updatedAt: 1_700_000_010,
-  terms: {
-    baseMint: "https://testnut.cashu.space",
-    baseUnit: "sat",
-    baseKeyset: "00deadbeefcafeee",
-    baseAmount: "20",
-    quoteMint: "https://nofee.testnut.cashu.space",
-    quoteUnit: "usd",
-    quoteKeyset: "00deadbeefcafeff",
-    quoteAmount: "1",
-    priceCentsPerBtc: "5000000"
-  },
-  plan: {
-    anchor: 1_700_000_000,
-    shortLocktime: 1_700_000_600,
-    makerClaimCutoff: 1_700_000_480,
-    longLocktime: 1_700_001_200,
-    takerClaimCutoff: 1_700_001_080,
-    reservationExpiresAt: 1_700_001_800,
-    refundGuardSeconds: 60
-  },
   evidence: {
-    makerPubkey: maker,
-    commitments: [htlcMaterial.hash],
-    mintStates: ["base:UNSPENT"],
+    commitments: [htlcHash],
+    chainStates: ["base:LOCKED"],
     reserveProjectionId: projection.id,
     reserveProjectionRevision: "1",
-    fillProjectionId: null,
-    fillProjectionRevision: null,
     reservation: {
       proposalSealId: seal.id,
       takerCommitment: "18".repeat(32),
@@ -208,25 +219,10 @@ const session: TradeSession = {
     },
     legs: {
       base: {
-        tokenCommitment: "ee".repeat(32),
+        htlcId: baseHtlcId,
         validationCommitment: "ff".repeat(32),
-        keysetId: "00deadbeefcafeee",
-        proofCount: 2,
-        fee: "1",
-        mintState: "UNSPENT",
-        observedAt: 1_700_000_009,
-        spendCommitment: null,
-        claimOperationCommitment: null,
-        refundOperationCommitment: null
-      },
-      quote: {
-        tokenCommitment: null,
-        validationCommitment: null,
-        keysetId: "00deadbeefcafeff",
-        proofCount: null,
-        fee: null,
-        mintState: "UNKNOWN",
-        observedAt: null,
+        htlcState: "LOCKED",
+        observedAt: FIXTURE_ANCHOR + 9,
         spendCommitment: null,
         claimOperationCommitment: null,
         refundOperationCommitment: null
@@ -234,49 +230,37 @@ const session: TradeSession = {
     }
   },
   privateState: {
-    nostrPrivateKey: sessionPrivateKey,
-    cashuPrivateKey: "02".repeat(32),
-    refundPrivateKey: "03".repeat(32),
-    preimage: htlcMaterial.preimage,
-    htlcHash: htlcMaterial.hash,
-    settlementTranscriptHash: "05".repeat(32),
+    preimage,
+    htlcHash,
+    settlementTranscriptHash: transcriptHash,
     inbox: {
       status: "registered",
       quorum: 2,
       event: registration,
       discoveryRelays: publicationRelays,
       inboxRelays,
-      receipts: publicationRelays.map((relay) => ({
-        relay,
-        ok: true,
-        message: "stored"
-      })),
+      receipts: publicationRelays.map((relay) => ({ relay, ok: true, message: "stored" })),
       readbacks: publicationRelays.map((relay) => ({
         relay,
         found: true,
         event: registration,
-        observedAt: 1_700_000_003
+        observedAt: FIXTURE_ANCHOR + 3
       })),
-      stagedAt: 1_700_000_000,
-      acknowledgedAt: 1_700_000_002,
-      registeredAt: 1_700_000_003
+      stagedAt: FIXTURE_ANCHOR,
+      acknowledgedAt: FIXTURE_ANCHOR + 2,
+      registeredAt: FIXTURE_ANCHOR + 3
     },
-    pendingIncoming: null,
     transcript: {
-      choreography: {
-        phase: "awaiting_base_lock_ack",
-        participants: { makerOrderPubkey: maker },
-        refundedLegs: []
-      },
+      choreography: { phase: "awaiting_base_lock_ack" },
       nextSequence: "1",
       lastRumorId: acceptedRumorId,
       lastMessageId: acceptedMessageId,
-      lastTranscriptHash: "05".repeat(32),
+      lastTranscriptHash: transcriptHash,
       accepted: [{
         sequence: "0",
         messageId: acceptedMessageId,
         rumorId: acceptedRumorId,
-        transcriptHash: "05".repeat(32)
+        transcriptHash
       }]
     },
     outbox: {
@@ -294,103 +278,64 @@ const session: TradeSession = {
       },
       status: "acknowledged"
     },
-    cashuOperation: {
+    chainOperation: {
       operationId,
       leg: "base",
-      kind: "outgoing-lock",
+      kind: "lock",
       status: "completed",
-      preparedAt: 1_700_000_004,
-      inputsReserved: true,
+      preparedAt: FIXTURE_ANCHOR + 4,
+      fundsReserved: true,
       artifact: {
         version: 1,
-        kind: "outgoing-lock",
-        mintUrl: "https://testnut.cashu.space",
-        unit: "sat",
-        preview: {
-          amount: "20",
-          fees: "1",
-          keysetId: "00deadbeefcafeee",
-          inputs: ["serialized-private-input"],
-          sendOutputs: [{ private: "blinding-material" } as never]
-        },
-        spentSecrets: ["proof-secret"],
-        expected: {
-          mintUrl: "https://testnut.cashu.space",
-          unit: "sat",
-          binding: {
-            protocolVersion: "1",
-            network: "cashu-testnet-v1",
-            orderId,
-            reservationId,
-            sessionId,
-            direction: "base",
-            transcriptHash: "05".repeat(32)
-          },
-          amount: "20",
-          hash: htlcMaterial.hash,
-          receiverPubkey: `02${"0b".repeat(32)}`,
-          refundPubkey: `03${"0c".repeat(32)}`,
-          locktime: 1_700_001_200,
-          leg: "base",
-          refundHorizon: 1_700_001_260,
-          deadlines: { short: 1_700_000_600, long: 1_700_001_200, minimumGap: 600 }
-        },
+        kind: "lock",
+        chainId: "1",
+        tokenStandard: ZNN_ZTS,
+        amount: "20",
+        htlcId: null,
+        expected: expectedBaseLock,
         operationCommitment: "0d".repeat(32)
       },
       result: {
-        walletMutation: "replace",
-        mintUrl: "https://testnut.cashu.space",
-        unit: "sat",
-        proofs: [],
-        lockedToken: "cashu-private-token",
-        amount: "20",
-        proofCount: 2
+        blockHash: baseHtlcId,
+        htlcId: baseHtlcId,
+        tokenStandard: ZNN_ZTS,
+        amount: "20"
       }
     },
     legs: {
       base: {
-        token: "cashu-private-token",
-        expected: null,
+        htlcId: baseHtlcId,
+        expected: expectedBaseLock,
         observations: [{
-          observedAt: 1_700_000_009,
-          state: "UNSPENT",
-          proofCount: 2,
+          observedAt: FIXTURE_ANCHOR + 9,
+          state: "LOCKED",
           witnessCommitment: null
         }]
-      },
-      quote: { token: null, expected: null, observations: [] }
+      }
     }
   }
-};
+});
 
 function takerEntropy(id = "12".repeat(32)): SessionFactoryEntropy {
   return {
     sessionId: () => id,
     reservationId: () => "88888888-8888-4888-8888-888888888888",
-    privateKey: (purpose) => ({
-      nostr: "06".repeat(32),
-      cashu: "07".repeat(32),
-      refund: "08".repeat(32)
-    })[purpose],
-    htlcMaterial: () => createHTLCHash("09".repeat(32))
+    privateKey: () => "06".repeat(32),
+    htlcMaterial: async () => ({ preimage, hash: htlcHash })
   };
 }
 
 async function revisionZeroTaker(id = "12".repeat(32)): Promise<TradeSession> {
   const state = createOrderState({
     orderId,
-    createdAt: 1_699_999_900,
-    expiresAt: 1_700_777_600,
+    createdAt: FIXTURE_ANCHOR - 100,
+    expiresAt: FIXTURE_ANCHOR + 777_600,
     side: "sell",
-    baseUnit: "sat",
-    quoteUnit: "usd",
-    offered: { unit: "sat", mint: "https://testnut.cashu.space" },
-    requested: {
-      unit: "usd",
-      acceptableMints: ["https://nofee.testnut.cashu.space"]
-    },
+    chainId: "1",
+    baseToken: ZNN_ZTS,
+    quoteToken: QSR_ZTS,
     amount: "20",
-    priceCentsPerBtc: "5000000"
+    price: "5000000"
   });
   const record: OrderRecord = {
     address: orderAddress,
@@ -403,20 +348,10 @@ async function revisionZeroTaker(id = "12".repeat(32)): Promise<TradeSession> {
     order: record,
     expectedOrderProjectionId: offeredProjectionId,
     expectedOrderRevision: "0",
-    market: {
-      baseMint: state.offered.mint,
-      baseUnit: state.base_unit,
-      baseKeyset: "00deadbeefcafeee",
-      quoteMint: state.requested.acceptable_mints[0]!,
-      quoteUnit: state.quote_unit,
-      quoteKeyset: "00deadbeefcafeff"
-    },
+    market: { chainId: "1", baseToken: ZNN_ZTS, quoteToken: QSR_ZTS },
     fillBaseAmount: "20",
-    clocks: {
-      localNow: 1_700_000_000,
-      baseMintNow: 1_700_000_000,
-      quoteMintNow: 1_700_000_000
-    }
+    clocks: { localNow: FIXTURE_ANCHOR, chainNow: FIXTURE_ANCHOR },
+    localAddress: FIXTURE_COUNTERPARTY_ADDRESS
   }, takerEntropy(id));
 }
 
@@ -428,41 +363,33 @@ const takerStartIntent: TakerStartIntent = {
   fillBaseAmount: "20"
 };
 
-describe("trade session v2 repository", () => {
+describe("zwap trade session repository", () => {
   it("atomically persists and reloads an encrypted exact taker request binding", async () => {
     const raw = new MemoryStorageDriver();
     const repository = new TradeSessionRepository(raw);
     const candidate = await revisionZeroTaker();
 
-    const created = await repository.createTakerForRequest(
-      takerStartIntent,
-      candidate
-    );
+    const created = await repository.createTakerForRequest(takerStartIntent, candidate);
     const reloaded = new TradeSessionRepository(raw);
 
     expect(created).toEqual(candidate);
-    expect(await reloaded.getTakerForRequest(takerStartIntent))
-      .toEqual(candidate);
+    expect(await reloaded.getTakerForRequest(takerStartIntent)).toEqual(candidate);
     expect(await reloaded.list()).toEqual([candidate]);
     const decrypted = await new EncryptedStorageDriver(
       raw,
       "granola-trade-sessions"
-    ).get("granola.trade-sessions.v2");
+    ).get(STORAGE_KEY);
     expect(decrypted).toEqual({
-      schema: "granola/trade-session-store/v1",
+      schema: "zwap/trade-session-store/v1",
       sessions: [candidate],
-      takerStarts: [{
-        ...takerStartIntent,
-        sessionId: candidate.sessionId
-      }]
+      takerStarts: [{ ...takerStartIntent, sessionId: candidate.sessionId }]
     });
     const rawText = JSON.stringify(
-      await raw.get(
-        "granola-trade-sessions.data.granola.trade-sessions.v2"
-      )
+      await raw.get(`granola-trade-sessions.data.${STORAGE_KEY}`)
     );
     expect(rawText).not.toContain(takerStartIntent.requestId);
     expect(rawText).not.toContain(candidate.privateState.nostrPrivateKey);
+    expect(rawText).not.toContain(candidate.privateState.localAddress);
   });
 
   it("returns exact retries and rejects conflicting reuse of a durable request ID", async () => {
@@ -471,10 +398,8 @@ describe("trade session v2 repository", () => {
     const retryCandidate = await revisionZeroTaker("13".repeat(32));
 
     await repository.createTakerForRequest(takerStartIntent, first);
-    await expect(repository.createTakerForRequest(
-      takerStartIntent,
-      retryCandidate
-    )).resolves.toEqual(first);
+    await expect(repository.createTakerForRequest(takerStartIntent, retryCandidate))
+      .resolves.toEqual(first);
     await expect(repository.getTakerForRequest({
       ...takerStartIntent,
       fillBaseAmount: "19"
@@ -498,8 +423,7 @@ describe("trade session v2 repository", () => {
 
     expect(first.sessionId).toBe(second.sessionId);
     expect(await repository.list()).toHaveLength(1);
-    expect(await repository.getTakerForRequest(takerStartIntent))
-      .toEqual(first);
+    expect(await repository.getTakerForRequest(takerStartIntent)).toEqual(first);
   });
 
   it("idempotently returns one maker session for an exact proposal retry", async () => {
@@ -517,8 +441,8 @@ describe("trade session v2 repository", () => {
   it("rejects unknown or bearer fields in the exact request-binding store", async () => {
     const driver = new MemoryStorageDriver();
     const candidate = await revisionZeroTaker();
-    await driver.set("granola.trade-sessions.v2", {
-      schema: "granola/trade-session-store/v1",
+    await driver.set(STORAGE_KEY, {
+      schema: "zwap/trade-session-store/v1",
       sessions: [candidate],
       takerStarts: [{
         ...takerStartIntent,
@@ -550,7 +474,7 @@ describe("trade session v2 repository", () => {
     awaitingVerification.evidence.fillProjectionId = null;
     awaitingVerification.pendingOrderPublication = null;
     awaitingVerification.privateState.outbox = null;
-    awaitingVerification.privateState.cashuOperation = null;
+    awaitingVerification.privateState.chainOperation = null;
     awaitingVerification.privateState.transcript.choreography.phase = "settled";
 
     await repository.save(awaitingVerification, null);
@@ -559,20 +483,18 @@ describe("trade session v2 repository", () => {
       .toEqual(awaitingVerification);
   });
 
-  it("round-trips SPENT evidence only when it is bound to a matching private observation", async () => {
+  it("round-trips UNLOCKED evidence only when it is bound to a matching private observation", async () => {
     const repository = new TradeSessionRepository(new MemoryStorageDriver());
     const spent = structuredClone(session);
     spent.evidence.legs.base = {
       ...spent.evidence.legs.base,
-      mintState: "SPENT",
-      observedAt: 1_700_000_011,
-      proofCount: 2,
+      htlcState: "UNLOCKED",
+      observedAt: FIXTURE_ANCHOR + 11,
       spendCommitment: "12".repeat(32)
     };
     spent.privateState.legs.base.observations.push({
-      observedAt: 1_700_000_011,
-      state: "SPENT",
-      proofCount: 2,
+      observedAt: FIXTURE_ANCHOR + 11,
+      state: "UNLOCKED",
       witnessCommitment: "12".repeat(32)
     });
 
@@ -581,13 +503,12 @@ describe("trade session v2 repository", () => {
     expect(await repository.get(spent.sessionId)).toEqual(spent);
   });
 
-  it("orders multiple mint observations made in the same wall-clock second", async () => {
+  it("orders multiple chain observations made in the same wall-clock second", async () => {
     const repository = new TradeSessionRepository(new MemoryStorageDriver());
     const observedTwice = structuredClone(session);
     observedTwice.privateState.legs.base.observations.push({
-      observedAt: 1_700_000_009,
-      state: "UNSPENT",
-      proofCount: 2,
+      observedAt: FIXTURE_ANCHOR + 9,
+      state: "LOCKED",
       witnessCommitment: null
     });
 
@@ -622,7 +543,7 @@ describe("trade session v2 repository", () => {
           message: "stored below quorum"
         }],
         readbacks: [],
-        stagedAt: 1_700_000_000,
+        stagedAt: FIXTURE_ANCHOR,
         acknowledgedAt: null,
         registeredAt: null
       },
@@ -632,14 +553,10 @@ describe("trade session v2 repository", () => {
         event: registration,
         discoveryRelays: publicationRelays,
         inboxRelays,
-        receipts: publicationRelays.map((relay) => ({
-          relay,
-          ok: true,
-          message: "stored"
-        })),
+        receipts: publicationRelays.map((relay) => ({ relay, ok: true, message: "stored" })),
         readbacks: [],
-        stagedAt: 1_700_000_000,
-        acknowledgedAt: 1_700_000_002,
+        stagedAt: FIXTURE_ANCHOR,
+        acknowledgedAt: FIXTURE_ANCHOR + 2,
         registeredAt: null
       },
       session.privateState.inbox
@@ -661,10 +578,10 @@ describe("trade session v2 repository", () => {
       rumor: structuredClone(incomingRumor),
       message: structuredClone(incomingMessage),
       transcriptHash: "1a".repeat(32),
-      receivedAt: 1_700_000_006,
+      receivedAt: FIXTURE_ANCHOR + 6,
       validation: {
         status: "validated",
-        checkedAt: 1_700_000_007,
+        checkedAt: FIXTURE_ANCHOR + 7,
         error: null
       }
     };
@@ -681,7 +598,7 @@ describe("trade session v2 repository", () => {
     const candidate = structuredClone(session);
     const releaseProjection = structuredClone(finalizeEvent({
       kind: 30078,
-      created_at: 1_700_000_005,
+      created_at: FIXTURE_ANCHOR + 5,
       tags: [["d", `granola:order:v1:${orderId}`]],
       content: "exact-signed-release-projection"
     }, makerSecret));
@@ -689,13 +606,9 @@ describe("trade session v2 repository", () => {
       operation: "release",
       orderId,
       projection: releaseProjection,
-      receipts: [{
-        relay: publicationRelays[0]!,
-        ok: false,
-        message: "offline"
-      }],
+      receipts: [{ relay: publicationRelays[0]!, ok: false, message: "offline" }],
       status: "staged",
-      stagedAt: 1_700_000_005,
+      stagedAt: FIXTURE_ANCHOR + 5,
       acknowledgedAt: null,
       committedAt: null
     };
@@ -721,26 +634,39 @@ describe("trade session v2 repository", () => {
     const corrupt = structuredClone(candidate);
     corrupt.evidence.reservation.abortSeal = structuredClone(seal);
     const driver = new MemoryStorageDriver();
-    await driver.set("granola.trade-sessions.v2", [corrupt]);
+    await driver.set(STORAGE_KEY, [corrupt]);
     await expect(new TradeSessionRepository(driver).list())
       .rejects.toThrow(/counterparty author/i);
   });
 
-  it("permits exact-spend outgoing locks with no wallet change but never an empty locked token", async () => {
+  it("binds a completed chain operation result to its prepared artifact", async () => {
     const repository = new TradeSessionRepository(new MemoryStorageDriver());
     await repository.save(session, null);
-    expect(session.privateState.cashuOperation?.result).toMatchObject({
-      walletMutation: "replace",
-      proofs: [],
-      lockedToken: "cashu-private-token"
+    expect(session.privateState.chainOperation?.result).toMatchObject({
+      blockHash: baseHtlcId,
+      htlcId: baseHtlcId,
+      tokenStandard: ZNN_ZTS,
+      amount: "20"
     });
 
-    const corrupt = structuredClone(session);
-    corrupt.privateState.cashuOperation!.result!.lockedToken = "";
-    const driver = new MemoryStorageDriver();
-    await driver.set("granola.trade-sessions.v2", [corrupt]);
-    await expect(new TradeSessionRepository(driver).list())
-      .rejects.toThrow(/locked token/i);
+    for (const mutate of [
+      (candidate: TradeSession) => {
+        candidate.privateState.chainOperation!.result!.amount = "21";
+      },
+      (candidate: TradeSession) => {
+        candidate.privateState.chainOperation!.result!.tokenStandard = QSR_ZTS;
+      },
+      (candidate: TradeSession) => {
+        candidate.privateState.chainOperation!.result!.blockHash = "not-a-hash";
+      }
+    ]) {
+      const corrupt = structuredClone(session);
+      mutate(corrupt);
+      const driver = new MemoryStorageDriver();
+      await driver.set(STORAGE_KEY, [corrupt]);
+      await expect(new TradeSessionRepository(driver).list())
+        .rejects.toThrow(/chain operation result/i);
+    }
   });
 
   it("uses compare-and-swap revisions and rejects stale or skipped writes", async () => {
@@ -778,12 +704,12 @@ describe("trade session v2 repository", () => {
     outboxRegression.privateState.outbox!.status = "staged";
     await expect(repository.save(outboxRegression, 0)).rejects.toThrow(/outbox.*regress/i);
 
-    const cashuRegression = structuredClone(session);
-    cashuRegression.revision = 1;
-    cashuRegression.updatedAt += 1;
-    cashuRegression.privateState.cashuOperation!.status = "prepared";
-    cashuRegression.privateState.cashuOperation!.result = null;
-    await expect(repository.save(cashuRegression, 0)).rejects.toThrow(/cashu.*regress/i);
+    const chainRegression = structuredClone(session);
+    chainRegression.revision = 1;
+    chainRegression.updatedAt += 1;
+    chainRegression.privateState.chainOperation!.status = "prepared";
+    chainRegression.privateState.chainOperation!.result = null;
+    await expect(repository.save(chainRegression, 0)).rejects.toThrow(/chain.*regress/i);
 
     const publicationRegression = structuredClone(session);
     publicationRegression.revision = 1;
@@ -847,25 +773,26 @@ describe("trade session v2 repository", () => {
     const reserveAccept = structuredClone(session);
     reserveAccept.privateState.transcript.choreography.participants.takerSessionPubkey =
       reserveAccept.privateState.outbox!.message.recipient_pubkey;
-    const message: GranolaTradeMessage = {
+    const message: ZwapTradeMessage = {
       ...reserveAccept.privateState.outbox!.message,
       type: "reserve_accept",
       author_pubkey: maker,
       body: {
-        schema: "granola/atomic-swap-body/v1",
+        schema: "zwap/atomic-swap-body/v1",
         taker_session_pubkey:
           reserveAccept.privateState.outbox!.message.recipient_pubkey,
-          maker_session_pubkey: sessionPubkey,
+        maker_session_pubkey: sessionPubkey,
+        maker_address: FIXTURE_LOCAL_ADDRESS,
         reserve_projection_id: projection.id,
         reserve_revision: "1"
       }
     };
-    const rumorTemplate = {
+    const template = {
       ...reserveAccept.privateState.outbox!.rumor,
       pubkey: maker,
       content: JSON.stringify(message)
     };
-    const makerRumor = { ...rumorTemplate, id: getEventHash(rumorTemplate) };
+    const makerRumor = { ...template, id: getEventHash(template) };
     const makerSeal = structuredClone(finalizeEvent({
       kind: 13,
       created_at: message.sent_at,
@@ -902,7 +829,7 @@ describe("trade session v2 repository", () => {
       const corrupt = structuredClone(reserveAccept);
       mutate(corrupt);
       const driver = new MemoryStorageDriver();
-      await driver.set("granola.trade-sessions.v2", [corrupt]);
+      await driver.set(STORAGE_KEY, [corrupt]);
       await expect(new TradeSessionRepository(driver).list()).rejects.toThrow();
     }
   });
@@ -935,7 +862,28 @@ describe("trade session v2 repository", () => {
       privateState: {
         ...structuredClone(session.privateState),
         outbox: null,
-        cashuOperation: null
+        chainOperation: null,
+        settlementTranscriptHash: null,
+        legs: {
+          base: { htlcId: null, expected: null, observations: [] },
+          quote: { htlcId: null, expected: null, observations: [] }
+        }
+      },
+      evidence: {
+        ...structuredClone(session.evidence),
+        chainStates: [],
+        legs: {
+          base: {
+            htlcId: null,
+            validationCommitment: null,
+            htlcState: "UNKNOWN",
+            observedAt: null,
+            spendCommitment: null,
+            claimOperationCommitment: null,
+            refundOperationCommitment: null
+          },
+          quote: structuredClone(session.evidence.legs.quote)
+        }
       }
     };
 
@@ -966,13 +914,14 @@ describe("trade session v2 repository", () => {
     });
     for (const forbidden of [
       "privateState",
-      "proof-secret",
-      "cashu-private-token",
-      "encrypted-private-wrapper",
-      "canonical-private-message",
-      "blinding-material",
+      "chainOperation",
       "nostrPrivateKey",
-      "cashuOperation",
+      "localAddress",
+      preimage,
+      session.privateState.nostrPrivateKey,
+      FIXTURE_LOCAL_ADDRESS,
+      FIXTURE_COUNTERPARTY_ADDRESS,
+      "encrypted-private-wrapper",
       incomingSeal.content,
       incomingSeal.sig
     ]) {
@@ -981,8 +930,8 @@ describe("trade session v2 repository", () => {
   });
 
   it("fails closed on corrupt nested journals and unsupported schemas", async () => {
-    const corruptions = [
-      { ...session, schema: "granola/trade-session/v1" },
+    const corruptions: unknown[] = [
+      { ...session, schema: "granola/trade-session/v2" },
       { ...session, revision: -1 },
       {
         ...session,
@@ -1020,7 +969,7 @@ describe("trade session v2 repository", () => {
             ...session.evidence.legs,
             base: {
               ...session.evidence.legs.base,
-              mintState: "SPENT",
+              htlcState: "UNLOCKED",
               spendCommitment: null
             }
           }
@@ -1034,9 +983,8 @@ describe("trade session v2 repository", () => {
             ...session.evidence.legs,
             base: {
               ...session.evidence.legs.base,
-              mintState: "SPENT",
-              observedAt: 1_700_000_011,
-              proofCount: 2,
+              htlcState: "UNLOCKED",
+              observedAt: FIXTURE_ANCHOR + 11,
               spendCommitment: "12".repeat(32)
             }
           }
@@ -1050,9 +998,8 @@ describe("trade session v2 repository", () => {
             ...session.evidence.legs,
             base: {
               ...session.evidence.legs.base,
-              mintState: "SPENT",
-              observedAt: 1_700_000_011,
-              proofCount: 2,
+              htlcState: "UNLOCKED",
+              observedAt: FIXTURE_ANCHOR + 11,
               spendCommitment: "12".repeat(32)
             }
           }
@@ -1064,23 +1011,11 @@ describe("trade session v2 repository", () => {
             base: {
               ...session.privateState.legs.base,
               observations: [{
-                observedAt: 1_700_000_011,
-                state: "SPENT",
-                proofCount: 2,
+                observedAt: FIXTURE_ANCHOR + 11,
+                state: "UNLOCKED",
                 witnessCommitment: "13".repeat(32)
               }]
             }
-          }
-        }
-      },
-      {
-        ...session,
-        privateState: {
-          ...session.privateState,
-          inbox: {
-            listEventId: null,
-            registeredAt: null,
-            relays: ["wss://relay.example"]
           }
         }
       },
@@ -1117,10 +1052,10 @@ describe("trade session v2 repository", () => {
         ...session,
         privateState: {
           ...session.privateState,
-          cashuOperation: {
-            ...session.privateState.cashuOperation!,
+          chainOperation: {
+            ...session.privateState.chainOperation!,
             status: "prepared",
-            result: session.privateState.cashuOperation!.result
+            result: session.privateState.chainOperation!.result
           }
         }
       },
@@ -1128,9 +1063,9 @@ describe("trade session v2 repository", () => {
         ...session,
         privateState: {
           ...session.privateState,
-          cashuOperation: {
-            ...session.privateState.cashuOperation!,
-            inputsReserved: false
+          chainOperation: {
+            ...session.privateState.chainOperation!,
+            fundsReserved: false
           }
         }
       },
@@ -1138,23 +1073,7 @@ describe("trade session v2 repository", () => {
         ...session,
         evidence: {
           ...session.evidence,
-          reservation: {
-            ...session.evidence.reservation,
-            takerCommitment: null
-          }
-        }
-      },
-      {
-        ...session,
-        evidence: {
-          ...session.evidence,
-          legs: {
-            ...session.evidence.legs,
-            base: {
-              ...session.evidence.legs.base,
-              keysetId: "00deadbeefcafeaa"
-            }
-          }
+          reservation: { ...session.evidence.reservation, takerCommitment: null }
         }
       },
       {
@@ -1165,10 +1084,7 @@ describe("trade session v2 repository", () => {
             ...session.privateState.inbox,
             readbacks: [{
               ...session.privateState.inbox.readbacks[0]!,
-              event: {
-                ...registration,
-                content: "different-signed-event"
-              }
+              event: { ...registration, content: "different-signed-event" }
             }]
           }
         }
@@ -1214,25 +1130,19 @@ describe("trade session v2 repository", () => {
           operation: "fill"
         }
       },
+      { ...session, privateState: { ...session.privateState, preimage: "06".repeat(32) } },
       {
         ...session,
         privateState: {
           ...session.privateState,
-          preimage: "06".repeat(32)
-        }
-      },
-      {
-        ...session,
-        privateState: {
-          ...session.privateState,
-          cashuOperation: {
-            ...session.privateState.cashuOperation!,
+          chainOperation: {
+            ...session.privateState.chainOperation!,
             artifact: {
-              ...session.privateState.cashuOperation!.artifact,
+              ...session.privateState.chainOperation!.artifact,
               expected: {
-                ...session.privateState.cashuOperation!.artifact.expected,
+                ...session.privateState.chainOperation!.artifact.expected,
                 binding: {
-                  ...session.privateState.cashuOperation!.artifact.expected.binding,
+                  ...session.privateState.chainOperation!.artifact.expected.binding,
                   transcriptHash: "1d".repeat(32)
                 }
               }
@@ -1244,211 +1154,109 @@ describe("trade session v2 repository", () => {
 
     for (const corrupt of corruptions) {
       const driver = new MemoryStorageDriver();
-      await driver.set("granola.trade-sessions.v2", [corrupt]);
+      await driver.set(STORAGE_KEY, [corrupt]);
       await expect(new TradeSessionRepository(driver).list()).rejects.toThrow();
     }
   });
 
-  it.skip("rejects unknown root and nested fields and never projects unknown secrets", async () => {
-    const rootExtra = structuredClone(session) as TradeSession & {
-      leakedPrivateKey: string;
-    };
-    rootExtra.leakedPrivateKey = "ab".repeat(32);
-    const nestedExtra = structuredClone(session);
-    (nestedExtra.terms as TradeSession["terms"] & { bearerToken: string }).bearerToken =
-      "cashuBsecret";
-
-    for (const corrupt of [rootExtra, nestedExtra]) {
-      const driver = new MemoryStorageDriver();
-      await driver.set("granola.trade-sessions.v2", [corrupt]);
-      await expect(new TradeSessionRepository(driver).list())
-        .rejects.toThrow(/unknown fields/i);
-    }
-
-    const tainted = structuredClone(session) as TradeSession & {
-      leakedPrivateKey: string;
-    };
-    tainted.leakedPrivateKey = "cd".repeat(32);
-    expect(JSON.stringify(publicTradeView(tainted))).not.toContain(tainted.leakedPrivateKey);
+  it.each([
+    ["a non-Zenon local settlement address", (candidate: TradeSession) => {
+      candidate.privateState.localAddress = "0xdeadbeef";
+    }, /local settlement address is invalid/i],
+    ["a non-Zenon counterparty address", (candidate: TradeSession) => {
+      candidate.privateState.counterpartyAddress = "z1nope";
+    }, /counterparty settlement address is invalid/i],
+    ["identical settlement addresses", (candidate: TradeSession) => {
+      candidate.privateState.counterpartyAddress = candidate.privateState.localAddress;
+    }, /settlement addresses must remain distinct/i],
+    ["a leaked bearer key in the private state", (candidate: TradeSession) => {
+      (candidate.privateState as unknown as Record<string, unknown>).cashuPrivateKey =
+        "02".repeat(32);
+    }, /private state contains missing or unknown fields/i],
+    ["an unknown key in the expected lock", (candidate: TradeSession) => {
+      (candidate.privateState.legs.base.expected as unknown as Record<string, unknown>)
+        .refundPubkey = "02".repeat(33);
+    }, /Expected Zenon lock contains missing or unknown fields/i],
+    ["a non-SHA-256 hash type", (candidate: TradeSession) => {
+      (candidate.privateState.legs.base.expected as unknown as Record<string, unknown>)
+        .hashType = 0;
+    }, /Expected Zenon lock is invalid/i],
+    ["an oversized preimage window", (candidate: TradeSession) => {
+      (candidate.privateState.legs.base.expected as unknown as Record<string, unknown>)
+        .keyMaxSize = 64;
+    }, /Expected Zenon lock is invalid/i],
+    ["identical hash-locked and time-locked addresses", (candidate: TradeSession) => {
+      candidate.privateState.legs.base.expected!.hashLockedAddress =
+        candidate.privateState.legs.base.expected!.timeLockedAddress;
+    }, /Expected Zenon lock is invalid/i],
+    ["a non-Zenon hash-locked address", (candidate: TradeSession) => {
+      candidate.privateState.legs.base.expected!.hashLockedAddress = "z1";
+    }, /Expected Zenon lock is invalid/i],
+    ["a foreign lock network", (candidate: TradeSession) => {
+      candidate.privateState.legs.base.expected!.binding.network = "cashu-testnet-v1";
+    }, /Expected Zenon lock binding is invalid/i],
+    ["a lock hash that leaves the session HTLC hash", (candidate: TradeSession) => {
+      candidate.privateState.legs.base.expected!.hashLock = "1f".repeat(32);
+      candidate.privateState.chainOperation!.artifact.expected.hashLock = "1f".repeat(32);
+    }, /disagrees with the trade session|matching public commitment/i],
+    ["an unknown trade terms key", (candidate: TradeSession) => {
+      (candidate.terms as unknown as Record<string, unknown>).baseMint =
+        "https://testnut.cashu.space";
+    }, /Trade terms contains missing or unknown fields/i],
+    ["a non-token-standard base asset", (candidate: TradeSession) => {
+      candidate.terms.baseToken = "sat";
+    }, /Trade terms are invalid/i],
+    ["an unknown chain evidence state", (candidate: TradeSession) => {
+      (candidate.evidence.legs.base as unknown as Record<string, unknown>).htlcState =
+        "SPENT";
+    }, /Trade leg evidence is invalid/i],
+    ["a chain operation status from the Cashu journal", (candidate: TradeSession) => {
+      (candidate.privateState.chainOperation as unknown as Record<string, unknown>)
+        .status = "wallet_applied";
+    }, /Chain operation metadata is invalid/i],
+    ["an HTLC-less claim artifact", (candidate: TradeSession) => {
+      candidate.privateState.chainOperation!.kind = "claim";
+      candidate.privateState.chainOperation!.artifact.kind = "claim";
+    }, /require their exact HTLC ID/i],
+    ["an evidence HTLC ID that leaves its private lock", (candidate: TradeSession) => {
+      candidate.evidence.legs.base.htlcId = "1f".repeat(32);
+    }, /lacks exact private lock evidence/i]
+  ])("fails closed on %s", async (_label, mutate, pattern) => {
+    const corrupt = structuredClone(session);
+    mutate(corrupt);
+    const driver = new MemoryStorageDriver();
+    await driver.set(STORAGE_KEY, [corrupt]);
+    await expect(new TradeSessionRepository(driver).list()).rejects.toThrow(pattern);
   });
 
-  it.skip("rejects monotonic CAS regressions, skipped phases, and an unevidenced fill", async () => {
-    const repository = new TradeSessionRepository(new MemoryStorageDriver());
-    await repository.save(session, null);
-
-    const inboxRegression = structuredClone(session);
-    inboxRegression.revision = 1;
-    inboxRegression.updatedAt += 1;
-    inboxRegression.privateState.inbox = {
-      status: "unregistered",
-      quorum: 2,
-      event: null,
-      discoveryRelays: [],
-      inboxRelays: [],
-      receipts: [],
-      readbacks: [],
-      stagedAt: null,
-      acknowledgedAt: null,
-      registeredAt: null
-    };
-    await expect(repository.save(inboxRegression, 0)).rejects.toThrow(/regress/i);
-
-    const skipped = structuredClone(session);
-    skipped.revision = 1;
-    skipped.updatedAt += 1;
-    skipped.phase = "filled";
-    await expect(repository.save(skipped, 0)).rejects.toThrow(/phase|filled|evidence/i);
-
-    const spentRepository = new TradeSessionRepository(new MemoryStorageDriver());
-    const spent = structuredClone(session);
-    spent.evidence.legs.base = {
-      ...spent.evidence.legs.base,
-      mintState: "SPENT",
-      observedAt: 1_700_000_011,
-      proofCount: 2,
-      spendCommitment: "12".repeat(32)
-    };
-    spent.privateState.legs.base.observations.push({
-      observedAt: 1_700_000_011,
-      state: "SPENT",
-      proofCount: 2,
-      witnessCommitment: "12".repeat(32)
-    });
-    spent.updatedAt = 1_700_000_011;
-    await spentRepository.save(spent, null);
-    const unknown = structuredClone(spent);
-    unknown.revision = 1;
-    unknown.updatedAt += 1;
-    unknown.evidence.legs.base = {
-      ...unknown.evidence.legs.base,
-      mintState: "UNKNOWN",
-      observedAt: null,
-      proofCount: null,
-      spendCommitment: null
-    };
-    unknown.privateState.legs.base.observations = [];
-    await expect(spentRepository.save(unknown, 0)).rejects.toThrow(/regress|spent/i);
-  });
-
-  it.skip("binds pending order projections to maker authority and lineage", async () => {
-    const attackerProjection = structuredClone(finalizeEvent({
-      ...projection,
-      tags: projection.tags.map((tag) => [...tag])
-    }, remoteSecret));
-    const attacker = structuredClone(session);
-    attacker.pendingOrderPublication = {
-      ...attacker.pendingOrderPublication!,
-      projection: attackerProjection
-    };
-
-    for (const corrupt of [attacker]) {
-      const driver = new MemoryStorageDriver();
-      await driver.set("granola.trade-sessions.v2", [corrupt]);
-      await expect(new TradeSessionRepository(driver).list())
-        .rejects.toThrow(/authority|signer/i);
-    }
-  });
-
-  it.skip("requires three canonical discovery targets and same-relay fresh ACK/readback quorum", async () => {
-    const split = structuredClone(session);
-    split.privateState.inbox.discoveryRelays = [
-      "wss://discovery-one.example",
-      "wss://discovery-two.example",
-      "wss://discovery-three.example"
-    ];
-    split.privateState.inbox.receipts = [
-      { relay: split.privateState.inbox.discoveryRelays[0]!, ok: true, message: "stored" },
-      { relay: split.privateState.inbox.discoveryRelays[1]!, ok: true, message: "stored" }
-    ];
-    split.privateState.inbox.readbacks = [
-      {
-        relay: split.privateState.inbox.discoveryRelays[1]!,
-        found: true,
-        event: registration,
-        observedAt: 1_700_000_003
+  it("rejects a settlement plan whose recovery window is not derived from its locktimes", async () => {
+    for (const mutate of [
+      (candidate: TradeSession) => {
+        candidate.plan.reservationExpiresAt = candidate.plan.longLocktime + 1;
       },
-      {
-        relay: split.privateState.inbox.discoveryRelays[2]!,
-        found: true,
-        event: registration,
-        observedAt: 1_700_000_003
+      (candidate: TradeSession) => {
+        candidate.plan.makerClaimCutoff = candidate.plan.shortLocktime;
+      },
+      (candidate: TradeSession) => {
+        candidate.plan.longLocktime = candidate.plan.shortLocktime;
       }
-    ];
-    const stale = structuredClone(split);
-    stale.privateState.inbox.readbacks = stale.privateState.inbox.readbacks.map(
-      (readback) => ({ ...readback, observedAt: stale.createdAt - 1 })
-    );
-    const credentialed = structuredClone(split);
-    credentialed.privateState.inbox.discoveryRelays[2] =
-      "wss://user:pass@discovery-three.example";
-
-    for (const corrupt of [split, stale, credentialed]) {
+    ]) {
+      const corrupt = structuredClone(session);
+      mutate(corrupt);
       const driver = new MemoryStorageDriver();
-      await driver.set("granola.trade-sessions.v2", [corrupt]);
-      await expect(new TradeSessionRepository(driver).list()).rejects.toThrow();
-    }
-  });
-
-  it.skip("recomputes transcript and pending hashes and rejects unrelated message choreography", async () => {
-    const badChain = structuredClone(session);
-    badChain.privateState.transcript.accepted[0]!.transcriptHash = "ab".repeat(32);
-    badChain.privateState.transcript.lastTranscriptHash = "ab".repeat(32);
-    badChain.privateState.settlementTranscriptHash = "ab".repeat(32);
-    badChain.privateState.cashuOperation!.artifact.expected.binding.transcriptHash =
-      "ab".repeat(32);
-
-    const unrelatedNext = structuredClone(session);
-    unrelatedNext.privateState.outbox!.nextChoreography = {
-      ...unrelatedNext.privateState.outbox!.nextChoreography,
-      phase: "settled"
-    };
-
-    for (const corrupt of [badChain, unrelatedNext]) {
-      const driver = new MemoryStorageDriver();
-      await driver.set("granola.trade-sessions.v2", [corrupt]);
+      await driver.set(STORAGE_KEY, [corrupt]);
       await expect(new TradeSessionRepository(driver).list())
-        .rejects.toThrow(/hash|choreography|transcript/i);
+        .rejects.toThrow(/Settlement plan profile is invalid/i);
     }
   });
 
-  it.skip("binds settlement to session acknowledgement, keys, locktimes, and session timestamps", async () => {
-    const proposalHash = structuredClone(session);
-    proposalHash.privateState.settlementTranscriptHash =
-      proposalHash.privateState.transcript.accepted[0]!.transcriptHash;
-    proposalHash.privateState.cashuOperation!.artifact.expected.binding.transcriptHash =
-      proposalHash.privateState.settlementTranscriptHash;
-
-    const wrongLock = structuredClone(session);
-    wrongLock.privateState.cashuOperation!.artifact.expected.receiverPubkey =
-      `02${"7f".repeat(32)}`;
-
-    const zeroScalar = structuredClone(session);
-    zeroScalar.privateState.cashuPrivateKey = "00".repeat(32);
-
-    const predated = structuredClone(session);
-    predated.privateState.cashuOperation!.preparedAt = predated.createdAt - 1;
-
-    for (const corrupt of [proposalHash, wrongLock, zeroScalar, predated]) {
-      const driver = new MemoryStorageDriver();
-      await driver.set("granola.trade-sessions.v2", [corrupt]);
-      await expect(new TradeSessionRepository(driver).list()).rejects.toThrow();
-    }
-  });
-
-  it.skip("binds reservation proposal and abort evidence to the authenticated transcript", async () => {
-    const wrongProposal = structuredClone(session);
-    wrongProposal.evidence.reservation.proposalSealId = "ef".repeat(32);
-
-    const unrelatedAbort = structuredClone(session);
-    unrelatedAbort.privateState.transcript.choreography.participants.takerSessionPubkey =
-      remotePubkey;
-    unrelatedAbort.evidence.reservation.abortSeal = structuredClone(incomingSeal);
-
-    for (const corrupt of [wrongProposal, unrelatedAbort]) {
-      const driver = new MemoryStorageDriver();
-      await driver.set("granola.trade-sessions.v2", [corrupt]);
-      await expect(new TradeSessionRepository(driver).list())
-        .rejects.toThrow(/proposal|abort|transcript|reservation/i);
-    }
+  it("rejects an unrelated Zenon address in the durable choreography participants", async () => {
+    const corrupt = structuredClone(session);
+    corrupt.privateState.transcript.choreography.participants.makerAddress =
+      FIXTURE_THIRD_ADDRESS.slice(0, 10);
+    const driver = new MemoryStorageDriver();
+    await driver.set(STORAGE_KEY, [corrupt]);
+    await expect(new TradeSessionRepository(driver).list())
+      .rejects.toThrow(/Trade participants are invalid/i);
   });
 });

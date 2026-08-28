@@ -1,13 +1,14 @@
 import { getPublicKey } from "nostr-tools/pure";
 
-import type { PreparedTradeOperation } from "../cashu/trade-client.js";
-import type { ExpectedHtlcLock } from "../cashu/htlc.js";
+import type { ExpectedZenonLock } from "../zenon/htlc.js";
+import type { PreparedChainOperation } from "../zenon/trade-client.js";
+import type { HtlcState } from "../zenon/types.js";
 import type { RelayReceipt } from "../nostr/relay.js";
 import type { NostrEvent } from "../order/events.js";
 import type { OrderSide } from "../order/model.js";
 import type { AtomicSwapChoreography } from "./atomic-messages.js";
 import type {
-  GranolaTradeMessage,
+  ZwapTradeMessage,
   SignedNostrEvent,
   UnsignedRumor,
   TradeMessageType
@@ -16,26 +17,20 @@ import type { SettlementPlan, TradePhase } from "./model.js";
 
 export interface TradeTerms {
   makerSide?: OrderSide;
-  baseMint: string;
-  baseUnit: string;
-  baseKeyset: string;
+  chainId: string;
+  baseToken: string;
   baseAmount: string;
-  quoteMint: string;
-  quoteUnit: string;
-  quoteKeyset: string;
+  quoteToken: string;
   quoteAmount: string;
-  priceCentsPerBtc: string;
+  price: string;
 }
 
-export type PersistedMintState = "UNKNOWN" | "UNSPENT" | "PENDING" | "SPENT";
+export type PersistedHtlcState = HtlcState;
 
 export interface TradeLegEvidence {
-  tokenCommitment: string | null;
+  htlcId: string | null;
   validationCommitment: string | null;
-  keysetId: string;
-  proofCount: number | null;
-  fee: string | null;
-  mintState: PersistedMintState;
+  htlcState: PersistedHtlcState;
   observedAt: number | null;
   spendCommitment: string | null;
   claimOperationCommitment: string | null;
@@ -45,7 +40,7 @@ export interface TradeLegEvidence {
 export interface TradeEvidence {
   makerPubkey: string;
   commitments: string[];
-  mintStates: string[];
+  chainStates: string[];
   reserveProjectionId: string | null;
   reserveProjectionRevision: string | null;
   fillProjectionId: string | null;
@@ -82,7 +77,7 @@ export interface TradeTranscriptJournal {
 }
 
 export interface TradeOutboxJournal {
-  message: GranolaTradeMessage;
+  message: ZwapTradeMessage;
   rumor: UnsignedRumor;
   seal: SignedNostrEvent;
   wrapper: SignedNostrEvent;
@@ -93,40 +88,30 @@ export interface TradeOutboxJournal {
   status: "staged" | "acknowledged";
 }
 
-export interface CashuOperationResult {
-  walletMutation: "replace" | "receive";
-  mintUrl: string;
-  unit: string;
-  proofs: Array<{
-    amount: string;
-    id: string;
-    secret: string;
-    C: string;
-    dleq?: { e: string; s: string; r: string };
-  }>;
-  lockedToken: string | null;
+export interface ChainOperationResult {
+  blockHash: string;
+  htlcId: string;
+  tokenStandard: string;
   amount: string;
-  proofCount: number;
 }
 
-export interface CashuOperationJournal {
+export interface ChainOperationJournal {
   operationId: string;
   leg: "base" | "quote";
-  kind: "outgoing-lock" | "claim" | "refund";
-  status: "prepared" | "completed" | "wallet_applied";
+  kind: "lock" | "claim" | "refund";
+  status: "prepared" | "completed" | "account_applied";
   preparedAt: number;
-  inputsReserved: boolean;
-  artifact: PreparedTradeOperation;
-  result: CashuOperationResult | null;
+  fundsReserved: boolean;
+  artifact: PreparedChainOperation;
+  result: ChainOperationResult | null;
 }
 
 export interface PrivateLegJournal {
-  token: string | null;
-  expected: ExpectedHtlcLock | null;
+  htlcId: string | null;
+  expected: ExpectedZenonLock | null;
   observations: Array<{
     observedAt: number;
-    state: PersistedMintState;
-    proofCount: number;
+    state: PersistedHtlcState;
     witnessCommitment: string | null;
   }>;
 }
@@ -153,7 +138,7 @@ export interface TradePendingIncomingJournal {
   wrapper: SignedNostrEvent;
   seal: SignedNostrEvent;
   rumor: UnsignedRumor;
-  message: GranolaTradeMessage;
+  message: ZwapTradeMessage;
   transcriptHash: string;
   receivedAt: number;
   validation:
@@ -164,8 +149,8 @@ export interface TradePendingIncomingJournal {
 
 export interface TradePrivateState {
   nostrPrivateKey: string;
-  cashuPrivateKey: string;
-  refundPrivateKey: string;
+  localAddress: string;
+  counterpartyAddress: string | null;
   preimage: string | null;
   htlcHash: string | null;
   settlementTranscriptHash: string | null;
@@ -173,7 +158,7 @@ export interface TradePrivateState {
   pendingIncoming: TradePendingIncomingJournal | null;
   transcript: TradeTranscriptJournal;
   outbox: TradeOutboxJournal | null;
-  cashuOperation: CashuOperationJournal | null;
+  chainOperation: ChainOperationJournal | null;
   legs: {
     base: PrivateLegJournal;
     quote: PrivateLegJournal;
@@ -181,7 +166,7 @@ export interface TradePrivateState {
 }
 
 export interface TradeSession {
-  schema: "granola/trade-session/v2";
+  schema: "zwap/trade-session/v1";
   revision: number;
   sessionId: string;
   reservationId: string;
@@ -316,7 +301,7 @@ export function publicTradeView(session: TradeSession): PublicTradeView {
     evidence: {
       makerPubkey: session.evidence.makerPubkey,
       commitments: session.evidence.commitments,
-      mintStates: session.evidence.mintStates,
+      chainStates: session.evidence.chainStates,
       reserveProjectionId: session.evidence.reserveProjectionId,
       reserveProjectionRevision: session.evidence.reserveProjectionRevision,
       fillProjectionId: session.evidence.fillProjectionId,

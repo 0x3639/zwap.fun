@@ -4,7 +4,7 @@ import { PUBLIC_RELAYS, RelayClient, type RelayReadback } from "../src/nostr/rel
 import { humanPriceToPrice } from "../src/order/human-price.js";
 import { NostrOrderService } from "../src/order/service.js";
 import { OrderOutboxRepository } from "../src/storage/order-outbox.js";
-import { MemoryStorageDriver } from "../src/storage/wallet-repository.js";
+import { MemoryStorageDriver } from "../src/storage/driver.js";
 
 // QSR uses 8 decimal places, matching the sat-scale price convention.
 const QUOTE_DECIMALS = 8;

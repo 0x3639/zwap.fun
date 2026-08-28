@@ -104,7 +104,7 @@ function externalArtifact(
   const publication = session.pendingOrderPublication;
   const inbox = session.privateState.inbox;
   const outbox = session.privateState.outbox;
-  const cashu = session.privateState.cashuOperation;
+  const chain = session.privateState.chainOperation;
 
   switch (action.kind) {
     case "publish_order_projection":
@@ -161,39 +161,39 @@ function externalArtifact(
         recipientRelays: outbox.recipientRelays,
         nextChoreography: outbox.nextChoreography
       };
-    case "reserve_cashu_inputs":
+    case "reserve_funds":
       if (
-        cashu?.status !== "prepared" ||
-        cashu.inputsReserved ||
-        !cashu.operationId ||
-        !cashu.artifact.operationCommitment
+        chain?.status !== "prepared" ||
+        chain.fundsReserved ||
+        !chain.operationId ||
+        !chain.artifact.operationCommitment
       ) checkpointError(action);
       return {
-        operationId: cashu.operationId,
-        artifact: cashu.artifact
+        operationId: chain.operationId,
+        artifact: chain.artifact
       };
-    case "execute_cashu_operation":
+    case "execute_chain_operation":
       if (
-        cashu?.status !== "prepared" ||
-        !cashu.inputsReserved ||
-        !cashu.operationId ||
-        !cashu.artifact.operationCommitment
+        chain?.status !== "prepared" ||
+        !chain.fundsReserved ||
+        !chain.operationId ||
+        !chain.artifact.operationCommitment
       ) checkpointError(action);
       return {
-        operationId: cashu.operationId,
-        artifact: cashu.artifact
+        operationId: chain.operationId,
+        artifact: chain.artifact
       };
-    case "reconcile_wallet":
+    case "reconcile_account":
       if (
-        cashu?.status !== "completed" ||
-        cashu.result === null ||
-        !cashu.operationId ||
-        !cashu.artifact.operationCommitment
+        chain?.status !== "completed" ||
+        chain.result === null ||
+        !chain.operationId ||
+        !chain.artifact.operationCommitment
       ) checkpointError(action);
       return {
-        operationId: cashu.operationId,
-        operationCommitment: cashu.artifact.operationCommitment,
-        result: cashu.result
+        operationId: chain.operationId,
+        operationCommitment: chain.artifact.operationCommitment,
+        result: chain.result
       };
     case "poll_inbox":
       if (
@@ -214,14 +214,13 @@ function externalArtifact(
       const privateLeg = session.privateState.legs[leg];
       const evidence = session.evidence.legs[leg];
       if (
-        privateLeg.token === null ||
-        evidence.tokenCommitment === null ||
-        evidence.keysetId.length === 0
+        privateLeg.htlcId === null ||
+        evidence.htlcId === null ||
+        evidence.htlcId !== privateLeg.htlcId
       ) checkpointError(action);
       return {
         leg,
-        tokenCommitment: evidence.tokenCommitment,
-        keysetId: evidence.keysetId,
+        htlcId: evidence.htlcId,
         previousObservation: privateLeg.observations.at(-1) ?? null
       };
     }
@@ -248,15 +247,12 @@ function externalArtifact(
       return {
         leg,
         terms: {
-          mintUrl: leg === "base" ? session.terms.baseMint : session.terms.quoteMint,
-          unit: leg === "base" ? session.terms.baseUnit : session.terms.quoteUnit,
-          keysetId: leg === "base"
-            ? session.terms.baseKeyset
-            : session.terms.quoteKeyset,
-            amount: leg === "base" ? session.terms.baseAmount : session.terms.quoteAmount
+          chainId: session.terms.chainId,
+          tokenStandard: leg === "base" ? session.terms.baseToken : session.terms.quoteToken,
+          amount: leg === "base" ? session.terms.baseAmount : session.terms.quoteAmount
         },
         expected,
-        tokenCommitment: session.evidence.legs[leg].tokenCommitment
+        htlcId: session.evidence.legs[leg].htlcId
       };
     }
     case "stage_order_reserve":

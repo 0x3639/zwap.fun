@@ -11,10 +11,8 @@ import {
   type WalletPocket,
   type WalletView
 } from "../core/wallet.js";
-import type {
-  StorageDriver,
-  WalletRepository
-} from "../storage/wallet-repository.js";
+import type { StorageDriver } from "../storage/driver.js";
+import type { WalletRepository } from "../storage/wallet-repository.js";
 
 const QUOTE_KEY = "granola.quotes.v1";
 const ALLOWED_TEST_MINTS = new Set([

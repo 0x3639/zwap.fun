@@ -7,7 +7,7 @@ import type {
   StagedOrderPublication,
   SuccessorOperation
 } from "../order/service.js";
-import type { StorageDriver } from "./wallet-repository.js";
+import type { StorageDriver } from "./driver.js";
 
 // The projection-only format stores the exact signed artifact required for
 // publication retries and local recovery.

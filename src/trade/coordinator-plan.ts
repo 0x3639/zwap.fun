@@ -1,3 +1,4 @@
+import { isHex32 } from "../zenon/validate.js";
 import type { TradeSession } from "./session.js";
 
 export type CoordinatorAction =
@@ -11,10 +12,10 @@ export type CoordinatorAction =
   | { kind: "commit_outbox" }
   | { kind: "validate_incoming" }
   | { kind: "commit_incoming" }
-  | { kind: "reserve_cashu_inputs" }
-  | { kind: "execute_cashu_operation" }
-  | { kind: "reconcile_wallet" }
-  | { kind: "clear_cashu_operation" }
+  | { kind: "reserve_funds" }
+  | { kind: "execute_chain_operation" }
+  | { kind: "reconcile_account" }
+  | { kind: "clear_chain_operation" }
   | { kind: "stage_reserve_propose" }
   | { kind: "stage_order_reserve" }
   | { kind: "stage_reserve_accept" }
@@ -48,8 +49,6 @@ function safeNow(value: number): number {
   return value;
 }
 
-const HEX_32 = /^[0-9a-f]{64}$/;
-
 function makerOffersBase(session: TradeSession): boolean {
   return session.orderSide !== "buy";
 }
@@ -66,19 +65,14 @@ function legSlot(session: TradeSession, leg: "base" | "quote"): "base" | "quote"
 function independentlySpent(session: TradeSession, leg: "base" | "quote"): boolean {
   const evidence = session.evidence.legs[leg];
   if (
-    evidence.mintState !== "SPENT" ||
+    evidence.htlcState !== "UNLOCKED" ||
     evidence.observedAt === null ||
-    evidence.proofCount === null ||
-    evidence.proofCount < 1 ||
-    evidence.spendCommitment === null ||
-    !HEX_32.test(evidence.spendCommitment)
+    !isHex32(evidence.spendCommitment)
   ) return false;
   return session.privateState.legs[leg].observations.some((observation) =>
-    observation.state === "SPENT" &&
+    observation.state === "UNLOCKED" &&
     observation.observedAt === evidence.observedAt &&
-    observation.proofCount === evidence.proofCount &&
-    observation.witnessCommitment !== null &&
-    HEX_32.test(observation.witnessCommitment) &&
+    isHex32(observation.witnessCommitment) &&
     observation.witnessCommitment === evidence.spendCommitment
   );
 }
@@ -124,8 +118,8 @@ function terminal(session: TradeSession): boolean {
   if (session.phase === "released") return exactCommittedRelease(session);
   if (session.phase === "frozen") {
     return session.reserveProjectionId === null &&
-      session.privateState.legs.base.token === null &&
-      session.privateState.legs.quote.token === null;
+      session.privateState.legs.base.htlcId === null &&
+      session.privateState.legs.quote.htlcId === null;
   }
   return false;
 }
@@ -136,32 +130,34 @@ function lockReady(session: TradeSession, leg: "base" | "quote"): boolean {
   const evidence = session.evidence.legs[actualLeg];
   const expected = privateLeg.expected;
   if (
-    privateLeg.token === null ||
+    privateLeg.htlcId === null ||
     expected === null ||
-    evidence.tokenCommitment === null ||
+    evidence.htlcId === null ||
+    evidence.htlcId !== privateLeg.htlcId ||
     evidence.validationCommitment === null ||
     session.privateState.htlcHash === null ||
     session.privateState.settlementTranscriptHash === null
   ) return false;
   const base = actualLeg === "base";
   return expected.leg === actualLeg &&
-    expected.mintUrl === (base ? session.terms.baseMint : session.terms.quoteMint) &&
-    expected.unit === (base ? session.terms.baseUnit : session.terms.quoteUnit) &&
+    expected.chainId === session.terms.chainId &&
+    expected.tokenStandard === (base ? session.terms.baseToken : session.terms.quoteToken) &&
     expected.amount === (base ? session.terms.baseAmount : session.terms.quoteAmount) &&
-    expected.hash === session.privateState.htlcHash &&
-    expected.locktime === (leg === "base" ? session.plan.longLocktime : session.plan.shortLocktime) &&
+    expected.hashLock === session.privateState.htlcHash &&
+    expected.expirationTime ===
+      (leg === "base" ? session.plan.longLocktime : session.plan.shortLocktime) &&
     expected.binding.sessionId === session.sessionId &&
     expected.binding.reservationId === session.reservationId &&
     expected.binding.transcriptHash === session.privateState.settlementTranscriptHash;
 }
 
-function walletAppliedRefund(
+function accountAppliedRefund(
   session: TradeSession,
   leg: "base" | "quote"
 ): boolean {
-  const operation = session.privateState.cashuOperation;
+  const operation = session.privateState.chainOperation;
   return operation !== null &&
-    operation.status === "wallet_applied" &&
+    operation.status === "account_applied" &&
     operation.kind === "refund" &&
     operation.leg === leg &&
     operation.result !== null &&
@@ -169,28 +165,25 @@ function walletAppliedRefund(
       session.evidence.legs[leg].refundOperationCommitment;
 }
 
-function hasPostExpiryUnspentObservation(
+function hasPostExpiryLockedObservation(
   session: TradeSession,
   leg: "base" | "quote",
   eligibleAfter: number
 ): boolean {
   const evidence = session.evidence.legs[leg];
   return (
-    evidence.mintState === "UNSPENT" &&
+    evidence.htlcState === "LOCKED" &&
     evidence.observedAt !== null &&
     evidence.observedAt > eligibleAfter &&
-    evidence.proofCount !== null &&
-    evidence.proofCount > 0 &&
     session.privateState.legs[leg].observations.some((observation) =>
-      observation.state === "UNSPENT" &&
-      observation.observedAt === evidence.observedAt &&
-      observation.proofCount === evidence.proofCount
+      observation.state === "LOCKED" &&
+      observation.observedAt === evidence.observedAt
     )
   );
 }
 
 function unsafePreparedOperation(session: TradeSession, now: number): boolean {
-  const operation = session.privateState.cashuOperation;
+  const operation = session.privateState.chainOperation;
   if (!operation || operation.status !== "prepared") return false;
   if (operation.kind === "refund") {
     const locktime = legSlot(session, operation.leg) === "base"
@@ -237,14 +230,14 @@ function recoveryAction(session: TradeSession, now: number): CoordinatorAction |
   const guard = session.plan.refundGuardSeconds;
 
   const quoteExpiryGuard = session.plan.shortLocktime + guard;
-  if (session.role === "taker" && quote.token !== null && !quoteSpent && now >= quoteExpiryGuard) {
-    return hasPostExpiryUnspentObservation(session, takerPaymentLeg, quoteExpiryGuard)
+  if (session.role === "taker" && quote.htlcId !== null && !quoteSpent && now >= quoteExpiryGuard) {
+    return hasPostExpiryLockedObservation(session, takerPaymentLeg, quoteExpiryGuard)
       ? { kind: "prepare_quote_refund" }
       : { kind: "observe_quote" };
   }
   const baseExpiryGuard = session.plan.longLocktime + guard;
-  if (session.role === "maker" && base.token !== null && !baseSpent && now >= baseExpiryGuard) {
-    return hasPostExpiryUnspentObservation(session, makerOfferLeg, baseExpiryGuard)
+  if (session.role === "maker" && base.htlcId !== null && !baseSpent && now >= baseExpiryGuard) {
+    return hasPostExpiryLockedObservation(session, makerOfferLeg, baseExpiryGuard)
       ? { kind: "prepare_base_refund" }
       : { kind: "observe_base" };
   }
@@ -274,15 +267,15 @@ export function nextCoordinatorAction(
 ): CoordinatorAction {
   const now = safeNow(currentTime);
 
-  const cashu = session.privateState.cashuOperation;
+  const chain = session.privateState.chainOperation;
   const publication = session.pendingOrderPublication;
-  if (cashu?.status === "completed") return { kind: "reconcile_wallet" };
-  if (cashu?.status === "wallet_applied") {
+  if (chain?.status === "completed") return { kind: "reconcile_account" };
+  if (chain?.status === "account_applied") {
     const releasableRefund =
       session.role === "maker" &&
       session.reserveProjectionId !== null &&
-      walletAppliedRefund(session, slotLeg(session, "base"));
-    if (!releasableRefund) return { kind: "clear_cashu_operation" };
+      accountAppliedRefund(session, slotLeg(session, "base"));
+    if (!releasableRefund) return { kind: "clear_chain_operation" };
     if (publication === null) return { kind: "stage_order_release" };
     if (publication.operation !== "release") {
       return publication.operation === "reserve" &&
@@ -291,7 +284,7 @@ export function nextCoordinatorAction(
         : { kind: "enter_recovery" };
     }
     if (publication.status === "committed") {
-      return { kind: "clear_cashu_operation" };
+      return { kind: "clear_chain_operation" };
     }
   }
 
@@ -323,11 +316,11 @@ export function nextCoordinatorAction(
       : { kind: "deliver_outbox" };
   }
 
-  if (cashu?.status === "prepared") {
+  if (chain?.status === "prepared") {
     if (unsafePreparedOperation(session, now)) return { kind: "enter_recovery" };
-    return cashu.inputsReserved
-      ? { kind: "execute_cashu_operation" }
-      : { kind: "reserve_cashu_inputs" };
+    return chain.fundsReserved
+      ? { kind: "execute_chain_operation" }
+      : { kind: "reserve_funds" };
   }
 
   const incoming = session.privateState.pendingIncoming;
@@ -373,7 +366,7 @@ export function nextCoordinatorAction(
       return session.role === "maker"
         ? session.reserveProjectionId === null
           ? { kind: "stage_order_reserve" }
-          : session.privateState.legs[slotLeg(session, "base")].token === null
+          : session.privateState.legs[slotLeg(session, "base")].htlcId === null
             ? { kind: "prepare_base_lock" }
             : lockReady(session, "base")
               ? { kind: "stage_reserve_accept" }
@@ -387,7 +380,7 @@ export function nextCoordinatorAction(
     case "awaiting_base_lock":
       if (now >= session.plan.makerClaimCutoff) return { kind: "enter_recovery" };
       return session.role === "maker"
-        ? session.privateState.legs[slotLeg(session, "base")].token === null
+        ? session.privateState.legs[slotLeg(session, "base")].htlcId === null
           ? { kind: "prepare_base_lock" }
           : lockReady(session, "base")
             ? { kind: "stage_base_lock" }
@@ -400,7 +393,7 @@ export function nextCoordinatorAction(
     case "awaiting_quote_lock":
       if (now >= session.plan.makerClaimCutoff) return { kind: "enter_recovery" };
       return session.role === "taker"
-        ? session.privateState.legs[slotLeg(session, "quote")].token === null
+        ? session.privateState.legs[slotLeg(session, "quote")].htlcId === null
           ? { kind: "prepare_quote_lock" }
           : lockReady(session, "quote")
             ? { kind: "stage_quote_lock" }

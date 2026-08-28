@@ -13,10 +13,8 @@ import type { TradeSubscriptionCallbacks } from "../nostr/trade-subscription.js"
 import type { NostrEvent } from "../order/events.js";
 import { NostrOrderService, type OrderRelayPort } from "../order/service.js";
 import { OrderOutboxRepository } from "../storage/order-outbox.js";
-import {
-  MemoryStorageDriver,
-  WalletRepository
-} from "../storage/wallet-repository.js";
+import { MemoryStorageDriver } from "../storage/driver.js";
+import { WalletRepository } from "../storage/wallet-repository.js";
 import {
   createBrowserTradeRuntime,
   probeTradeInboxRelay

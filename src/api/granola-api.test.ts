@@ -2,10 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { CashuQuote, TokenSummary } from "../cashu/client.js";
 import { createEmptyWallet, type WalletPocket } from "../core/wallet.js";
-import {
-  MemoryStorageDriver,
-  WalletRepository
-} from "../storage/wallet-repository.js";
+import { MemoryStorageDriver } from "../storage/driver.js";
+import { WalletRepository } from "../storage/wallet-repository.js";
 import { GranolaApi, QuoteRepository, type CashuPort } from "./granola-api.js";
 
 function fakeCashu() {

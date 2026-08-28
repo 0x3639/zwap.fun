@@ -1,197 +1,61 @@
 import { describe, expect, it } from "vitest";
 
-import type { TradeSession } from "./session.js";
+import type { ExpectedZenonLock } from "../zenon/htlc.js";
 import { nextCoordinatorAction } from "./coordinator-plan.js";
+import type { TradeSession } from "./session.js";
+import {
+  FIXTURE_ANCHOR,
+  FIXTURE_COUNTERPARTY_ADDRESS,
+  FIXTURE_LOCAL_ADDRESS,
+  FIXTURE_ORDER_ID,
+  sessionFixture
+} from "./test-fixtures.js";
+
+const NOW = FIXTURE_ANCHOR + 100;
+const BASE_HTLC_ID = "ab".repeat(32);
+const QUOTE_HTLC_ID = "cd".repeat(32);
 
 function session(
   role: "maker" | "taker",
   choreographyPhase: TradeSession["privateState"]["transcript"]["choreography"]["phase"]
 ): TradeSession {
-  return {
-    schema: "granola/trade-session/v2",
-    revision: 0,
-    sessionId: "11".repeat(32),
-    reservationId: "11111111-1111-4111-8111-111111111111",
+  return sessionFixture({
     role,
-    phase: "negotiating",
-    orderAddress: `30078:${"22".repeat(32)}:granola:order:v1:22222222-2222-4222-8222-222222222222`,
-    offeredProjectionId: "33".repeat(32),
-    offeredProjectionRevision: "0",
-    reserveProjectionId: null,
-    reserveProjectionRevision: null,
-    fillProjectionId: null,
-    fillProjectionRevision: null,
-    pendingOrderPublication: null,
-    createdAt: 1_800_000_000,
-    updatedAt: 1_800_000_000,
-    terms: {
-      baseMint: "https://testnut.cashu.space",
-      baseUnit: "sat",
-      baseKeyset: "00deadbeefcafeee",
-      baseAmount: "20",
-      quoteMint: "https://nofee.testnut.cashu.space",
-      quoteUnit: "usd",
-      quoteKeyset: "00deadbeefcafeff",
-      quoteAmount: "1",
-      priceCentsPerBtc: "5000000"
-    },
-    plan: {
-      anchor: 1_800_000_000,
-      shortLocktime: 1_800_000_600,
-      makerClaimCutoff: 1_800_000_480,
-      longLocktime: 1_800_001_200,
-      takerClaimCutoff: 1_800_001_080,
-      reservationExpiresAt: 1_800_001_800,
-      refundGuardSeconds: 60
-    },
-    evidence: {
-      makerPubkey: "22".repeat(32),
-      commitments: [],
-      mintStates: [],
-      reserveProjectionId: null,
-      reserveProjectionRevision: null,
-      fillProjectionId: null,
-      fillProjectionRevision: null,
-      reservation: {
-        proposalSealId: null,
-        takerCommitment: null,
-        abortSeal: null
-      },
-      legs: {
-        base: {
-          tokenCommitment: null,
-          validationCommitment: null,
-          keysetId: "00deadbeefcafeee",
-          proofCount: null,
-          fee: null,
-          mintState: "UNKNOWN",
-          observedAt: null,
-          spendCommitment: null,
-          claimOperationCommitment: null,
-          refundOperationCommitment: null
-        },
-        quote: {
-          tokenCommitment: null,
-          validationCommitment: null,
-          keysetId: "00deadbeefcafeff",
-          proofCount: null,
-          fee: null,
-          mintState: "UNKNOWN",
-          observedAt: null,
-          spendCommitment: null,
-          claimOperationCommitment: null,
-          refundOperationCommitment: null
-        }
-      }
-    },
     privateState: {
-      nostrPrivateKey: "01".repeat(32),
-      cashuPrivateKey: "02".repeat(32),
-      refundPrivateKey: "03".repeat(32),
+      counterpartyAddress: role === "maker" ? FIXTURE_COUNTERPARTY_ADDRESS : null,
       preimage: role === "maker" ? "04".repeat(32) : null,
       htlcHash: role === "maker" ? "05".repeat(32) : null,
-      settlementTranscriptHash: null,
-      inbox: {
-        status: "registered",
-        quorum: 2,
-        event: {
-          kind: 10050,
-          created_at: 1_800_000_000,
-          tags: [["relay", "wss://auth.example"]],
-          content: "",
-          id: "06".repeat(32),
-          pubkey: "07".repeat(32),
-          sig: "08".repeat(64)
-        },
-        discoveryRelays: ["wss://auth.example", "wss://auth-two.example"],
-        inboxRelays: ["wss://auth.example"],
-        receipts: [
-          { relay: "wss://auth.example", ok: true, message: "stored" },
-          { relay: "wss://auth-two.example", ok: true, message: "stored" }
-        ],
-        readbacks: [{
-          relay: "wss://auth.example",
-          found: true,
-          event: {
-            kind: 10050,
-            created_at: 1_800_000_000,
-            tags: [["relay", "wss://auth.example"]],
-            content: "",
-            id: "06".repeat(32),
-            pubkey: "07".repeat(32),
-            sig: "08".repeat(64)
-          },
-          observedAt: 1_800_000_001
-        }, {
-          relay: "wss://auth-two.example",
-          found: true,
-          event: {
-            kind: 10050,
-            created_at: 1_800_000_000,
-            tags: [["relay", "wss://auth.example"]],
-            content: "",
-            id: "06".repeat(32),
-            pubkey: "07".repeat(32),
-            sig: "08".repeat(64)
-          },
-          observedAt: 1_800_000_001
-        }],
-        stagedAt: 1_800_000_000,
-        acknowledgedAt: 1_800_000_001,
-        registeredAt: 1_800_000_001
-      },
-      pendingIncoming: null,
-      transcript: {
-        choreography: {
-          phase: choreographyPhase,
-          participants: { makerOrderPubkey: "22".repeat(32) },
-          refundedLegs: []
-        },
-        nextSequence: "0",
-        lastRumorId: null,
-        lastMessageId: null,
-        lastTranscriptHash: null,
-        accepted: []
-      },
-      outbox: null,
-      cashuOperation: null,
-      legs: {
-        base: { token: null, expected: null, observations: [] },
-        quote: { token: null, expected: null, observations: [] }
-      }
-    }
-  };
+      transcript: { choreography: { phase: choreographyPhase } }
+    },
+    evidence: { commitments: role === "maker" ? ["05".repeat(32)] : [] }
+  });
 }
 
 function markSpent(
   current: TradeSession,
   leg: "base" | "quote",
-  observedAt = 1_800_000_100
+  observedAt = NOW
 ): void {
-  current.evidence.legs[leg].mintState = "SPENT";
+  current.evidence.legs[leg].htlcState = "UNLOCKED";
   current.evidence.legs[leg].observedAt = observedAt;
-  current.evidence.legs[leg].proofCount = 1;
   current.evidence.legs[leg].spendCommitment = "aa".repeat(32);
   current.privateState.legs[leg].observations.push({
     observedAt,
-    state: "SPENT",
-    proofCount: 1,
+    state: "UNLOCKED",
     witnessCommitment: current.evidence.legs[leg].spendCommitment
   });
 }
 
-function markPostExpiryUnspent(
+function markPostExpiryLocked(
   current: TradeSession,
   leg: "base" | "quote",
   observedAt: number
 ): void {
-  current.evidence.legs[leg].mintState = "UNSPENT";
+  current.evidence.legs[leg].htlcState = "LOCKED";
   current.evidence.legs[leg].observedAt = observedAt;
-  current.evidence.legs[leg].proofCount = 1;
   current.privateState.legs[leg].observations.push({
     observedAt,
-    state: "UNSPENT",
-    proofCount: 1,
+    state: "LOCKED",
     witnessCommitment: null
   });
 }
@@ -203,13 +67,13 @@ function setCommittedPublication(
 ): void {
   current.pendingOrderPublication = {
     operation,
-    orderId: "22222222-2222-4222-8222-222222222222",
+    orderId: FIXTURE_ORDER_ID,
     projection: { id: projectionId },
     receipts: [{ relay: "wss://relay.example", ok: true, message: "stored" }],
     status: "committed",
-    stagedAt: 1_800_000_000,
-    acknowledgedAt: 1_800_000_001,
-    committedAt: 1_800_000_002
+    stagedAt: FIXTURE_ANCHOR,
+    acknowledgedAt: FIXTURE_ANCHOR + 1,
+    committedAt: FIXTURE_ANCHOR + 2
   } as TradeSession["pendingOrderPublication"];
   if (operation === "reserve") {
     current.reserveProjectionId = projectionId;
@@ -226,73 +90,75 @@ function setCommittedPublication(
   }
 }
 
-function markLockReady(current: TradeSession, leg: "base" | "quote"): void {
-  const evidence = current.evidence.legs[leg];
-  const privateLeg = current.privateState.legs[leg];
-  const locktime = leg === "base"
-    ? current.plan.longLocktime
-    : current.plan.shortLocktime;
-  current.privateState.htlcHash ??= "05".repeat(32);
-  current.privateState.settlementTranscriptHash ??= "09".repeat(32);
-  evidence.tokenCommitment = (leg === "base" ? "44" : "55").repeat(32);
-  evidence.validationCommitment = (leg === "base" ? "66" : "77").repeat(32);
-  privateLeg.token = leg === "base" ? "cashuBbase" : "cashuBquote";
-  privateLeg.expected = {
-    mintUrl: leg === "base" ? current.terms.baseMint : current.terms.quoteMint,
-    unit: leg === "base" ? current.terms.baseUnit : current.terms.quoteUnit,
-    amount: leg === "base" ? current.terms.baseAmount : current.terms.quoteAmount,
-    hash: current.privateState.htlcHash,
-    locktime,
+function expectedLock(current: TradeSession, leg: "base" | "quote"): ExpectedZenonLock {
+  return {
     leg,
+    chainId: current.terms.chainId,
+    tokenStandard: leg === "base" ? current.terms.baseToken : current.terms.quoteToken,
+    amount: leg === "base" ? current.terms.baseAmount : current.terms.quoteAmount,
+    hashLock: current.privateState.htlcHash!,
+    hashType: 1,
+    keyMaxSize: 32,
+    hashLockedAddress: FIXTURE_COUNTERPARTY_ADDRESS,
+    timeLockedAddress: FIXTURE_LOCAL_ADDRESS,
+    expirationTime: leg === "base"
+      ? current.plan.longLocktime
+      : current.plan.shortLocktime,
     binding: {
+      protocolVersion: "1",
+      network: "zenon-1",
+      orderId: FIXTURE_ORDER_ID,
       sessionId: current.sessionId,
       reservationId: current.reservationId,
-      transcriptHash: current.privateState.settlementTranscriptHash
+      transcriptHash: current.privateState.settlementTranscriptHash!
     }
-  } as NonNullable<typeof privateLeg.expected>;
+  };
 }
 
-function setWalletAppliedRefund(
+function markLockReady(current: TradeSession, leg: "base" | "quote"): void {
+  const htlcId = leg === "base" ? BASE_HTLC_ID : QUOTE_HTLC_ID;
+  current.privateState.htlcHash ??= "05".repeat(32);
+  current.privateState.settlementTranscriptHash ??= "09".repeat(32);
+  current.evidence.legs[leg].htlcId = htlcId;
+  current.evidence.legs[leg].validationCommitment =
+    (leg === "base" ? "66" : "77").repeat(32);
+  current.privateState.legs[leg].htlcId = htlcId;
+  current.privateState.legs[leg].expected = expectedLock(current, leg);
+}
+
+function setAccountAppliedRefund(
   current: TradeSession,
   leg: "base" | "quote",
-  status: "completed" | "wallet_applied"
+  status: "completed" | "account_applied"
 ): void {
   const expected = current.privateState.legs[leg].expected;
   if (expected === null) throw new Error("Test refund requires a prepared lock");
   const commitment = "aa".repeat(32);
   current.evidence.legs[leg].refundOperationCommitment = commitment;
-  current.privateState.cashuOperation = {
+  current.privateState.chainOperation = {
     operationId: "33333333-3333-4333-8333-333333333333",
     leg,
     kind: "refund",
     status,
     preparedAt: current.updatedAt,
-    inputsReserved: true,
+    fundsReserved: true,
     artifact: {
       version: 1,
       kind: "refund",
-      mintUrl: expected.mintUrl,
-      unit: expected.unit,
-      preview: {},
-      spentSecrets: ["refund-input"],
+      chainId: expected.chainId,
+      tokenStandard: expected.tokenStandard,
+      amount: expected.amount,
+      htlcId: current.privateState.legs[leg].htlcId,
       expected,
       operationCommitment: commitment
     },
     result: {
-      walletMutation: "receive",
-      mintUrl: expected.mintUrl,
-      unit: expected.unit,
-      proofs: [{
-        amount: "20",
-        id: current.evidence.legs[leg].keysetId,
-        secret: "refund-output",
-        C: "02".repeat(33)
-      }],
-      lockedToken: null,
-      amount: leg === "base" ? current.terms.baseAmount : current.terms.quoteAmount,
-      proofCount: 1
+      blockHash: "be".repeat(32),
+      htlcId: current.privateState.legs[leg].htlcId!,
+      tokenStandard: expected.tokenStandard,
+      amount: expected.amount
     }
-  } as TradeSession["privateState"]["cashuOperation"];
+  };
 }
 
 describe("atomic swap coordinator action planning", () => {
@@ -302,15 +168,15 @@ describe("atomic swap coordinator action planning", () => {
       operation: "reserve",
       status: "staged"
     } as TradeSession["pendingOrderPublication"];
-    expect(nextCoordinatorAction(current, 1_800_000_100)).toEqual({
+    expect(nextCoordinatorAction(current, NOW)).toEqual({
       kind: "publish_order_projection"
     });
     current.pendingOrderPublication!.status = "acknowledged";
-    expect(nextCoordinatorAction(current, 1_800_000_100)).toEqual({
+    expect(nextCoordinatorAction(current, NOW)).toEqual({
       kind: "commit_order_publication"
     });
     current.pendingOrderPublication!.status = "committed";
-    expect(nextCoordinatorAction(current, 1_800_000_100)).toEqual({
+    expect(nextCoordinatorAction(current, NOW)).toEqual({
       kind: "clear_order_publication"
     });
 
@@ -319,36 +185,35 @@ describe("atomic swap coordinator action planning", () => {
       status: "staged",
       message: {
         type: "claim_notice",
-        expires_at: 1_800_000_300
+        expires_at: FIXTURE_ANCHOR + 300
       }
     } as TradeSession["privateState"]["outbox"];
-    expect(nextCoordinatorAction(current, 1_800_000_100)).toEqual({
+    expect(nextCoordinatorAction(current, NOW)).toEqual({
       kind: "deliver_outbox"
     });
     current.privateState.outbox!.status = "acknowledged";
-    expect(nextCoordinatorAction(current, 1_800_000_100)).toEqual({
+    expect(nextCoordinatorAction(current, NOW)).toEqual({
       kind: "commit_outbox"
     });
   });
 
-  it("executes, reconciles, then clears one durable Cashu operation", () => {
+  it("reserves, executes, reconciles, then clears one durable chain operation", () => {
     const current = session("maker", "awaiting_base_lock");
-    current.privateState.cashuOperation = {
+    current.privateState.chainOperation = {
       status: "prepared",
-      inputsReserved: false
-    } as
-      TradeSession["privateState"]["cashuOperation"];
-    expect(nextCoordinatorAction(current, 1_800_000_100).kind)
-      .toBe("reserve_cashu_inputs");
-    current.privateState.cashuOperation!.inputsReserved = true;
-    expect(nextCoordinatorAction(current, 1_800_000_100).kind)
-      .toBe("execute_cashu_operation");
-    current.privateState.cashuOperation!.status = "completed";
-    expect(nextCoordinatorAction(current, 1_800_000_100).kind)
-      .toBe("reconcile_wallet");
-    current.privateState.cashuOperation!.status = "wallet_applied";
-    expect(nextCoordinatorAction(current, 1_800_000_100).kind)
-      .toBe("clear_cashu_operation");
+      fundsReserved: false
+    } as TradeSession["privateState"]["chainOperation"];
+    expect(nextCoordinatorAction(current, NOW).kind)
+      .toBe("reserve_funds");
+    current.privateState.chainOperation!.fundsReserved = true;
+    expect(nextCoordinatorAction(current, NOW).kind)
+      .toBe("execute_chain_operation");
+    current.privateState.chainOperation!.status = "completed";
+    expect(nextCoordinatorAction(current, NOW).kind)
+      .toBe("reconcile_account");
+    current.privateState.chainOperation!.status = "account_applied";
+    expect(nextCoordinatorAction(current, NOW).kind)
+      .toBe("clear_chain_operation");
   });
 
   it("registers the exact local inbox before any protocol message", () => {
@@ -365,7 +230,7 @@ describe("atomic swap coordinator action planning", () => {
       acknowledgedAt: null,
       registeredAt: null
     };
-    expect(nextCoordinatorAction(current, 1_800_000_100).kind)
+    expect(nextCoordinatorAction(current, NOW).kind)
       .toBe("stage_inbox_registration");
     current.privateState.inbox.status = "staged";
     current.privateState.inbox.event = session(
@@ -377,11 +242,11 @@ describe("atomic swap coordinator action planning", () => {
       "wss://auth-two.example"
     ];
     current.privateState.inbox.inboxRelays = ["wss://auth.example"];
-    current.privateState.inbox.stagedAt = 1_800_000_100;
-    expect(nextCoordinatorAction(current, 1_800_000_100).kind)
+    current.privateState.inbox.stagedAt = NOW;
+    expect(nextCoordinatorAction(current, NOW).kind)
       .toBe("publish_inbox_registration");
     current.privateState.inbox.status = "acknowledged";
-    expect(nextCoordinatorAction(current, 1_800_000_100).kind)
+    expect(nextCoordinatorAction(current, NOW).kind)
       .toBe("verify_inbox_registration");
   });
 
@@ -390,21 +255,21 @@ describe("atomic swap coordinator action planning", () => {
     current.privateState.pendingIncoming = {
       validation: { status: "unvalidated", checkedAt: null, error: null }
     } as TradeSession["privateState"]["pendingIncoming"];
-    expect(nextCoordinatorAction(current, 1_800_000_100).kind)
+    expect(nextCoordinatorAction(current, NOW).kind)
       .toBe("validate_incoming");
     current.privateState.pendingIncoming!.validation = {
       status: "validated",
-      checkedAt: 1_800_000_100,
+      checkedAt: NOW,
       error: null
     };
-    expect(nextCoordinatorAction(current, 1_800_000_100).kind)
+    expect(nextCoordinatorAction(current, NOW).kind)
       .toBe("commit_incoming");
     current.privateState.pendingIncoming!.validation = {
       status: "rejected",
-      checkedAt: 1_800_000_100,
+      checkedAt: NOW,
       error: "conflicting replay"
     };
-    expect(nextCoordinatorAction(current, 1_800_000_100).kind)
+    expect(nextCoordinatorAction(current, NOW).kind)
       .toBe("enter_recovery");
   });
 
@@ -427,7 +292,7 @@ describe("atomic swap coordinator action planning", () => {
     ["maker", "awaiting_fill_request", "poll_inbox"],
     ["taker", "awaiting_settlement_ack", "poll_inbox"]
   ] as const)("%s at %s plans %s", (role, phase, action) => {
-    expect(nextCoordinatorAction(session(role, phase), 1_800_000_100).kind)
+    expect(nextCoordinatorAction(session(role, phase), NOW).kind)
       .toBe(action);
   });
 
@@ -435,123 +300,147 @@ describe("atomic swap coordinator action planning", () => {
     const reserve = session("maker", "awaiting_reserve_accept");
     reserve.reserveProjectionId = "44".repeat(32);
     reserve.evidence.reserveProjectionId = reserve.reserveProjectionId;
-    expect(nextCoordinatorAction(reserve, 1_800_000_100).kind)
+    expect(nextCoordinatorAction(reserve, NOW).kind)
       .toBe("prepare_base_lock");
     setCommittedPublication(reserve, "reserve", reserve.reserveProjectionId);
-    expect(nextCoordinatorAction(reserve, 1_800_000_100).kind)
+    expect(nextCoordinatorAction(reserve, NOW).kind)
       .toBe("clear_order_publication");
     reserve.pendingOrderPublication = null;
     markLockReady(reserve, "base");
-    expect(nextCoordinatorAction(reserve, 1_800_000_100).kind)
+    expect(nextCoordinatorAction(reserve, NOW).kind)
       .toBe("stage_reserve_accept");
 
     const base = session("maker", "awaiting_base_lock");
-    base.privateState.legs.base.token = "cashuBbase";
-    expect(nextCoordinatorAction(base, 1_800_000_100).kind)
+    base.privateState.legs.base.htlcId = BASE_HTLC_ID;
+    expect(nextCoordinatorAction(base, NOW).kind)
       .toBe("enter_recovery");
     markLockReady(base, "base");
-    expect(nextCoordinatorAction(base, 1_800_000_100).kind)
+    expect(nextCoordinatorAction(base, NOW).kind)
       .toBe("stage_base_lock");
 
     const quote = session("taker", "awaiting_quote_lock");
-    quote.privateState.legs.quote.token = "cashuBquote";
-    expect(nextCoordinatorAction(quote, 1_800_000_100).kind)
+    quote.privateState.legs.quote.htlcId = QUOTE_HTLC_ID;
+    expect(nextCoordinatorAction(quote, NOW).kind)
       .toBe("enter_recovery");
     markLockReady(quote, "quote");
-    expect(nextCoordinatorAction(quote, 1_800_000_100).kind)
+    expect(nextCoordinatorAction(quote, NOW).kind)
       .toBe("stage_quote_lock");
   });
 
-  it("plans claim, observation, fill, and settlement only from mint evidence", () => {
+  it("rejects a lock whose durable HTLC identity disagrees with its evidence", () => {
+    const current = session("maker", "awaiting_base_lock");
+    markLockReady(current, "base");
+    expect(nextCoordinatorAction(current, NOW).kind).toBe("stage_base_lock");
+    current.evidence.legs.base.htlcId = QUOTE_HTLC_ID;
+    expect(nextCoordinatorAction(current, NOW).kind).toBe("enter_recovery");
+  });
+
+  it("plans claim, observation, fill, and settlement only from chain evidence", () => {
     const makerClaim = session("maker", "settling");
-    makerClaim.privateState.legs.base.token = "cashuBbase";
+    makerClaim.privateState.legs.base.htlcId = BASE_HTLC_ID;
     markLockReady(makerClaim, "quote");
-    expect(nextCoordinatorAction(makerClaim, 1_800_000_100).kind)
+    expect(nextCoordinatorAction(makerClaim, NOW).kind)
       .toBe("prepare_quote_claim");
     makerClaim.evidence.legs.quote.claimOperationCommitment = "44".repeat(32);
-    expect(nextCoordinatorAction(makerClaim, 1_800_000_100).kind)
+    expect(nextCoordinatorAction(makerClaim, NOW).kind)
       .toBe("observe_quote");
     markSpent(makerClaim, "quote");
-    expect(nextCoordinatorAction(makerClaim, 1_800_000_100).kind)
+    expect(nextCoordinatorAction(makerClaim, NOW).kind)
       .toBe("observe_base");
 
     const takerClaim = session("taker", "settling");
-    takerClaim.privateState.legs.base.token = "cashuBbase";
-    takerClaim.privateState.legs.quote.token = "cashuBquote";
-    expect(nextCoordinatorAction(takerClaim, 1_800_000_100).kind)
+    takerClaim.privateState.legs.base.htlcId = BASE_HTLC_ID;
+    takerClaim.privateState.legs.quote.htlcId = QUOTE_HTLC_ID;
+    expect(nextCoordinatorAction(takerClaim, NOW).kind)
       .toBe("observe_quote");
     markSpent(takerClaim, "quote");
-    expect(nextCoordinatorAction(takerClaim, 1_800_000_100).kind)
+    expect(nextCoordinatorAction(takerClaim, NOW).kind)
       .toBe("observe_quote");
     takerClaim.privateState.preimage = "66".repeat(32);
-    expect(nextCoordinatorAction(takerClaim, 1_800_000_100).kind)
+    expect(nextCoordinatorAction(takerClaim, NOW).kind)
       .toBe("prepare_base_claim");
     takerClaim.evidence.legs.base.claimOperationCommitment = "77".repeat(32);
-    expect(nextCoordinatorAction(takerClaim, 1_800_000_100).kind)
+    expect(nextCoordinatorAction(takerClaim, NOW).kind)
       .toBe("observe_base");
     markSpent(takerClaim, "base");
-    expect(nextCoordinatorAction(takerClaim, 1_800_000_100).kind)
+    expect(nextCoordinatorAction(takerClaim, NOW).kind)
       .toBe("verify_order_fill");
 
     const makerFill = session("maker", "settling");
     makerFill.reserveProjectionId = "88".repeat(32);
-    makerFill.privateState.legs.base.token = "cashuBbase";
-    makerFill.privateState.legs.quote.token = "cashuBquote";
+    makerFill.privateState.legs.base.htlcId = BASE_HTLC_ID;
+    makerFill.privateState.legs.quote.htlcId = QUOTE_HTLC_ID;
     makerFill.evidence.legs.quote.claimOperationCommitment = "44".repeat(32);
-    expect(nextCoordinatorAction(makerFill, 1_800_000_100).kind).toBe("observe_quote");
+    expect(nextCoordinatorAction(makerFill, NOW).kind).toBe("observe_quote");
     markSpent(makerFill, "quote");
-    expect(nextCoordinatorAction(makerFill, 1_800_000_100).kind).toBe("observe_base");
+    expect(nextCoordinatorAction(makerFill, NOW).kind).toBe("observe_base");
     markSpent(makerFill, "base");
-    expect(nextCoordinatorAction(makerFill, 1_800_000_100).kind)
+    expect(nextCoordinatorAction(makerFill, NOW).kind)
       .toBe("stage_order_fill");
     setCommittedPublication(makerFill, "fill", "99".repeat(32));
     makerFill.privateState.transcript.choreography.phase = "settled";
     makerFill.phase = "filled";
-    expect(nextCoordinatorAction(makerFill, 1_800_000_100).kind)
+    expect(nextCoordinatorAction(makerFill, NOW).kind)
       .toBe("none");
   });
 
   it("fails closed at claim cutoffs and plans refunds only after locktime plus guard", () => {
     const maker = session("maker", "awaiting_claim_notice");
-    maker.privateState.legs.base.token = "cashuBbase";
-    maker.privateState.legs.quote.token = "cashuBquote";
+    maker.privateState.legs.base.htlcId = BASE_HTLC_ID;
+    maker.privateState.legs.quote.htlcId = QUOTE_HTLC_ID;
     expect(nextCoordinatorAction(maker, maker.plan.makerClaimCutoff).kind)
       .toBe("enter_recovery");
     expect(nextCoordinatorAction(maker, maker.plan.longLocktime + 59).kind)
       .toBe("enter_recovery");
     expect(nextCoordinatorAction(maker, maker.plan.longLocktime + 60).kind)
       .toBe("observe_base");
-    markPostExpiryUnspent(maker, "base", maker.plan.longLocktime + 61);
+    markPostExpiryLocked(maker, "base", maker.plan.longLocktime + 61);
     expect(nextCoordinatorAction(maker, maker.plan.longLocktime + 61).kind)
       .toBe("prepare_base_refund");
 
     const taker = session("taker", "awaiting_fill_request");
-    taker.privateState.legs.base.token = "cashuBbase";
-    taker.privateState.legs.quote.token = "cashuBquote";
+    taker.privateState.legs.base.htlcId = BASE_HTLC_ID;
+    taker.privateState.legs.quote.htlcId = QUOTE_HTLC_ID;
     markSpent(taker, "quote", taker.plan.takerClaimCutoff);
     expect(nextCoordinatorAction(taker, taker.plan.takerClaimCutoff).kind)
       .toBe("enter_recovery");
     taker.privateState.legs.quote.observations = [];
-    taker.evidence.legs.quote.mintState = "UNKNOWN";
+    taker.evidence.legs.quote.htlcState = "UNKNOWN";
     expect(nextCoordinatorAction(taker, taker.plan.shortLocktime + 60).kind)
       .toBe("observe_quote");
-    markPostExpiryUnspent(taker, "quote", taker.plan.shortLocktime + 61);
+    markPostExpiryLocked(taker, "quote", taker.plan.shortLocktime + 61);
     expect(nextCoordinatorAction(taker, taker.plan.shortLocktime + 61).kind)
       .toBe("prepare_quote_refund");
   });
 
-  it("requires independently persisted spent observations for settlement", () => {
+  it("requires independently persisted unlocked observations for settlement", () => {
     const inconsistent = session("maker", "settled");
-    expect(nextCoordinatorAction(inconsistent, 1_800_000_100))
+    expect(nextCoordinatorAction(inconsistent, NOW))
       .toEqual({ kind: "enter_recovery" });
 
     markSpent(inconsistent, "base");
     markSpent(inconsistent, "quote");
-    expect(nextCoordinatorAction(inconsistent, 1_800_000_100))
+    expect(nextCoordinatorAction(inconsistent, NOW))
       .toEqual({ kind: "enter_recovery" });
     setCommittedPublication(inconsistent, "fill", "99".repeat(32));
-    expect(nextCoordinatorAction(inconsistent, 1_800_000_100))
+    expect(nextCoordinatorAction(inconsistent, NOW))
       .toEqual({ kind: "none" });
+  });
+
+  it("ignores an unlocked claim whose witness commitment does not match", () => {
+    const current = session("maker", "settled");
+    markSpent(current, "base");
+    markSpent(current, "quote");
+    setCommittedPublication(current, "fill", "99".repeat(32));
+    expect(nextCoordinatorAction(current, NOW)).toEqual({ kind: "none" });
+
+    current.privateState.legs.quote.observations = [{
+      observedAt: NOW,
+      state: "UNLOCKED",
+      witnessCommitment: "bc".repeat(32)
+    }];
+    expect(nextCoordinatorAction(current, NOW))
+      .toEqual({ kind: "enter_recovery" });
   });
 
   it("needs no private acknowledgement after the public fill is committed", () => {
@@ -562,26 +451,26 @@ describe("atomic swap coordinator action planning", () => {
     markSpent(current, "base");
     markSpent(current, "quote");
     setCommittedPublication(current, "fill", current.fillProjectionId);
-    expect(nextCoordinatorAction(current, 1_800_000_100).kind)
+    expect(nextCoordinatorAction(current, NOW).kind)
       .toBe("none");
   });
 
   it("does not initiate a prepared effect or private delivery after its cutoff", () => {
     const prepared = session("maker", "awaiting_claim_notice");
-    prepared.privateState.cashuOperation = {
+    prepared.privateState.chainOperation = {
       status: "prepared",
       leg: "quote",
       kind: "claim",
-      inputsReserved: true
-    } as TradeSession["privateState"]["cashuOperation"];
+      fundsReserved: true
+    } as TradeSession["privateState"]["chainOperation"];
     expect(nextCoordinatorAction(prepared, prepared.plan.makerClaimCutoff).kind)
       .toBe("enter_recovery");
-    prepared.privateState.cashuOperation!.inputsReserved = false;
+    prepared.privateState.chainOperation!.fundsReserved = false;
     expect(nextCoordinatorAction(prepared, prepared.plan.makerClaimCutoff).kind)
       .toBe("enter_recovery");
-    prepared.privateState.cashuOperation!.status = "completed";
+    prepared.privateState.chainOperation!.status = "completed";
     expect(nextCoordinatorAction(prepared, prepared.plan.makerClaimCutoff).kind)
-      .toBe("reconcile_wallet");
+      .toBe("reconcile_account");
 
     const staged = session("maker", "awaiting_base_lock_ack");
     staged.privateState.outbox = {
@@ -603,21 +492,21 @@ describe("atomic swap coordinator action planning", () => {
       .toBe("enter_recovery");
   });
 
-  it("releases after a completed and wallet-reconciled refund without claim witness evidence", () => {
+  it("releases after a completed and account-reconciled refund without claim witness evidence", () => {
     const current = session("maker", "refunding");
     setCommittedPublication(current, "reserve", "88".repeat(32));
     markLockReady(current, "base");
     const eligible = current.plan.longLocktime + current.plan.refundGuardSeconds;
-    markPostExpiryUnspent(current, "base", eligible + 1);
+    markPostExpiryLocked(current, "base", eligible + 1);
 
     expect(nextCoordinatorAction(current, eligible + 1).kind)
       .toBe("prepare_base_refund");
 
-    setWalletAppliedRefund(current, "base", "completed");
+    setAccountAppliedRefund(current, "base", "completed");
     expect(nextCoordinatorAction(current, eligible + 2).kind)
-      .toBe("reconcile_wallet");
+      .toBe("reconcile_account");
 
-    current.privateState.cashuOperation!.status = "wallet_applied";
+    current.privateState.chainOperation!.status = "account_applied";
     expect(nextCoordinatorAction(current, eligible + 2).kind)
       .toBe("clear_order_publication");
 
@@ -627,43 +516,43 @@ describe("atomic swap coordinator action planning", () => {
 
     setCommittedPublication(current, "release", "bb".repeat(32));
     expect(nextCoordinatorAction(current, eligible + 2).kind)
-      .toBe("clear_cashu_operation");
+      .toBe("clear_chain_operation");
 
-    current.privateState.cashuOperation = null;
+    current.privateState.chainOperation = null;
     expect(nextCoordinatorAction(current, eligible + 2).kind).toBe("none");
   });
 
   it("keeps an exactly filled authoritative settlement terminal", () => {
     const current = session("maker", "settled");
     markSpent(current, "base");
-    markSpent(current, "quote", 1_800_000_101);
+    markSpent(current, "quote", NOW + 1);
     current.privateState.preimage = "66".repeat(32);
     setCommittedPublication(current, "fill", "cc".repeat(32));
 
-    expect(nextCoordinatorAction(current, 1_800_000_102).kind).toBe("none");
+    expect(nextCoordinatorAction(current, NOW + 2).kind).toBe("none");
 
     current.privateState.legs.quote.observations = [];
-    expect(nextCoordinatorAction(current, 1_800_000_102).kind)
+    expect(nextCoordinatorAction(current, NOW + 2).kind)
       .toBe("enter_recovery");
   });
 
   it("requires a taker to verify the maker fill before settlement is terminal", () => {
     const current = session("taker", "settling");
     markSpent(current, "base");
-    markSpent(current, "quote", 1_800_000_101);
+    markSpent(current, "quote", NOW + 1);
     current.privateState.preimage = "66".repeat(32);
 
-    expect(nextCoordinatorAction(current, 1_800_000_102).kind)
+    expect(nextCoordinatorAction(current, NOW + 2).kind)
       .toBe("verify_order_fill");
 
     current.privateState.transcript.choreography.phase = "settled";
     current.phase = "filled";
     current.fillProjectionId = "cc".repeat(32);
     current.evidence.fillProjectionId = current.fillProjectionId;
-    expect(nextCoordinatorAction(current, 1_800_000_102).kind).toBe("none");
+    expect(nextCoordinatorAction(current, NOW + 2).kind).toBe("none");
 
     current.evidence.fillProjectionId = "dd".repeat(32);
-    expect(nextCoordinatorAction(current, 1_800_000_102).kind)
+    expect(nextCoordinatorAction(current, NOW + 2).kind)
       .toBe("enter_recovery");
   });
 });
