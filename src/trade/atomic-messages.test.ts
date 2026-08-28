@@ -16,6 +16,7 @@ const makerSession = "22".repeat(32);
 const takerSession = "33".repeat(32);
 const makerAddress = `z1${"9".repeat(38)}`;
 const takerAddress = `z1${"2".repeat(38)}`;
+const otherAddress = `z1${"7".repeat(38)}`;
 const reservationId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const sessionId = "88".repeat(32);
 const proposalHead = "99".repeat(32);
@@ -342,10 +343,10 @@ describe("atomic swap message bodies", () => {
       await message("reserve_accept", 1, {}, {
         base_lock: {
           ...body("base_lock"),
-          hash_locked_address: makerAddress
+          hash_locked_address: otherAddress
         }
       })
-    )).rejects.toThrow(/addresses/i);
+    )).rejects.toThrow(/base lock addresses differ from the accepted participants/i);
     await expect(advanceAtomicSwapChoreography(
       state,
       await message("reserve_accept", 1, {}, {
@@ -364,6 +365,23 @@ describe("atomic swap message bodies", () => {
         }
       })
     )).rejects.toThrow(/base expiration/i);
+  });
+
+  it("rejects a reservation acceptance whose maker address is the accepted taker address", async () => {
+    let state = initialAtomicSwapChoreography(makerOrder);
+    state = await advanceAtomicSwapChoreography(state, await message("reserve_propose", 0));
+
+    await expect(advanceAtomicSwapChoreography(
+      state,
+      await message("reserve_accept", 1, {}, {
+        maker_address: takerAddress,
+        base_lock: {
+          ...body("base_lock"),
+          hash_locked_address: otherAddress,
+          time_locked_address: takerAddress
+        }
+      })
+    )).rejects.toThrow(/maker and taker settlement addresses must differ/i);
   });
 
   it("rejects a locked amount that differs from the canonical terms", async () => {
@@ -393,9 +411,9 @@ describe("atomic swap message bodies", () => {
     await expect(advanceAtomicSwapChoreography(
       state,
       await message("quote_lock", 2, {}, {
-        hash_locked_address: takerAddress
+        hash_locked_address: otherAddress
       })
-    )).rejects.toThrow(/addresses/i);
+    )).rejects.toThrow(/quote lock addresses differ from the accepted participants/i);
   });
 
   it("permits a bound refund only after a leg is locked and makes error terminal", async () => {

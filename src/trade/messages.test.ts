@@ -4,6 +4,7 @@ import { finalizeEvent, getPublicKey, nip44 } from "nostr-tools";
 import { ZNN_ZTS, QSR_ZTS } from "../zenon/types.js";
 import {
   createTradeRumor,
+  deploymentFor,
   termsHash,
   unwrapInitialReserveProposal,
   unwrapInitialReserveProposalForMaker,
@@ -401,5 +402,19 @@ describe("strict Zwap NIP-17 messages", () => {
       expectedPreviousTranscriptHash: message.previous_transcript_hash!,
       expectedSequence: "1"
     }))).rejects.toThrow(/predecessor rumor/i);
+  });
+
+  it("computes the deployment string for a chain ID", () => {
+    expect(deploymentFor("73404")).toBe("zenon-73404-v1");
+  });
+
+  it("rejects a deployment that does not match the terms chain ID", async () => {
+    const message = await proposal({ deployment: "zenon-2-v1" });
+    await expect(createTradeRumor(message, takerKey)).rejects.toThrow(/deployment/i);
+  });
+
+  it("rejects terms whose base and quote tokens are the same token standard", async () => {
+    await expect(termsHash({ ...terms, quote_token: terms.base_token }))
+      .rejects.toThrow(/must differ/i);
   });
 });

@@ -533,6 +533,7 @@ export interface AtomicSwapParticipants {
 export interface AtomicSwapChoreography {
   phase: AtomicSwapChoreographyPhase;
   participants: AtomicSwapParticipants;
+  deployment?: string;
   sessionId?: string;
   reservationId?: string;
   orderAddress?: string;
@@ -600,6 +601,7 @@ function sameCommonSession(
 ): void {
   if (
     message.maker_order_pubkey !== state.participants.makerOrderPubkey ||
+    message.deployment !== state.deployment ||
     message.session_id !== state.sessionId ||
     message.reservation_id !== state.reservationId ||
     message.order_address !== state.orderAddress ||
@@ -766,6 +768,7 @@ export async function advanceAtomicSwapChoreography(
     }
     return nextState(state, message, {
       phase: "awaiting_reserve_accept",
+      deployment: message.deployment,
       sessionId: message.session_id,
       reservationId: message.reservation_id,
       orderAddress: message.order_address,
