@@ -80,6 +80,23 @@ touches a real node. A separate, real-funds
 (`src/zenon/live.integration.test.ts`) is skipped unless `ZENON_INTEGRATION=1`
 is set — see that guide for how to fund two throwaway seeds and run it.
 
+### Browser-extension wallets
+
+zwap's own wallet is a hot wallet: the seed lives in this browser profile and
+the page signs every block. There is no Zenon extension that a dapp can sign
+through today, so
+[`docs/proposals/zenon-injected-provider.md`](docs/proposals/zenon-injected-provider.md)
+specifies one — EIP-6963-style discovery, an
+[EIP-1193](https://eips.ethereum.org/EIPS/eip-1193)-style `request()`, and a
+single `zenon_sendBlock` method that takes zwap's own `ZenonTemplate` union as
+its wire schema — to be filed against
+[nom-webwallet](https://github.com/digitalSloth/nom-webwallet) Phase 2. The
+page half is already implemented in `src/zenon/injected-signer.ts` and ships
+behind `VITE_INJECTED_WALLET=1`: with the flag on and a conforming extension
+present, the account panel offers **Connect wallet**, and from then on that
+extension signs the settlement blocks and the local keystore is left alone.
+With the flag off, or with no extension detected, nothing changes.
+
 Production builds use `npm run build` and write the static site to `dist/`.
 
 ## What the protocol treats as authoritative

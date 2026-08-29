@@ -10,6 +10,13 @@ export interface AccountActionHandlers {
   onFuse: (tier: PlasmaTier, button: HTMLButtonElement) => void;
   onReveal: (button: HTMLButtonElement) => void;
   onCopyAddress: (address: string, button: HTMLButtonElement) => void;
+  /**
+   * The browser-extension wallet that announced itself on this page, or
+   * `null`/absent when none did. Only its display name reaches the panel — the
+   * provider object itself stays in the composition root.
+   */
+  injectedProvider?: { name: string } | null;
+  onConnectInjected?: (button: HTMLButtonElement) => void;
 }
 
 const PLASMA_TIERS: ReadonlyArray<{ tier: PlasmaTier; label: string }> = [
@@ -55,6 +62,34 @@ function group(...children: HTMLElement[]): HTMLDivElement {
   return node;
 }
 
+/** Says which extension is in play, so "Connect wallet" is never anonymous. */
+function extensionBadge(name: string): HTMLElement {
+  const badge = element("span");
+  badge.className = "nom-badge nom-badge--info";
+  badge.dataset.accountExtension = "true";
+  badge.append(icon("shield"), element("span", `extension · ${name}`));
+  return badge;
+}
+
+/**
+ * The offer to hand custody to a detected extension. Rendered beside the
+ * keystore actions rather than instead of them: a visitor who prefers the
+ * in-page wallet keeps it, and the extension stays one click away.
+ */
+function renderInjectedOffer(
+  root: HTMLElement,
+  handlers: AccountActionHandlers
+): void {
+  const provider = handlers.injectedProvider;
+  if (provider === undefined || provider === null) return;
+  const connect = button("Connect wallet", "outline", "shield");
+  connect.dataset.accountConnect = "true";
+  const onConnect = handlers.onConnectInjected;
+  connect.disabled = onConnect === undefined;
+  connect.addEventListener("click", () => onConnect?.(connect));
+  root.append(group(extensionBadge(provider.name), connect));
+}
+
 function renderNoWallet(
   root: HTMLElement,
   handlers: AccountActionHandlers
@@ -66,6 +101,7 @@ function renderNoWallet(
   );
   lede.className = "account-panel__lede";
   root.append(lede);
+  renderInjectedOffer(root, handlers);
 
   // The one plasma-filled action in this section: creating the wallet is the
   // only thing a visitor without one can meaningfully do.
@@ -159,12 +195,20 @@ function renderWallet(
   state: ZwapState,
   handlers: AccountActionHandlers
 ): void {
+  const injected = state.walletSource === "injected";
   root.append(eyebrow("Account"));
+  if (injected) {
+    root.append(extensionBadge(handlers.injectedProvider?.name ?? "Browser extension"));
+  } else {
+    renderInjectedOffer(root, handlers);
+  }
   root.append(renderAddress(address, handlers));
   root.append(renderBalances(state));
   root.append(renderPlasma(state));
 
-  if (state.powRequired) {
+  // The extension owns the fee decision and shows it in its own confirmation,
+  // so the page never second-guesses plasma while it is connected.
+  if (state.powRequired && !injected) {
     // Factual, not alarmist: warning, never the crimson destructive role.
     const warning = element("span");
     warning.className = "nom-badge nom-badge--warning";
@@ -181,10 +225,6 @@ function renderWallet(
   receive.dataset.accountReceive = "true";
   receive.disabled = state.unreceived === 0;
   receive.addEventListener("click", () => handlers.onReceive(receive));
-
-  const reveal = button("Reveal seed", "outline", "key");
-  reveal.dataset.accountReveal = "true";
-  reveal.addEventListener("click", () => handlers.onReveal(reveal));
 
   const actions = group(receive);
 
@@ -210,8 +250,26 @@ function renderWallet(
     actions.append(select, fuse);
   }
 
-  actions.append(reveal);
+  // There is no seed to reveal when the keys live in the extension.
+  if (!injected) {
+    const reveal = button("Reveal seed", "outline", "key");
+    reveal.dataset.accountReveal = "true";
+    reveal.addEventListener("click", () => handlers.onReveal(reveal));
+    actions.append(reveal);
+  }
   root.append(actions);
+}
+
+/** Connected to an extension that has not yet named an address. */
+function renderPendingExtension(
+  root: HTMLElement,
+  handlers: AccountActionHandlers
+): void {
+  root.append(eyebrow("Account"));
+  root.append(extensionBadge(handlers.injectedProvider?.name ?? "Browser extension"));
+  const note = element("p", "Waiting for the extension wallet to name an address.");
+  note.className = "account-panel__note";
+  root.append(note);
 }
 
 /**
@@ -228,6 +286,10 @@ export function renderAccountActions(
   root.classList.add("account-panel");
   root.setAttribute("aria-live", "polite");
   if (state.address === null) {
+    if (state.walletSource === "injected") {
+      renderPendingExtension(root, handlers);
+      return;
+    }
     renderNoWallet(root, handlers);
     return;
   }
