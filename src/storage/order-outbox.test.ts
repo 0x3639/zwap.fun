@@ -178,6 +178,33 @@ describe("OrderOutboxRepository", () => {
     await expect(repository.list()).rejects.toThrow(/corrupt/i);
   });
 
+  it("rejects a predecessor tag even on a record with a valid acknowledgement", async () => {
+    // The forged-acknowledgement check runs first, so the case above never
+    // reaches the predecessor-tag check. This one keeps the receipt valid and
+    // only smuggles in the "e" tag.
+    const driver = new MemoryDriver();
+    const repository = new OrderOutboxRepository(driver, undefined, () => true);
+    const staged = await repository.ensureStaged(intent(), publication);
+    const corrupt = [{
+      ...staged,
+      status: "acknowledged",
+      publication: {
+        ...staged.publication,
+        projection: {
+          ...staged.publication.projection,
+          tags: [
+            ...staged.publication.projection.tags,
+            ["e", "f".repeat(64)]
+          ]
+        },
+        receipts: [{ relay: "wss://one.example", ok: true, message: "stored" }]
+      }
+    }];
+    driver.data.set("zwap.order-outbox.v3", corrupt);
+
+    await expect(repository.list()).rejects.toThrow(/corrupt/i);
+  });
+
   it("does not read records outside the active outbox namespace", async () => {
     const driver = new MemoryDriver();
     driver.data.set("zwap.order-outbox.unrecognized", [{ schema: "unrecognized" }]);

@@ -136,8 +136,12 @@ describe.skipIf(!enabled)("live Zenon HTLC swap (small amounts)", () => {
           m.preimage
         );
 
+        // One polling deadline shared by both legs, well inside the 600 s test
+        // timeout: if polling exhausts it the `catch` below still runs and
+        // prints the recovery ids instead of Vitest aborting the body first.
+        const pollDeadline = Date.now() + 420_000;
         let observedQuote = await takerClient.observe(quoteLock.htlcId, quote);
-        for (let i = 0; i < 30 && observedQuote.state !== "UNLOCKED"; i += 1) {
+        while (observedQuote.state !== "UNLOCKED" && Date.now() < pollDeadline) {
           await new Promise((resolve) => setTimeout(resolve, 10_000));
           observedQuote = await takerClient.observe(quoteLock.htlcId, quote);
         }
@@ -155,7 +159,7 @@ describe.skipIf(!enabled)("live Zenon HTLC swap (small amounts)", () => {
         // Prove both legs, not just the one whose preimage-reveal the quote
         // loop already confirmed: poll the base leg to UNLOCKED too.
         let observedBase = await takerClient.observe(baseLock.htlcId, base);
-        for (let i = 0; i < 30 && observedBase.state !== "UNLOCKED"; i += 1) {
+        while (observedBase.state !== "UNLOCKED" && Date.now() < pollDeadline) {
           await new Promise((resolve) => setTimeout(resolve, 10_000));
           observedBase = await takerClient.observe(baseLock.htlcId, base);
         }

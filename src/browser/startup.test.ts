@@ -2,6 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import { startInboxListeners } from "./startup.js";
 
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 4; i += 1) await Promise.resolve();
+}
+
 describe("browser inbox startup", () => {
   it("starts the maker and persisted session inboxes together", async () => {
     const startSessions = vi.fn(async () => undefined);
@@ -25,9 +29,14 @@ describe("browser inbox startup", () => {
     let settled = false;
     void startup.then(() => { settled = true; });
 
-    await vi.waitFor(() => expect(settled).toBe(false));
+    // `vi.waitFor` would return on the first passing poll, which proves
+    // nothing about a promise that is *supposed* to stay pending. Drain the
+    // microtask queue explicitly, then assert.
+    await flushMicrotasks();
+    expect(settled).toBe(false);
     releaseSessions();
-    await vi.waitFor(() => expect(settled).toBe(false));
+    await flushMicrotasks();
+    expect(settled).toBe(false);
     releaseMaker();
     await startup;
     expect(settled).toBe(true);

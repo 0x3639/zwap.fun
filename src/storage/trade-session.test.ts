@@ -99,6 +99,13 @@ const projection = structuredClone(finalizeEvent({
   tags: [["d", `zwap:order:v1:${orderId}`]],
   content: "exact-signed-order-projection"
 }, makerSecret));
+/** A second, genuinely signed projection for the same order. */
+const laterProjection = structuredClone(finalizeEvent({
+  kind: 30078,
+  created_at: FIXTURE_ANCHOR + 7,
+  tags: [["d", `zwap:order:v1:${orderId}`]],
+  content: "exact-signed-order-projection-2"
+}, makerSecret));
 const wrapper = structuredClone(finalizeEvent({
   kind: 1059,
   created_at: FIXTURE_ANCHOR,
@@ -785,6 +792,68 @@ describe("zwap trade session repository", () => {
     retargetedOutbox.privateState.outbox!.recipientInboxListId = "09".repeat(32);
     await expect(outboxRepository.save(retargetedOutbox, 0))
       .rejects.toThrow(/outbox.*retry artifact.*changed/i);
+  });
+
+  it("pins a pending order publication until it is committed", async () => {
+    // A staged or acknowledged publication is a signed projection waiting on
+    // the relays. Swapping in a different projection loses the record of what
+    // was already published and which receipts belong to it.
+    const repository = new TradeSessionRepository(new MemoryStorageDriver());
+    const staged = structuredClone(session);
+    // The outbox artifact pins the reserve projection id too; this test is
+    // about the publication slot alone.
+    staged.privateState.outbox = null;
+    staged.pendingOrderPublication = {
+      ...staged.pendingOrderPublication!,
+      status: "staged",
+      receipts: [],
+      acknowledgedAt: null
+    };
+    await repository.save(staged, null);
+
+    const replaced = structuredClone(staged);
+    replaced.revision = 1;
+    replaced.updatedAt += 1;
+    replaced.pendingOrderPublication!.projection = structuredClone(laterProjection);
+    replaced.reserveProjectionId = laterProjection.id;
+    replaced.evidence.reserveProjectionId = laterProjection.id;
+    await expect(repository.save(replaced, 0))
+      .rejects.toThrow(/order publication.*replaced before commit/i);
+
+    // The leg-evidence checks still run on the same save.
+    const replacedAndRegressed = structuredClone(replaced);
+    replacedAndRegressed.evidence.legs.base.htlcState = "UNKNOWN";
+    await expect(repository.save(replacedAndRegressed, 0)).rejects.toThrow();
+  });
+
+  it("lets a committed publication be replaced by a freshly staged one", async () => {
+    const repository = new TradeSessionRepository(new MemoryStorageDriver());
+    const committed = structuredClone(session);
+    committed.privateState.outbox = null;
+    committed.pendingOrderPublication = {
+      ...committed.pendingOrderPublication!,
+      status: "committed",
+      committedAt: FIXTURE_ANCHOR + 7
+    };
+    await repository.save(committed, null);
+
+    const next = structuredClone(committed);
+    next.revision = 1;
+    next.updatedAt += 1;
+    next.pendingOrderPublication = {
+      ...committed.pendingOrderPublication!,
+      projection: structuredClone(laterProjection),
+      status: "staged",
+      receipts: [],
+      acknowledgedAt: null,
+      committedAt: null
+    };
+    next.reserveProjectionId = laterProjection.id;
+    next.evidence.reserveProjectionId = laterProjection.id;
+
+    await expect(repository.save(next, 0)).resolves.toBeUndefined();
+    expect((await repository.get(next.sessionId))?.pendingOrderPublication?.projection.id)
+      .toBe(laterProjection.id);
   });
 
   it("allows only the maker order key to sign the reserve acceptance handoff", async () => {

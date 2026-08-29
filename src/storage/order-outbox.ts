@@ -1,6 +1,7 @@
 import { verifyEvent } from "nostr-tools/pure";
 
 import { normalizePublicRelay } from "../nostr/relay.js";
+import { canonicalJson } from "../order/canonical.js";
 import type { OrderOperationEvidence } from "../order/events.js";
 import type { OrderState } from "../order/model.js";
 import type {
@@ -48,26 +49,12 @@ function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
-function canonical(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    const encoded = JSON.stringify(value);
-    if (encoded === undefined) throw new Error("Value cannot be canonically encoded");
-    return encoded;
-  }
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  return `{${Object.entries(value as Record<string, unknown>)
-    .filter(([, item]) => item !== undefined)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`)
-    .join(",")}}`;
-}
-
 function same(left: unknown, right: unknown): boolean {
-  return canonical(left) === canonical(right);
+  return canonicalJson(left) === canonicalJson(right);
 }
 
 export function canonicalOrderPublicationCompatibility(value: unknown): string {
-  return canonical(value);
+  return canonicalJson(value);
 }
 
 function validProjection(
@@ -146,7 +133,7 @@ function assertIntent(value: unknown): asserts value is OrderPublicationIntent {
     throw new Error("Order outbox intent is corrupt");
   }
   try {
-    if (canonical(JSON.parse(intent.compatibility as string)) !== intent.compatibility) {
+    if (canonicalJson(JSON.parse(intent.compatibility as string)) !== intent.compatibility) {
       throw new Error("Order outbox intent is corrupt");
     }
   } catch {

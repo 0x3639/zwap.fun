@@ -51,7 +51,7 @@
 .nom-btn--ghost { background: transparent; color: var(--foreground); }
 .nom-btn--ghost:hover { background: var(--accent); color: var(--accent-foreground); }
 
-.nom-btn--link { background: transparent; color: var(--primary); text-underline-offset: 4px; }
+.nom-btn--link { background: transparent; color: var(--primary-text); text-underline-offset: 4px; }
 .nom-btn--link:hover { text-decoration: underline; }
 
 /* ----------------------------------------------------------------- Badge --- */

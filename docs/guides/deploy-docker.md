@@ -32,6 +32,11 @@ docker build -t zwap-testnet \
   .
 ```
 
+The same caveat as the Cloudflare guide applies: the testnet node is plaintext
+`ws://` only, and a browser blocks an insecure WebSocket from an `https://`
+page. Serve a testnet image over plain `http://` (a LAN or localhost port) or
+front the node with your own TLS-terminating proxy and pass its `wss://` URL.
+
 Because these are **build** args, not runtime environment variables, one
 image is baked for exactly one network — there is no way to reconfigure a
 running container without rebuilding, the same constraint Cloudflare Pages

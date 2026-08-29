@@ -1737,15 +1737,23 @@ function assertMonotonicUpdate(current: TradeSession, next: TradeSession): void 
 
   const currentOrder = current.pendingOrderPublication;
   const nextOrder = next.pendingOrderPublication;
-  if (currentOrder && nextOrder &&
-    currentOrder.projection.id === nextOrder.projection.id) {
-    const advance = ORDER_STATUS_RANK[nextOrder.status] -
-      ORDER_STATUS_RANK[currentOrder.status];
-    if (
-      currentOrder.projection.id !== nextOrder.projection.id ||
-      advance < 0 ||
-      advance > 1
-    ) throw new Error("Order publication checkpoint regressed or changed");
+  if (currentOrder && nextOrder) {
+    if (currentOrder.projection.id !== nextOrder.projection.id) {
+      // A staged or acknowledged publication is a signed projection already
+      // handed to the relays. Swapping a different one into the same slot
+      // loses the record of what went out and which receipts answered it, so
+      // the artifact is pinned until it commits - exactly as the inbox and
+      // outbox retry artifacts are.
+      if (currentOrder.status !== "committed") {
+        throw new Error("A pending order publication cannot be replaced before commit");
+      }
+    } else {
+      const advance = ORDER_STATUS_RANK[nextOrder.status] -
+        ORDER_STATUS_RANK[currentOrder.status];
+      if (advance < 0 || advance > 1) {
+        throw new Error("Order publication checkpoint regressed or changed");
+      }
+    }
   } else if (currentOrder && nextOrder === null && currentOrder.status !== "committed") {
     throw new Error("Order publication cannot be cleared before commit");
   }

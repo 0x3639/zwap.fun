@@ -55,6 +55,15 @@ run one anyway, either:
   Preview deployments) with the testnet values, and push to a non-production
   branch to get a preview URL running against testnet.
 
+> **The testnet node is plaintext `ws://` only.** `172.245.236.40:35998` does
+> not terminate TLS, and a browser refuses to open an insecure WebSocket from
+> an `https://` page (mixed active content) — which every Pages deployment
+> is. A hosted testnet build will therefore load but never connect to its
+> node. Until a `wss://` testnet endpoint exists, use testnet from the local
+> dev server (`npm run dev`, served over plain `http://localhost`), or put
+> your own TLS-terminating proxy in front of the node and point
+> `VITE_ZENON_NODE_WS` at that `wss://` URL.
+
 ## Custom domain
 
 Add `zwap.fun` under the Pages project's **Custom domains** tab and follow

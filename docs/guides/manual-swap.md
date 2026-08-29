@@ -13,9 +13,11 @@ developer tools enabled. Keep both pages open throughout the swap.
 
 ## Before you start
 
-1. **Fund two Zenon addresses.** You need a maker address holding at least
-   1 ZNN and a taker address holding at least 4 QSR, each with either fused
-   plasma or a browser willing to compute proof-of-work. Fund them from an
+1. **Fund two Zenon addresses.** The example below sells 20 ZNN at
+   3.5 QSR/ZNN, so you need a maker address holding at least 20 ZNN and a
+   taker address holding at least 70 QSR — plus 10 QSR on each side if you
+   fuse plasma in step 4 rather than computing proof-of-work. (Scale every
+   amount down together if you would rather trade less.) Fund them from an
    external wallet — [go-syrius](https://github.com/0x3639/go-syrius) or
    [nom-webwallet](https://github.com/digitalSloth/nom-webwallet) — by
    sending ZNN/QSR to the addresses zwap will generate in step 2. Both
@@ -41,8 +43,8 @@ developer tools enabled. Keep both pages open throughout the swap.
 On the maker tab's **Account** panel, press **Create wallet**. zwap generates
 a BIP39 mnemonic locally, encrypts it at rest in this browser profile's
 IndexedDB, and shows the new address. Press the copy icon next to the
-address and send it at least 1 ZNN plus a little QSR (for plasma or a refund
-margin later) from go-syrius or nom-webwallet.
+address and send it at least 20 ZNN (the example order size) plus 10 QSR if
+you intend to fuse plasma in step 4, from go-syrius or nom-webwallet.
 
 If you are restoring an existing address instead of creating a new one, use
 **Import an existing seed** and paste `<your 24 words>` — never a mnemonic
@@ -51,9 +53,8 @@ you use for other holdings.
 ## 2. Create the taker wallet
 
 Repeat step 1 on the taker tab: press **Create wallet**, copy the address,
-and send it at least 4 QSR (enough to cover a 20 ZNN order at 3.5 QSR/ZNN,
-which settles 70 QSR — send more if you plan to take the full size) from an
-external wallet.
+and send it at least 70 QSR (a 20 ZNN order at 3.5 QSR/ZNN settles 70 QSR;
+add 10 QSR if you will fuse plasma in step 4) from an external wallet.
 
 ## 3. Receive the funding sends
 
@@ -149,8 +150,8 @@ taker. For fresh workspaces funded exactly as above, expect approximately:
 
 | Wallet | Before | Expected after |
 | --- | --- | --- |
-| Maker | 1 ZNN | approximately 0 ZNN + 70 QSR |
-| Taker | 4+ QSR | 20 ZNN + remaining QSR |
+| Maker | 20 ZNN | approximately 0 ZNN + 70 QSR |
+| Taker | 70+ QSR | 20 ZNN + remaining QSR |
 
 Verify the value movement rather than an absolute total — plasma fusion
 amounts and any leftover balance from prior testing will differ:

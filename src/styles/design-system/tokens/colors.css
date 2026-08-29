@@ -26,6 +26,9 @@
   /* --- Semantic roles ----------------------------------------------------- */
   --primary: hsl(145 100% 42%);
   --primary-foreground: hsl(0 0% 8%);
+  /* Brand green as *text* on the light surface: --primary alone is ~2:1
+     against white, so link text gets a darker shade that clears WCAG AA. */
+  --primary-text: hsl(145 100% 24%);
   --secondary: hsl(145 80% 35%);
   --secondary-foreground: hsl(0 0% 8%);
   --muted: hsl(0 0% 96%);
@@ -76,6 +79,7 @@
 
   --primary: hsl(145 100% 42%);
   --primary-foreground: hsl(0 0% 8%);
+  --primary-text: hsl(145 100% 42%); /* green on near-black already passes AA */
   --secondary: hsl(145 80% 35%);
   --secondary-foreground: hsl(0 0% 98%);
   --muted: hsl(0 0% 15%);

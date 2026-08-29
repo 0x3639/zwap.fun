@@ -37,8 +37,11 @@ describe("KeystoreSigner", () => {
     const fakeZenon = {
       send: async (template: { hash: { toString(): string } }) => {
         const id = counter++;
-        order.push(id);
         await new Promise((r) => setTimeout(r, id === 0 ? 20 : 0));
+        // Record *completion* order: invocation order is [0, 1] with or
+        // without the queue, but the slow first send only completes first
+        // when the second is held behind it.
+        order.push(id);
         return { ...template, hash: { toString: () => `${id}`.padStart(64, "0") } } as never;
       }
     };
