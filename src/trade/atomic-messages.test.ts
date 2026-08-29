@@ -315,6 +315,18 @@ describe("atomic swap message bodies", () => {
     await expect(validateAtomicSwapMessage(
       await message("reserve_accept", 1, {}, { reservation_expires_at: RESERVATION_EXPIRES - 1 })
     )).rejects.toThrow(/reservation expiry/i);
+    // Regression: the wire accepted any expiry at or past the window while
+    // storage only ever persists `long + 600`, so a wider one negotiated fine
+    // and then failed every durable save.
+    await expect(validateAtomicSwapMessage(
+      await message("reserve_accept", 1, {}, { reservation_expires_at: RESERVATION_EXPIRES + 1 })
+    )).rejects.toThrow(/reservation expiry/i);
+    await expect(validateAtomicSwapMessage(
+      await message("reserve_accept", 1, {}, {
+        short_locktime: LONG - 300,
+        maker_claim_cutoff: LONG - 420
+      })
+    )).rejects.toThrow(/deadline/i);
     await expect(validateAtomicSwapMessage(
       await message("reserve_propose", 0, {
         terms: { ...terms, base_amount: "999" }

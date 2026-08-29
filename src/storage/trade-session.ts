@@ -1074,7 +1074,8 @@ async function assertSession(value: unknown): Promise<TradeSession> {
   ]) safeTime(plan[field], `Settlement plan ${field}`);
   if (
     (plan.shortLocktime as number) <= (plan.anchor as number) ||
-    (plan.longLocktime as number) - (plan.shortLocktime as number) < CLAIM_CUTOFF_MARGIN ||
+    (plan.longLocktime as number) - (plan.shortLocktime as number) <
+      RESERVATION_GRACE_SECONDS ||
     plan.makerClaimCutoff !== (plan.shortLocktime as number) - CLAIM_CUTOFF_MARGIN ||
     plan.takerClaimCutoff !== (plan.longLocktime as number) - CLAIM_CUTOFF_MARGIN ||
     plan.reservationExpiresAt !==

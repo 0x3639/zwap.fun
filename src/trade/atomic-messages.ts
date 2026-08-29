@@ -6,6 +6,7 @@ import {
   type JsonValue
 } from "./messages.js";
 import { isAmount, isHex32, isTokenStandard, isZenonAddress } from "../zenon/validate.js";
+import { CLAIM_CUTOFF_MARGIN, RESERVATION_GRACE_SECONDS } from "./model.js";
 
 export const ATOMIC_SWAP_BODY_SCHEMA = "zwap/atomic-swap-body/v1" as const;
 
@@ -295,13 +296,15 @@ function reserveAccept(value: unknown): ReserveAcceptBody {
   const takerCutoff = timestamp(body.taker_claim_cutoff, "Taker claim cutoff");
   const reservationExpiry = timestamp(body.reservation_expires_at, "Reservation expiry");
   if (
-    makerCutoff !== short - 120 ||
-    long - short < 600 ||
-    takerCutoff !== long - 120
+    makerCutoff !== short - CLAIM_CUTOFF_MARGIN ||
+    long - short < RESERVATION_GRACE_SECONDS ||
+    takerCutoff !== long - CLAIM_CUTOFF_MARGIN
   ) {
     throw new Error("Settlement deadline profile is invalid");
   }
-  if (reservationExpiry < long + 600) {
+  // Exactly, not at least: the durable validator stores only this one profile,
+  // so a wider reservation the wire accepted could never be persisted.
+  if (reservationExpiry !== long + RESERVATION_GRACE_SECONDS) {
     throw new Error("Reservation expiry does not cover the recovery window");
   }
   const baseLock = lock(body.base_lock);

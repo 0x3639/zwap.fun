@@ -38,6 +38,24 @@ describe("Zwap settlement model", () => {
       chainNow: 100,
       orderExpiresAt: 4_299
     })).toThrow("order expires before");
+
+    // Regression: the plan only required `long > short`, while both the wire
+    // profile and the durable validator require the whole reservation grace
+    // between them.
+    expect(() => createSettlementPlan({
+      localNow: 1_700_000_000,
+      chainNow: 1_700_000_000,
+      orderExpiresAt: 1_700_700_000,
+      shortLockSeconds: 1_800,
+      longLockSeconds: 2_100
+    })).toThrow("at least 600 seconds");
+    expect(createSettlementPlan({
+      localNow: 1_700_000_000,
+      chainNow: 1_700_000_000,
+      orderExpiresAt: 1_700_700_000,
+      shortLockSeconds: 1_800,
+      longLockSeconds: 2_400
+    }).reservationExpiresAt).toBe(1_700_000_000 + 2_400 + 600);
   });
 
   it("computes truncated integer quote amounts without floating point", () => {

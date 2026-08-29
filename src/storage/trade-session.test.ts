@@ -1280,6 +1280,13 @@ describe("zwap trade session repository", () => {
         candidate.plan.longLocktime = candidate.plan.shortLocktime + 60;
         candidate.plan.takerClaimCutoff = candidate.plan.longLocktime - 120;
         candidate.plan.reservationExpiresAt = candidate.plan.longLocktime + 600;
+      },
+      // Regression: a gap under the reservation grace passed the durable
+      // check while `createSettlementPlan` and the wire both refuse it.
+      (candidate: TradeSession) => {
+        candidate.plan.longLocktime = candidate.plan.shortLocktime + 300;
+        candidate.plan.takerClaimCutoff = candidate.plan.longLocktime - 120;
+        candidate.plan.reservationExpiresAt = candidate.plan.longLocktime + 600;
       }
     ]) {
       const corrupt = structuredClone(session);

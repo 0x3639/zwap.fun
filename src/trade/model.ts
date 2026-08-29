@@ -40,7 +40,14 @@ export function createSettlementPlan(input: SettlementPlanInput): SettlementPlan
   }
   const short = input.shortLockSeconds ?? SHORT_LOCK_SECONDS;
   const long = input.longLockSeconds ?? LONG_LOCK_SECONDS;
-  if (long <= short) throw new Error("Long locktime must exceed the short locktime");
+  // The wire profile and the durable validator both require the reservation to
+  // expire exactly `RESERVATION_GRACE_SECONDS` after the long locktime, which
+  // is only a coherent plan when the two locktimes are at least that far apart.
+  if (long - short < RESERVATION_GRACE_SECONDS) {
+    throw new Error(
+      `Long locktime must exceed the short locktime by at least ${RESERVATION_GRACE_SECONDS} seconds`
+    );
+  }
   const anchor = Math.max(local, chain);
   const reservationExpiresAt = anchor + long + RESERVATION_GRACE_SECONDS;
   if (orderExpiresAt < reservationExpiresAt) {
