@@ -30,7 +30,8 @@ describe("sdk-node views", () => {
     expect(isNotFound(new Error("data not found"))).toBe(true);
     expect(isNotFound(new Error("No HTLC with that id"))).toBe(true);
     expect(isNotFound(new Error("account block does not exist"))).toBe(true);
-    expect(isNotFound({ code: -32000, message: "whatever" })).toBe(true);
+    expect(isNotFound({ code: -32000, message: "data non existent" })).toBe(true);
+    expect(isNotFound({ code: -32000, message: "leaf node does not exist" })).toBe(true);
 
     // Regression: a local bug must propagate, not read as "no such HTLC" and
     // silently turn a live lock into an absent one.
@@ -39,5 +40,10 @@ describe("sdk-node views", () => {
     expect(isNotFound(new Error("null"))).toBe(false);
     expect(isNotFound(new Error("connection reset"))).toBe(false);
     expect(isNotFound({ code: -32601, message: "method not supported" })).toBe(false);
+    // -32000 is the node's generic server error. On its own it proves nothing:
+    // requiring the message too keeps a real fault from reading as "absent".
+    expect(isNotFound({ code: -32000, message: "whatever" })).toBe(false);
+    expect(isNotFound({ code: -32000, message: "internal database failure" })).toBe(false);
+    expect(isNotFound({ code: -32601, message: "data non existent" })).toBe(false);
   });
 });

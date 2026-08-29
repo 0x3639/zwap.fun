@@ -27,6 +27,9 @@ interface PlasmaBotResponseBody {
   error?: { code?: string; message?: string };
 }
 
+/** A courtesy service that may simply stop answering; do not wait forever. */
+export const PLASMA_BOT_TIMEOUT_MS = 20_000;
+
 /**
  * Asks the community plasma bot to fuse QSR for `address`. The bot is a public
  * courtesy service, so every failure mode is classified rather than thrown
@@ -38,20 +41,37 @@ export async function fusePlasma(
   tier: PlasmaTier,
   fetchImpl: typeof fetch = fetch
 ): Promise<FuseResult> {
+  const controller = new AbortController();
+  const expired = setTimeout(
+    () => controller.abort(new Error("Plasma bot did not answer in time")),
+    PLASMA_BOT_TIMEOUT_MS
+  );
   let response: Response;
+  let body: PlasmaBotResponseBody;
   try {
-    response = await fetchImpl(`${baseUrl}/api/agent/fuse`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ address, tier })
-    });
-  } catch (error) {
-    throw new PlasmaBotError(
-      "unavailable",
-      `Plasma bot unreachable: ${error instanceof Error ? error.message : String(error)}`
-    );
+    try {
+      response = await fetchImpl(`${baseUrl}/api/agent/fuse`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ address, tier }),
+        signal: controller.signal
+      });
+      // Inside the same signal: a stalled body hangs the caller exactly as a
+      // stalled connection would. A non-JSON body is still tolerated - the
+      // status code alone classifies it - but an abort must not be swallowed.
+      body = (await response.json().catch((error: unknown) => {
+        if (controller.signal.aborted) throw error;
+        return {};
+      })) as PlasmaBotResponseBody;
+    } catch (error) {
+      throw new PlasmaBotError(
+        "unavailable",
+        `Plasma bot unreachable: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  } finally {
+    clearTimeout(expired);
   }
-  const body = (await response.json().catch(() => ({}))) as PlasmaBotResponseBody;
   if (response.status === 429) {
     throw new PlasmaBotError(
       "rate_limited",
@@ -66,5 +86,13 @@ export async function fusePlasma(
     }
     throw new PlasmaBotError("unavailable", message);
   }
-  return { txHash: body.txHash ?? "", amount: body.amount ?? 0, tier: body.tier ?? tier };
+  // A success without a transaction hash is not a fusion the caller can look
+  // up or wait on, so it is an outage, not a receipt.
+  if (typeof body.txHash !== "string" || body.txHash.length === 0) {
+    throw new PlasmaBotError(
+      "unavailable",
+      "Plasma bot reported success without a transaction hash"
+    );
+  }
+  return { txHash: body.txHash, amount: body.amount ?? 0, tier: body.tier ?? tier };
 }

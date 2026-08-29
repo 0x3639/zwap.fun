@@ -1,4 +1,4 @@
-import { OrderApi } from "../src/api/order-api.js";
+import { OrderApi, type PublicOrderPublication } from "../src/api/order-api.js";
 import { MakerIdentity } from "../src/nostr/identity.js";
 import { PUBLIC_RELAYS, RelayClient, type RelayReadback } from "../src/nostr/relay.js";
 import { humanPriceToPrice } from "../src/order/human-price.js";
@@ -44,7 +44,31 @@ async function confirmedReadback(
 
 const relayClient = new RelayClient({ maxWait: 8_000 });
 const startedAt = new Date().toISOString();
-const publications = [];
+interface PublicationTrace extends SeedOrder, PublicOrderPublication {
+  projectionReadback: RelayReadback[];
+}
+
+const publications: PublicationTrace[] = [];
+
+/**
+ * The trace is the only record of what actually reached the relays. A readback
+ * failure on order four must not throw away the three that are already live -
+ * whoever runs this has to know what to clean up.
+ */
+function printTrace(failure?: unknown): void {
+  console.log(JSON.stringify({
+    schema: "zwap/order-publication-trace/v1",
+    startedAt,
+    completedAt: new Date().toISOString(),
+    relays: PUBLIC_RELAYS,
+    acknowledgementsRequired: 1,
+    complete: failure === undefined,
+    ...(failure === undefined
+      ? {}
+      : { failure: failure instanceof Error ? failure.message : String(failure) }),
+    publications
+  }, null, 2));
+}
 
 try {
   for (const seed of seeds) {
@@ -79,18 +103,14 @@ try {
       projectionReadback
     });
   }
+} catch (error) {
+  printTrace(error);
+  throw error;
 } finally {
   relayClient.dispose();
 }
 
-console.log(JSON.stringify({
-  schema: "zwap/order-publication-trace/v1",
-  startedAt,
-  completedAt: new Date().toISOString(),
-  relays: PUBLIC_RELAYS,
-  acknowledgementsRequired: 1,
-  publications
-}, null, 2));
+printTrace();
 
 function servicePublicationEvent(id: string, pubkey: string, kind: number) {
   return { id, pubkey, kind };

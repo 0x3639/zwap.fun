@@ -93,7 +93,7 @@ export class SdkZenonNode implements ZenonNodePort {
   }
 }
 
-const NOT_FOUND_MESSAGE = /not found|no htlc|data not found|does not exist/i;
+const NOT_FOUND_MESSAGE = /data non existent|not found|no htlc|does not exist/i;
 
 /**
  * True only when the node itself answered "there is nothing here".
@@ -103,12 +103,23 @@ const NOT_FOUND_MESSAGE = /not found|no htlc|data not found|does not exist/i;
  * `TypeError: Cannot read properties of null` and reports a live HTLC as
  * absent, which the coordinator reads as a leg that was never funded.
  */
-export function isNotFound(error: unknown): boolean {
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
   if (
-    typeof error === "object" && error !== null && "code" in error &&
-    (error as { code: unknown }).code === -32000
-  ) return true;
+    typeof error === "object" && error !== null && "message" in error &&
+    typeof (error as { message: unknown }).message === "string"
+  ) return (error as { message: string }).message;
+  return String(error);
+}
+
+export function isNotFound(error: unknown): boolean {
   if (error instanceof TypeError) return false;
-  const message = error instanceof Error ? error.message : String(error);
-  return NOT_FOUND_MESSAGE.test(message);
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? (error as { code: unknown }).code
+    : undefined;
+  // -32000 is the node's generic "server error": it carries a not-found answer
+  // as often as it carries a real fault, so the code alone proves nothing and
+  // the message must agree. Any other explicit code is not a not-found at all.
+  if (code !== undefined && code !== -32000) return false;
+  return NOT_FOUND_MESSAGE.test(errorMessage(error));
 }
