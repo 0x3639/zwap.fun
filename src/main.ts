@@ -47,6 +47,7 @@ import {
 import { renderOrderBook } from "./ui/orderbook.js";
 import { renderPendingPublications } from "./ui/order-outbox.js";
 import { showSeedDialog } from "./ui/seed-dialog.js";
+import { TakeRequestRegistry } from "./ui/take-request-registry.js";
 import { applyTheme, mountThemeToggle } from "./ui/theme.js";
 import { tokenDirectory, type TokenLookup } from "./ui/tokens.js";
 import { renderTrades } from "./ui/trades.js";
@@ -495,7 +496,7 @@ async function publishOrderWithFunding(input: PublishOrderInput) {
   return publication;
 }
 
-const takeRequestIds = new Map<string, string>();
+const takeRequests = new TakeRequestRegistry();
 
 function takeOrderFromBook(
   order: OrderRecord,
@@ -503,8 +504,7 @@ function takeOrderFromBook(
   button?: HTMLButtonElement
 ): void {
   const retryKey = `${order.address}:${order.eventId}:${fillBaseAmount}`;
-  const requestId = takeRequestIds.get(retryKey) ?? crypto.randomUUID();
-  takeRequestIds.set(retryKey, requestId);
+  const requestId = takeRequests.reserve(retryKey);
   const task = async (): Promise<void> => {
     const trade = await zwap.takeOrder({
       requestId,
@@ -516,6 +516,9 @@ function takeOrderFromBook(
     tradeTrace(trade);
     report("Order taken; settling automatically");
     const result = await zwap.runUntilSettled(trade.sessionId);
+    // Only now: a failed attempt keeps its reservation so the retry reuses the
+    // same idempotency key instead of opening a second session for this fill.
+    takeRequests.settle(retryKey);
     await Promise.all([refreshTrades(), refresh()]);
     report(`Swap filled after ${result.checkpoints.length} verified actions`);
     void refreshOrderBook().catch(() => {
@@ -525,8 +528,7 @@ function takeOrderFromBook(
   const request = button
     ? withButtonFeedback(button, "Settling…", task)
     : task();
-  void request.catch((error: unknown) => report(messageOf(error), true))
-    .finally(() => takeRequestIds.delete(retryKey));
+  void request.catch((error: unknown) => report(messageOf(error), true));
 }
 
 function retryPendingPublication(orderId: string, button?: HTMLButtonElement): void {
