@@ -1,0 +1,57 @@
+/* ============================================================================
+   SIGNATURE UTILITIES — the two moves that make a surface read as Zenon.
+     .bg-plasma   — the brand gradient, for primary/active/positive surfaces ONLY
+     .text-ledger — mono/uppercase/tracked eyebrow for table headers, stat labels
+   Plus a light base reset so cards/kits look right with just styles.css linked.
+   ============================================================================ */
+
+/* Plasma fill — reserve it for "the main thing". Don't spray on chrome. */
+.bg-plasma {
+  background-image: var(--plasma);
+}
+
+/* Ledger label — the quiet "on-chain" texture. For LABELS, never values/prose. */
+.text-ledger {
+  font-family: var(--font-mono);
+  font-size: var(--text-ledger);
+  line-height: 1rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: var(--ledger-tracking);
+}
+
+/* Tabular figures so numbers align and don't shift as they update. */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.font-mono { font-family: var(--font-mono); }
+.font-sans { font-family: var(--font-sans); }
+
+/* ---- Base reset (scoped, non-destructive) -------------------------------- */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Smooth, purposeful state transitions on interactive elements. */
+a, button, label, summary, input, select, textarea,
+[role="button"], [role="tab"], [role="switch"], [role="checkbox"] {
+  transition-property: color, background-color, border-color, box-shadow, filter, opacity;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 150ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}

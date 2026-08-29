@@ -39,7 +39,9 @@ export function renderActivityLog(
     body.className = "activity-entry";
     const heading = element("div");
     heading.className = "activity-entry__heading";
-    heading.append(element("span", entry.label), element("strong", entry.title));
+    const label = element("span", entry.label);
+    label.className = "text-ledger";
+    heading.append(label, element("strong", entry.title));
     body.append(heading);
 
     if (entry.details && entry.details.length > 0) {
@@ -47,6 +49,7 @@ export function renderActivityLog(
       for (const detail of entry.details) {
         const term = element("dt", detail.label);
         const value = element("dd", detail.value);
+        value.className = "font-mono";
         if (detail.title !== undefined) value.title = detail.title;
         details.append(term, value);
       }

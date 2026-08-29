@@ -1,16 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { vi } from "vitest";
 
-import { buildOrderBook, createOrderState, type OrderRecord } from "../order/model.js";
+import {
+  buildOrderBook,
+  createOrderState,
+  type ExactMarket,
+  type OrderRecord
+} from "../order/model.js";
+import { QSR_ZTS, ZNN_ZTS } from "../zenon/types.js";
 import { renderOrderBook } from "./orderbook.js";
 
-const baseMint = "https://testnut.cashu.space";
-const quoteMint = "https://nofee.testnut.cashu.space";
-const market = {
-  baseUnit: "sat",
-  baseMint,
-  quoteUnit: "usd",
-  quoteMint
+const market: ExactMarket = {
+  chainId: "1",
+  baseToken: ZNN_ZTS,
+  quoteToken: QSR_ZTS
 };
 const askHigh = "11111111-1111-4111-8111-111111111111";
 const bidLow = "22222222-2222-4222-8222-222222222222";
@@ -20,8 +23,8 @@ const bidHigh = "44444444-4444-4444-8444-444444444444";
 function record(
   orderId: string,
   side: "buy" | "sell",
-  priceCentsPerBtc: string,
-  amount = "2000"
+  price: string,
+  amount = "2000000000"
 ): OrderRecord {
   return {
     address: `30078:maker:${orderId}`,
@@ -33,16 +36,11 @@ function record(
       createdAt: 1_700_000_000,
       expiresAt: 1_800_000_000,
       side,
-      baseUnit: "sat",
-      quoteUnit: "usd",
-      offered: side === "sell"
-        ? { unit: "sat", mint: baseMint }
-        : { unit: "usd", mint: quoteMint },
-        requested: side === "sell"
-        ? { unit: "usd", acceptableMints: [quoteMint] }
-        : { unit: "sat", acceptableMints: [baseMint] },
-        amount,
-      priceCentsPerBtc
+      chainId: "1",
+      baseToken: ZNN_ZTS,
+      quoteToken: QSR_ZTS,
+      amount,
+      price
     })
   };
 }
@@ -50,10 +48,10 @@ function record(
 describe("order-book presentation", () => {
   it("renders a compact market strip above asks and bids and identifies the inside market", async () => {
     const book = await buildOrderBook([
-      record(askHigh, "sell", "5200000"),
-      record(bidLow, "buy", "4800000"),
-      record(askLow, "sell", "5050000"),
-      record(bidHigh, "buy", "4950000")
+      record(askHigh, "sell", "1200000000"),
+      record(bidLow, "buy", "800000000"),
+      record(askLow, "sell", "1050000000"),
+      record(bidHigh, "buy", "950000000")
     ], market, 1_700_000_100);
     const root = document.createElement("section");
 
@@ -71,13 +69,16 @@ describe("order-book presentation", () => {
       .toBe("ask");
     expect(root.querySelector(`[data-order-id="${bidHigh}"]`)?.getAttribute("data-best"))
       .toBe("bid");
-    expect(root.querySelector('[data-summary="best-ask"]')?.textContent).toContain("50,500.00");
-    expect(root.querySelector('[data-summary="best-bid"]')?.textContent).toContain("49,500.00");
-    expect(root.querySelector('[data-summary="spread"]')?.textContent).toContain("1,000.00");
-    expect(root.querySelector('[data-summary="spread"]')?.getAttribute("data-spread-cents-per-btc"))
-      .toBe("100000");
+    expect(root.querySelector('[data-summary="best-ask"]')?.textContent)
+      .toBe("10.5 QSR/ZNN");
+    expect(root.querySelector('[data-summary="best-bid"]')?.textContent)
+      .toBe("9.5 QSR/ZNN");
+    expect(root.querySelector('[data-summary="spread"]')?.textContent)
+      .toBe("1 QSR/ZNN");
+    expect(root.querySelector('[data-summary="spread"]')?.getAttribute("data-spread-minor-units"))
+      .toBe("100000000");
     expect(root.querySelector(`[data-order-id="${askLow}"] [data-price]`)
-      ?.getAttribute("data-price-cents-per-btc")).toBe("5050000");
+      ?.getAttribute("data-price-minor-units")).toBe("1050000000");
     expect(root.querySelectorAll("[data-order-info]")).toHaveLength(4);
     expect(root.querySelector(`[data-order-id="${askLow}"] [data-order-info]`)?.textContent)
       .toContain("AON");
@@ -89,8 +90,30 @@ describe("order-book presentation", () => {
       .toBe("Best bid");
   });
 
+  it("labels prices and remaining size in the market's own token symbols", async () => {
+    const book = await buildOrderBook(
+      [record(askLow, "sell", "350000000", "2000000000")],
+      market,
+      1_700_000_100
+    );
+    const root = document.createElement("section");
+
+    renderOrderBook(root, { status: "ready", book });
+
+    expect([...root.querySelectorAll("th")].map((header) => header.textContent))
+      .toContain("Limit (QSR/ZNN)");
+    const remaining = root.querySelector<HTMLElement>(
+      `[data-order-id="${askLow}"] [data-remaining]`
+    );
+    expect(remaining?.textContent).toBe("20.00000000 ZNN");
+    expect(remaining?.className).toContain("font-mono");
+    expect(remaining?.querySelector(".dim")?.textContent).toBe("00000000");
+    expect(root.querySelector(`[data-order-id="${askLow}"] [data-price]`)?.textContent)
+      .toBe("3.5");
+  });
+
   it("offers an explicit take action with the exact verified order record", async () => {
-    const best = record(askLow, "sell", "5000000", "20");
+    const best = record(askLow, "sell", "500000000", "2000000000");
     const book = await buildOrderBook([best], market, 1_700_000_100);
     const root = document.createElement("section");
     const take = vi.fn();
@@ -104,13 +127,13 @@ describe("order-book presentation", () => {
 
     expect(button?.textContent).toBe("Settling…");
     expect(button?.disabled).toBe(true);
-    expect(amount?.value).toBe("20");
-    expect(take).toHaveBeenCalledWith(best, "20", expect.any(HTMLButtonElement));
+    expect(amount?.value).toBe("2000000000");
+    expect(take).toHaveBeenCalledWith(best, "2000000000", expect.any(HTMLButtonElement));
   });
 
   it("offers bid taking and exposes cancellation only for owned orders", async () => {
-    const ask = record(askLow, "sell", "5000000", "20");
-    const bid = record(bidHigh, "buy", "5000000", "20");
+    const ask = record(askLow, "sell", "500000000", "2000000000");
+    const bid = record(bidHigh, "buy", "500000000", "2000000000");
     const book = await buildOrderBook([ask, bid], market, 1_700_000_100);
     const root = document.createElement("section");
     const cancel = vi.fn();
@@ -139,11 +162,11 @@ describe("order-book presentation", () => {
 
   it("shows the best three orders per side and toggles the rest", async () => {
     const orders = [
-      record("11111111-1111-4111-8111-111111111111", "sell", "5000000"),
-      record("22222222-2222-4222-8222-222222222222", "sell", "5100000"),
-      record("33333333-3333-4333-8333-333333333333", "sell", "5200000"),
-      record("44444444-4444-4444-8444-444444444444", "sell", "5300000"),
-      record("55555555-5555-4555-8555-555555555555", "sell", "5400000")
+      record("11111111-1111-4111-8111-111111111111", "sell", "500000000"),
+      record("22222222-2222-4222-8222-222222222222", "sell", "510000000"),
+      record("33333333-3333-4333-8333-333333333333", "sell", "520000000"),
+      record("44444444-4444-4444-8444-444444444444", "sell", "530000000"),
+      record("55555555-5555-4555-8555-555555555555", "sell", "540000000")
     ];
     const book = await buildOrderBook(orders, market, 1_700_000_100);
     const root = document.createElement("section");
@@ -171,11 +194,11 @@ describe("order-book presentation", () => {
   });
 
   it("validates exact all-or-none and partial-fill amounts before taking an order", async () => {
-    const allOrNone = record(askLow, "sell", "5000000", "20");
+    const allOrNone = record(askLow, "sell", "500000000", "20");
     const partial = record(
       "77777777-7777-4777-8777-777777777777",
       "sell",
-      "5000000",
+      "500000000",
       "100"
     );
     partial.state.execution = "partial";
@@ -215,10 +238,25 @@ describe("order-book presentation", () => {
 
     renderOrderBook(root, { status: "ready", book });
 
-    expect(root.querySelector('[data-summary="spread"]')?.getAttribute("data-spread-cents-per-btc"))
+    expect(root.querySelector('[data-summary="spread"]')?.getAttribute("data-spread-minor-units"))
       .toBe("1");
     expect(root.querySelector('[data-order-id="55555555-5555-4555-8555-555555555555"] [data-price]')
-      ?.getAttribute("data-price-cents-per-btc")).toBe("9007199254740993");
+      ?.getAttribute("data-price-minor-units")).toBe("9007199254740993");
+    expect(root.querySelector('[data-order-id="55555555-5555-4555-8555-555555555555"] [data-price]')
+      ?.textContent).toBe("90,071,992.54740993");
+  });
+
+  it("renders a crossed book's negative spread rather than throwing", async () => {
+    const book = await buildOrderBook([
+      record(askLow, "sell", "900000000"),
+      record(bidHigh, "buy", "1000000000")
+    ], market, 1_700_000_100);
+    const root = document.createElement("section");
+
+    renderOrderBook(root, { status: "ready", book });
+
+    expect(root.querySelector('[data-summary="spread"]')?.textContent)
+      .toBe("−1 QSR/ZNN");
   });
 
   it("renders honest loading, error, and empty states", async () => {
@@ -236,7 +274,16 @@ describe("order-book presentation", () => {
     renderOrderBook(root, { status: "ready", book });
     expect(root.getAttribute("aria-busy")).toBe("false");
     expect(root.getAttribute("role")).toBeNull();
-    expect(root.textContent).toContain("No open orders for this issuer pair");
+    expect(root.textContent).toContain("No open QSR/ZNN orders");
     expect(root.querySelector("table")).toBeNull();
+  });
+
+  it("carries no emoji", async () => {
+    const book = await buildOrderBook([record(askLow, "sell", "500000000")], market, 1_700_000_100);
+    const root = document.createElement("section");
+
+    renderOrderBook(root, { status: "ready", book });
+
+    expect(root.textContent ?? "").not.toMatch(/\p{Extended_Pictographic}/u);
   });
 });

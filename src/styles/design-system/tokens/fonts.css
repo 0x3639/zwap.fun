@@ -1,0 +1,6 @@
+/* Brand webfonts — Space Grotesk (UI/sans) + JetBrains Mono (data/mono).
+   nom-ui self-hosts these via @fontsource for strict-CSP wallet extensions.
+   Here we load them from Google Fonts so cards/kits render without bundled
+   binaries. To self-host for production, drop the .woff2 files in assets/fonts/
+   and replace this @import with @font-face rules. */
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap");

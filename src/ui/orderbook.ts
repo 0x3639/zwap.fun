@@ -4,6 +4,14 @@ import type {
   OrderRecord
 } from "../order/model.js";
 import { beginButtonFeedback } from "./button-feedback.js";
+import {
+  formatHumanPrice,
+  formatPriceDelta,
+  renderTokenAmount,
+  truncateHash
+} from "./format.js";
+import { icon } from "./icons.js";
+import { defaultTokens, type TokenLookup } from "./tokens.js";
 
 const COLLAPSED_ORDER_COUNT = 3;
 
@@ -16,6 +24,13 @@ export interface OrderBookRenderOptions {
   onTake?: (order: OrderRecord, fillBaseAmount: string, button: HTMLButtonElement) => void;
   onCancel?: (order: OrderRecord, button: HTMLButtonElement) => void;
   canCancel?: (order: OrderRecord) => boolean;
+  /** Symbols and decimals observed on chain; falls back to ZNN/QSR. */
+  tokens?: TokenLookup;
+}
+
+interface MarketView {
+  market: ExactMarket;
+  tokens: TokenLookup;
 }
 
 function element<K extends keyof HTMLElementTagNameMap>(
@@ -27,40 +42,36 @@ function element<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-function groupedInteger(value: string): string {
-  const sign = value.startsWith("-") ? "−" : "";
-  const unsigned = value.startsWith("-") ? value.slice(1) : value;
-  return `${sign}${unsigned.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`;
+function quoteDecimals(view: MarketView): number {
+  return view.tokens(view.market.quoteToken).decimals;
 }
 
-function fiatPerBtc(priceCentsPerBtc: string): string {
-  const cents = BigInt(priceCentsPerBtc);
-  const unsigned = cents < 0n ? -cents : cents;
-  const whole = unsigned / 100n;
-  const fraction = (unsigned % 100n).toString().padStart(2, "0");
-  return `${cents < 0n ? "−" : ""}${groupedInteger(whole.toString())}.${fraction}`;
+function priceLabel(view: MarketView): string {
+  return `${view.tokens(view.market.quoteToken).symbol}/` +
+    `${view.tokens(view.market.baseToken).symbol}`;
 }
 
-function priceLabel(market: ExactMarket): string {
-  return `${market.quoteUnit.toUpperCase()}/BTC`;
-}
-
-function priceCell(order: OrderRecord, market: ExactMarket): HTMLTableCellElement {
+function priceCell(order: OrderRecord, view: MarketView): HTMLTableCellElement {
   const cell = element("td");
-  const price = order.state.price_cents_per_btc;
-  const displayed = element("data", fiatPerBtc(price));
+  const price = order.state.price;
+  const displayed = element("data", formatHumanPrice(price, quoteDecimals(view)));
+  displayed.className = "font-mono tabular-nums";
   displayed.dataset.price = "true";
-  displayed.dataset.priceCentsPerBtc = price;
+  displayed.dataset.priceMinorUnits = price;
   displayed.setAttribute("value", price);
-  displayed.title = `${fiatPerBtc(price)} ${priceLabel(market)}`;
+  displayed.title = `${formatHumanPrice(price, quoteDecimals(view))} ${priceLabel(view)}`;
   cell.append(displayed);
   return cell;
 }
 
 function infoLine(label: string, value: string, title?: string): HTMLElement {
   const line = element("p");
-  line.append(element("span", label), element("strong", value));
-  if (title !== undefined) line.lastElementChild?.setAttribute("title", title);
+  const caption = element("span", label);
+  caption.className = "text-ledger";
+  const detail = element("strong", value);
+  detail.className = "font-mono";
+  if (title !== undefined) detail.title = title;
+  line.append(caption, detail);
   return line;
 }
 
@@ -75,7 +86,7 @@ function orderInfo(
   summary.setAttribute("aria-label", "Show order details");
   summary.title = "Show order details";
   const popup = element("div");
-  popup.className = "order-info__popup";
+  popup.className = "order-info__popup nom-card";
   const expiry = new Date(order.state.expires_at * 1000).toISOString();
   const execution = order.state.execution === "all_or_none"
     ? "AON"
@@ -87,12 +98,13 @@ function orderInfo(
       order.state.execution === "all_or_none" ? "All or none (AON)" : "Partial fill"
     ),
     infoLine("Expires", expiry),
-    infoLine("Order", `${order.state.order_id.slice(0, 8)}…`, order.state.order_id)
+    infoLine("Chain", order.state.chain_id),
+    infoLine("Order", truncateHash(order.state.order_id), order.state.order_id)
   );
   if (onCancel) {
     const cancel = element("button", "Cancel order");
     cancel.type = "button";
-    cancel.className = "quiet order-info__cancel";
+    cancel.className = "nom-btn nom-btn--sm nom-btn--outline order-info__cancel";
     cancel.dataset.cancelOrder = "true";
     cancel.addEventListener("click", () => onCancel(cancel));
     popup.append(cancel);
@@ -133,47 +145,52 @@ function validateTakeAmount(amount: HTMLInputElement, order: OrderRecord): void 
 
 function orderRow(
   order: OrderRecord,
-  market: ExactMarket,
+  view: MarketView,
   best: "ask" | "bid" | undefined,
   options: OrderBookRenderOptions
 ): HTMLTableRowElement {
+  const base = view.tokens(view.market.baseToken);
   const row = element("tr");
   row.className = `order-row order-row--${order.state.side === "sell" ? "ask" : "bid"}`;
   row.dataset.orderId = order.state.order_id;
   const side = order.state.side === "sell" ? "Ask" : "Bid";
   row.setAttribute("aria-label", best ? `Best ${side.toLowerCase()}` : side);
   if (best !== undefined) row.dataset.best = best;
-  row.append(priceCell(order, market));
-  row.append(
-    element(
-      "td",
-      groupedInteger(order.state.remaining_amount)
-    )
+  row.append(priceCell(order, view));
+
+  const remaining = element("td");
+  const remainingAmount = renderTokenAmount(
+    order.state.remaining_amount,
+    base.decimals,
+    base.symbol
   );
-  row.cells[1]?.setAttribute(
-    "title",
-    `${groupedInteger(order.state.remaining_amount)} ${market.baseUnit.toUpperCase()} remaining`
-  );
+  remainingAmount.dataset.remaining = order.state.remaining_amount;
+  remaining.append(remainingAmount);
+  row.append(remaining);
+
   const action = element("td");
   action.className = "order-action";
   const controls = element("div");
   controls.className = "order-action__controls";
   const amount = element("input");
   amount.type = "text";
+  amount.className = "nom-input";
+  amount.dataset.numeric = "true";
   amount.inputMode = "numeric";
   amount.pattern = "[0-9]+";
   amount.value = order.state.remaining_amount;
   amount.dataset.takeAmount = "true";
+  amount.title = `Base amount in ${base.symbol} minor units (10^${base.decimals} per ${base.symbol})`;
   amount.setAttribute(
     "aria-label",
-    `Base amount to ${order.state.side === "sell" ? "buy" : "sell"} in ${market.baseUnit.toUpperCase()}`
+    `Base amount to ${order.state.side === "sell" ? "buy" : "sell"} in ${base.symbol} minor units`
   );
   const take = element(
     "button",
     order.state.side === "sell" ? "Buy" : "Sell"
   );
   take.type = "button";
-  take.className = "quiet";
+  take.className = "nom-btn nom-btn--sm nom-btn--outline";
   take.dataset.takeOrder = "true";
   take.setAttribute(
     "aria-label",
@@ -201,41 +218,44 @@ function orderRow(
 function summaryValue(
   name: string,
   order: OrderRecord | undefined,
-  market: ExactMarket
+  view: MarketView
 ): HTMLElement {
   const value = element("dd");
+  value.className = "font-mono tabular-nums";
   value.dataset.summary = name;
   if (order === undefined) {
     value.textContent = "—";
     return value;
   }
-  const price = order.state.price_cents_per_btc;
-  value.textContent = `${fiatPerBtc(price)} ${priceLabel(market)}`;
-  value.dataset.priceCentsPerBtc = price;
+  const price = order.state.price;
+  value.textContent = `${formatHumanPrice(price, quoteDecimals(view))} ${priceLabel(view)}`;
+  value.dataset.priceMinorUnits = price;
   return value;
 }
 
-function renderSummary(book: OrderBook): HTMLElement {
+function renderSummary(book: OrderBook, view: MarketView): HTMLElement {
   const summary = element("dl");
   summary.className = "orderbook-summary";
 
   const spreadValue = element("dd", "—");
+  spreadValue.className = "font-mono tabular-nums";
   spreadValue.dataset.summary = "spread";
   if (book.topAsk && book.topBid) {
-    const spread =
-      BigInt(book.topAsk.state.price_cents_per_btc) -
-      BigInt(book.topBid.state.price_cents_per_btc);
-    spreadValue.textContent = `${fiatPerBtc(spread.toString())} ${priceLabel(book.market)}`;
-    spreadValue.dataset.spreadCentsPerBtc = spread.toString();
+    const spread = BigInt(book.topAsk.state.price) - BigInt(book.topBid.state.price);
+    spreadValue.textContent =
+      `${formatPriceDelta(spread, quoteDecimals(view))} ${priceLabel(view)}`;
+    spreadValue.dataset.spreadMinorUnits = spread.toString();
   }
   const entries: Array<[string, HTMLElement]> = [
-    ["Best ask", summaryValue("best-ask", book.topAsk, book.market)],
+    ["Best ask", summaryValue("best-ask", book.topAsk, view)],
     ["Spread", spreadValue],
-    ["Best bid", summaryValue("best-bid", book.topBid, book.market)]
+    ["Best bid", summaryValue("best-bid", book.topBid, view)]
   ];
   for (const [label, value] of entries) {
     const item = element("div");
-    item.append(element("dt", label), value);
+    const term = element("dt", label);
+    term.className = "text-ledger";
+    item.append(term, value);
     summary.append(item);
   }
   return summary;
@@ -245,7 +265,7 @@ function renderSideTable(
   label: "Asks" | "Bids",
   orders: OrderRecord[],
   best: OrderRecord | undefined,
-  market: ExactMarket,
+  view: MarketView,
   options: OrderBookRenderOptions
 ): HTMLElement {
   const section = element("section");
@@ -256,11 +276,12 @@ function renderSideTable(
   const head = element("thead");
   const headers = element("tr");
   for (const headerLabel of [
-    `Limit (${priceLabel(market)})`,
+    `Limit (${priceLabel(view)})`,
     "Left",
     "Trade"
   ]) {
     const header = element("th", headerLabel);
+    header.className = "text-ledger";
     header.scope = "col";
     headers.append(header);
   }
@@ -274,7 +295,7 @@ function renderSideTable(
   orders.forEach((order, index) => {
     const row = orderRow(
       order,
-      market,
+      view,
       order.address === best?.address ? label === "Asks" ? "ask" : "bid" : undefined,
       options
     );
@@ -297,12 +318,13 @@ function renderSideTable(
       "small",
       `${COLLAPSED_ORDER_COUNT} / ${orders.length} shown`
     );
+    count.className = "text-ledger";
     const toggle = element(
       "button",
       "See more"
     );
     toggle.type = "button";
-    toggle.className = "quiet orderbook-toggle";
+    toggle.className = "nom-btn nom-btn--sm nom-btn--ghost orderbook-toggle";
     toggle.dataset.orderbookToggle = label.toLowerCase();
     toggle.setAttribute("aria-expanded", "false");
     toggle.addEventListener("click", () => {
@@ -322,28 +344,33 @@ function renderSideTable(
   return section;
 }
 
-function renderReady(root: HTMLElement, book: OrderBook, options: OrderBookRenderOptions): void {
+function renderReady(
+  root: HTMLElement,
+  book: OrderBook,
+  options: OrderBookRenderOptions
+): void {
+  const view: MarketView = { market: book.market, tokens: options.tokens ?? defaultTokens };
   if (book.asks.length === 0 && book.bids.length === 0) {
     const empty = element("div");
-    empty.className = "empty-state";
-    empty.append(element("h2", "No open orders for this issuer pair"));
+    empty.className = "empty-state nom-card";
+    empty.append(element("h3", `No open ${priceLabel(view)} orders`));
     empty.append(element("p", "The book will update when verified makers publish orders."));
     root.append(empty);
     return;
   }
 
   const frame = element("div");
-  frame.className = "orderbook-frame";
+  frame.className = "orderbook-frame nom-card";
   const marketStrip = element("aside");
   marketStrip.className = "orderbook-market-strip";
   marketStrip.dataset.bookMidpoint = "true";
   marketStrip.setAttribute("aria-label", "Inside market");
-  marketStrip.append(renderSummary(book));
+  marketStrip.append(renderSummary(book, view));
   const columns = element("div");
   columns.className = "orderbook-columns";
   columns.append(
-    renderSideTable("Asks", book.asks, book.topAsk, book.market, options),
-    renderSideTable("Bids", book.bids, book.topBid, book.market, options)
+    renderSideTable("Asks", book.asks, book.topAsk, view, options),
+    renderSideTable("Bids", book.bids, book.topBid, view, options)
   );
   frame.append(marketStrip, columns);
   root.append(frame);
@@ -360,13 +387,20 @@ export function renderOrderBook(
   root.setAttribute("aria-busy", state.status === "loading" ? "true" : "false");
 
   if (state.status === "loading") {
-    root.append(element("p", "Loading order book…"));
+    const loading = element("p");
+    loading.className = "orderbook-loading";
+    const spinner = icon("refresh");
+    spinner.classList.add("nom-spin");
+    loading.append(spinner, element("span", "Loading order book…"));
+    root.append(loading);
     return;
   }
   if (state.status === "error") {
     root.setAttribute("role", "alert");
     root.setAttribute("aria-live", "assertive");
-    root.append(element("p", state.message));
+    const failure = element("p", state.message);
+    failure.className = "orderbook-error";
+    root.append(failure);
     return;
   }
   renderReady(root, state.book, options);

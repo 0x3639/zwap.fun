@@ -35,8 +35,14 @@ import { KeystoreSigner } from "./zenon/keystore-signer.js";
 import type { PlasmaTier } from "./zenon/plasma-bot.js";
 import { ChainMismatchError, SdkZenonNode } from "./zenon/sdk-node.js";
 import { QSR_ZTS, ZNN_ZTS } from "./zenon/types.js";
+import { renderAccountActions } from "./ui/account-actions.js";
+import { renderDashboard, renderWalletSummary } from "./ui/dashboard.js";
+import { formatTokenAmount } from "./ui/format.js";
 import { renderOrderBook } from "./ui/orderbook.js";
 import { renderPendingPublications } from "./ui/order-outbox.js";
+import { showSeedDialog } from "./ui/seed-dialog.js";
+import { applyTheme, mountThemeToggle } from "./ui/theme.js";
+import { tokenDirectory, type TokenLookup } from "./ui/tokens.js";
 import { renderTrades } from "./ui/trades.js";
 import { withButtonFeedback } from "./ui/button-feedback.js";
 import {
@@ -82,6 +88,7 @@ function byId<T extends HTMLElement>(id: string): T {
 
 const dashboard = byId("dashboard");
 const walletSummary = byId("wallet-summary");
+const accountActions = byId("account-actions");
 const orderbook = byId("orderbook");
 const pendingPublications = byId("pending-publications");
 const trades = byId("trades");
@@ -92,6 +99,11 @@ const activity = byId<HTMLOListElement>("activity-log");
 const activityEntries: ActivityEntry[] = [];
 const tracedTradeMessages = new Set<string>();
 const tracedTradeCheckpoints = new Set<string>();
+
+// Paint the theme before anything else touches the DOM so the first frame is
+// already in the user's chosen mode rather than flashing the default.
+applyTheme(document.documentElement);
+mountThemeToggle(byId<HTMLButtonElement>("theme-toggle"), document.documentElement);
 
 let blockedReason: string | undefined;
 
@@ -341,49 +353,33 @@ const TOKEN_SYMBOLS: Record<string, string> = {
 };
 
 /**
- * TODO(Task 13): move this into `src/ui/format.ts` alongside the rewritten
- * wallet panel. `formatUnitAmount` still speaks the removed ecash units.
+ * Symbols and decimals from the last wallet read, so the order book and the
+ * trade cards label amounts with what the chain actually reported rather than
+ * a hard-coded table. Falls back to ZNN/QSR before the first read lands.
  */
-function formatTokenAmount(amount: string, decimals: number, symbol: string): string {
-  const divisor = 10n ** BigInt(decimals);
-  const whole = BigInt(amount) / divisor;
-  const fraction = (BigInt(amount) % divisor).toString().padStart(decimals, "0")
-    .replace(/0+$/, "");
-  return `${whole.toLocaleString("en-US")}${fraction ? `.${fraction}` : ""} ${symbol}`;
+let tokens: TokenLookup = tokenDirectory();
+
+function unavailable(): string {
+  return blockedReason ?? "The Zenon node is unavailable";
 }
 
 /**
- * TODO(Task 13): `renderWalletSummary` and `renderDashboard` still take the
- * removed ecash wallet state. Task 13 owns `src/ui/*`; until then the wallet
- * panel renders as plain text so the address, balances and plasma are visible.
+ * One paint for the whole wallet surface: the strip above the order book, the
+ * account panel, and the ledger. Every one of them reads the same snapshot, so
+ * they can never disagree about the balance.
  */
 async function refresh(state?: ZwapState): Promise<ZwapState> {
   if (walletApi === undefined) {
-    walletSummary.textContent = blockedReason ?? "The Zenon node is unavailable";
-    dashboard.textContent = "";
-    throw new Error(blockedReason ?? "The Zenon node is unavailable");
+    walletSummary.textContent = unavailable();
+    dashboard.textContent = unavailable();
+    accountActions.textContent = unavailable();
+    throw new Error(unavailable());
   }
   const next = state ?? await walletApi.getState();
-  if (next.address === null) {
-    walletSummary.textContent =
-      "No wallet in this browser profile yet. Call zwap.createWallet() or zwap.importWallet(words).";
-    dashboard.textContent = "";
-    return next;
-  }
-  const balances = next.balances.length === 0
-    ? "no balances"
-    : next.balances
-      .map((balance) => formatTokenAmount(balance.balance, balance.decimals, balance.symbol))
-      .join(" · ");
-  walletSummary.textContent = `${next.address} — ${balances}`;
-  dashboard.textContent = [
-    `Network ${next.network} (chain ${next.chainId})`,
-    `${next.unreceived} unreceived block(s)`,
-    next.plasma === null
-      ? "plasma unknown"
-      : `plasma ${next.plasma.currentPlasma}/${next.plasma.maxPlasma}`,
-    next.powRequired ? "proof of work required for sends" : "plasma covers sends"
-  ].join(" · ");
+  tokens = tokenDirectory(next.balances);
+  renderWalletSummary(walletSummary, next);
+  renderDashboard(dashboard, next);
+  renderAccountActions(accountActions, next, accountHandlers);
   return next;
 }
 
@@ -399,12 +395,13 @@ async function refreshOrderBook(): Promise<void> {
       { status: "ready", book: result.book },
       blockedReason === undefined
         ? {
+          tokens,
           onTake: takeOrderFromBook,
           onCancel: cancelOrderFromBook,
           canCancel: (order) => identities.includes(order.makerPubkey)
         }
         // Read-only while blocked: taking or canceling both need to sign.
-        : {}
+        : { tokens }
     );
   } catch (error) {
     renderOrderBook(orderbook, { status: "error", message: messageOf(error) });
@@ -446,7 +443,7 @@ async function refreshTrades(): Promise<void> {
   const controller = await tradeController();
   const current = await controller.resume();
   current.forEach(tradeTrace);
-  renderTrades(trades, current);
+  renderTrades(trades, current, { tokens });
 }
 
 /**
@@ -701,10 +698,59 @@ function startMakerInbox(): Promise<void> {
   return makerInboxStartPromise;
 }
 
-// TODO(Task 13): `#mint-actions` and `#backup` still describe the removed
-// testnut faucet and the bearer-token backup. Task 13 replaces them with the
-// Zenon custody panel: `zwap.receivePending()`, `zwap.fusePlasma(tier)` and a
-// `zwap.revealMnemonic("REVEAL SEED")` reveal behind an explicit confirmation.
+/**
+ * The account panel's escape hatches. Each one repaints the whole wallet
+ * surface from a fresh snapshot, so the panel can never show a balance the
+ * chain has already moved past.
+ */
+function revealSeed(button: HTMLButtonElement): void {
+  void withButtonFeedback(button, "Reading…", () => zwap.revealMnemonic("REVEAL SEED"))
+    .then((mnemonic) => {
+      showSeedDialog(document.body, mnemonic);
+      // The words themselves never reach the log or the status toast.
+      log("Seed phrase revealed on screen");
+    })
+    .catch((error: unknown) => report(messageOf(error), true));
+}
+
+const accountHandlers = {
+  onCreate: (button: HTMLButtonElement) => {
+    void withButtonFeedback(button, "Creating…", () => zwap.createWallet())
+      .then((state) => refresh(state))
+      .then(() => report("Wallet created in this browser profile"))
+      .catch((error: unknown) => report(messageOf(error), true));
+  },
+  onImport: (mnemonic: string, button: HTMLButtonElement) => {
+    void withButtonFeedback(button, "Importing…", () => zwap.importWallet(mnemonic))
+      .then((state) => refresh(state))
+      .then(() => report("Wallet imported into this browser profile"))
+      .catch((error: unknown) => report(messageOf(error), true));
+  },
+  onReceive: (button: HTMLButtonElement) => {
+    void withButtonFeedback(button, "Receiving…", () => zwap.receivePending())
+      .then((state) => refresh(state))
+      .then(() => report("Pending blocks received"))
+      .catch((error: unknown) => report(messageOf(error), true));
+  },
+  onFuse: (tier: PlasmaTier, button: HTMLButtonElement) => {
+    void withButtonFeedback(button, "Fusing…", () => zwap.fusePlasma(tier))
+      .then(async (result) => {
+        trace("Plasma", "Plasma fusion requested", [
+          { label: "tier", value: result.tier },
+          { label: "QSR", value: result.amount.toLocaleString("en-US") }
+        ]);
+        await refresh();
+        report(`Plasma bot accepted a ${result.tier} fusion`);
+      })
+      .catch((error: unknown) => report(messageOf(error), true));
+  },
+  onReveal: revealSeed,
+  onCopyAddress: (address: string, button: HTMLButtonElement) => {
+    void withButtonFeedback(button, "…", () => navigator.clipboard.writeText(address))
+      .then(() => report("Address copied"))
+      .catch((error: unknown) => report(messageOf(error), true));
+  }
+};
 
 function runAgentSettlement(sessionId: string): void {
   const root = document.documentElement;
@@ -740,6 +786,16 @@ if (requestedAgentRun !== null) runAgentSettlement(requestedAgentRun);
 byId("profile-label").textContent = profile === "default"
   ? "Local browser wallet"
   : `Local wallet workspace: ${profile}`;
+// The masthead badge is the page's honesty about which chain it is signing on.
+const networkBadge = byId("network-badge");
+networkBadge.textContent = config.chainId === 1
+  ? "MAINNET · REAL FUNDS"
+  : `TESTNET · CHAIN ${config.chainId}`;
+networkBadge.classList.toggle("nom-badge--warning", config.chainId === 1);
+networkBadge.classList.toggle("nom-badge--outline", config.chainId !== 1);
+
+const backupButton = byId<HTMLButtonElement>("backup");
+backupButton.addEventListener("click", () => revealSeed(backupButton));
 const refreshButton = byId<HTMLButtonElement>("refresh");
 refreshButton.addEventListener("click", () => {
   void withButtonFeedback(refreshButton, "Refreshing…", () => refresh())
@@ -764,27 +820,34 @@ function requiredOrderInput(name: string): HTMLInputElement {
   if (input === null) throw new Error(`Missing order input ${name}`);
   return input;
 }
-// TODO(Task 13): the markup still calls the price field `fiatPrice`. It now
-// carries QSR per ZNN, and Task 13 renames the input and its labels.
 const orderAmountInput = requiredOrderInput("amount");
-const orderPriceInput = requiredOrderInput("fiatPrice");
+const orderPriceInput = requiredOrderInput("price");
 const orderSubmitButton = orderForm.querySelector<HTMLButtonElement>("button[type=submit]");
 if (orderSubmitButton === null) throw new Error("Missing order submit button");
 
 const defaultOrderSettlementHint = orderSettlementHint.textContent ?? "";
 
+/**
+ * ZNN and QSR are both 8-decimal, but the symbols and decimals come from the
+ * chain read whenever one has landed — the market pair is configuration, not a
+ * constant of the protocol.
+ */
 const QUOTE_DECIMALS = 8;
 
 function updateOrderSettlementHint(): void {
   orderAmountInput.setCustomValidity("");
   orderSettlementHint.textContent = defaultOrderSettlementHint;
+  const base = tokens(ZNN_ZTS);
+  const quoteToken = tokens(QSR_ZTS);
   try {
-    const price = humanPriceToPrice(orderPriceInput.value, QUOTE_DECIMALS);
+    const price = humanPriceToPrice(orderPriceInput.value, quoteToken.decimals);
     const quote = quoteAmountForSettlement(orderAmountInput.value, price);
     orderSettlementHint.textContent =
-      `At ${orderPriceInput.value} QSR per ZNN, ` +
-      `${formatTokenAmount(orderAmountInput.value, 8, "ZNN")} settles for exactly ` +
-      `${formatTokenAmount(quote, QUOTE_DECIMALS, "QSR")} in a single HTLC pair.`;
+      `At ${orderPriceInput.value} ${quoteToken.symbol} per ${base.symbol}, ` +
+      `${formatTokenAmount(orderAmountInput.value, base.decimals, base.symbol)} ` +
+      `settles for exactly ` +
+      `${formatTokenAmount(quote, quoteToken.decimals, quoteToken.symbol)} ` +
+      `across one HTLC pair.`;
   } catch {
     // Native input patterns and the submit handler provide the authoritative error.
   }
@@ -807,16 +870,18 @@ orderForm.addEventListener("submit", (event) => {
   const form = new FormData(event.currentTarget as HTMLFormElement);
   void withButtonFeedback(orderSubmitButton, "Posting…", async () => {
     const side = String(form.get("side"));
-    const days = Number(String(form.get("days")));
+    const hours = Number(String(form.get("hours")));
     if (side !== "buy" && side !== "sell") throw new Error("Unknown order side");
-    if (!Number.isSafeInteger(days) || days < 1 || days > 30) {
-      throw new Error("Order lifetime must be 1–30 days");
+    // Two hours is the floor: the settlement plan needs the full long locktime
+    // plus its recovery grace to fit inside the order's own lifetime.
+    if (!Number.isSafeInteger(hours) || hours < 2 || hours > 720) {
+      throw new Error("Order lifetime must be 2–720 hours");
     }
     const input: PublishOrderInput = {
       side,
       amount: String(form.get("amount")),
-      price: humanPriceToPrice(String(form.get("fiatPrice")), QUOTE_DECIMALS),
-      expiresAt: Math.floor(Date.now() / 1000) + days * 86_400,
+      price: humanPriceToPrice(String(form.get("price")), QUOTE_DECIMALS),
+      expiresAt: Math.floor(Date.now() / 1000) + hours * 3_600,
       execution: "all_or_none"
     };
     const publication = await zwap.publishOrder(input);

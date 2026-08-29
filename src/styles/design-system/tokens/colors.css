@@ -1,0 +1,111 @@
+/* ============================================================================
+   COLORS — Zenon Network of Momentum
+   Green-led tri-color on near-black. Defined for light (:root) and dark (.dark).
+   Build with the SEMANTIC tokens (--primary, --success…) — never raw hex — so
+   theme + future retunes flow through. Values mirror nom-ui src/style.css.
+   ============================================================================ */
+
+:root {
+  /* --- Brand tri-color (raw) --------------------------------------------- */
+  --zenon-green: #00d557; /* primary brand colour, derives --primary       */
+  --zenon-blue:  #0061eb; /* secondary accent, info / pending state         */
+  --zenon-pink:  #f91690; /* accent / highlight ONLY — never errors         */
+  --zenon-black: #151515; /* dark background base                            */
+
+  /* --- Plasma: the signature brand gradient (pulled from the logo) -------- */
+  --plasma: linear-gradient(180deg, hsl(120 86% 63%) 0%, hsl(145 100% 38%) 100%); /* @kind color */
+
+  /* --- Surfaces ----------------------------------------------------------- */
+  --background: hsl(0 0% 100%);
+  --foreground: hsl(0 0% 14.5%);
+  --card: hsl(0 0% 100%);
+  --card-foreground: hsl(0 0% 14.5%);
+  --popover: hsl(0 0% 100%);
+  --popover-foreground: hsl(0 0% 9%);
+
+  /* --- Semantic roles ----------------------------------------------------- */
+  --primary: hsl(145 100% 42%);
+  --primary-foreground: hsl(0 0% 8%);
+  --secondary: hsl(145 80% 35%);
+  --secondary-foreground: hsl(0 0% 8%);
+  --muted: hsl(0 0% 96%);
+  --muted-foreground: hsl(0 0% 45%);
+  --accent: hsl(145 100% 95%);
+  --accent-foreground: hsl(0 0% 8%);
+
+  /* Destructive is CRIMSON — distinct from brand pink (which is accent-only) */
+  --destructive: hsl(352 84% 53%);
+  --destructive-foreground: hsl(0 0% 100%);
+
+  /* --- On-chain status semantics ------------------------------------------ */
+  --success: hsl(145 63% 38%);
+  --success-foreground: hsl(0 0% 100%);
+  --warning: hsl(38 92% 50%);
+  --warning-foreground: hsl(0 0% 8%);
+  --info: hsl(214 100% 46%);
+  --info-foreground: hsl(0 0% 100%);
+
+  /* --- Lines, fields, focus ----------------------------------------------- */
+  --border: hsl(0 0% 90%);
+  --input: hsl(0 0% 90%);
+  --ring: hsl(145 100% 42%);
+
+  /* --- Chart ramp: green → teal → blue → violet → pink -------------------- */
+  --chart-1: #00d557;
+  --chart-2: #009ba1;
+  --chart-3: #0061eb;
+  --chart-4: #7c3bbd;
+  --chart-5: #f91690;
+
+  /* --- Sidebar (app chrome) ----------------------------------------------- */
+  --sidebar: hsl(0 0% 98.5%);
+  --sidebar-foreground: hsl(0 0% 14.5%);
+  --sidebar-border: hsl(0 0% 92%);
+  --sidebar-accent: hsl(0 0% 97%);
+  --sidebar-accent-foreground: hsl(0 0% 14.5%);
+}
+
+.dark {
+  --background: hsl(0 0% 8%);
+  --foreground: hsl(0 0% 98%);
+  --card: hsl(0 0% 10%);
+  --card-foreground: hsl(0 0% 98%);
+  /* Popover sits one step above card (14% vs 10%) so overlays read elevated. */
+  --popover: hsl(0 0% 14%);
+  --popover-foreground: hsl(0 0% 98%);
+
+  --primary: hsl(145 100% 42%);
+  --primary-foreground: hsl(0 0% 8%);
+  --secondary: hsl(145 80% 35%);
+  --secondary-foreground: hsl(0 0% 98%);
+  --muted: hsl(0 0% 15%);
+  --muted-foreground: hsl(0 0% 65%);
+  --accent: hsl(145 100% 15%);
+  --accent-foreground: hsl(0 0% 98%);
+
+  --destructive: hsl(352 86% 58%);
+  --destructive-foreground: hsl(0 0% 98%);
+
+  --success: hsl(145 63% 45%);
+  --success-foreground: hsl(0 0% 8%);
+  --warning: hsl(38 95% 55%);
+  --warning-foreground: hsl(0 0% 8%);
+  --info: hsl(214 100% 62%);
+  --info-foreground: hsl(0 0% 8%);
+
+  --border: hsl(0 0% 20%);
+  --input: hsl(0 0% 20%);
+  --ring: hsl(145 100% 42%);
+
+  --chart-1: #00d557;
+  --chart-2: #00b4bc;
+  --chart-3: #2e84ff;
+  --chart-4: #9a5bd6;
+  --chart-5: #f91690;
+
+  --sidebar: hsl(0 0% 7%);
+  --sidebar-foreground: hsl(0 0% 98%);
+  --sidebar-border: hsl(0 0% 18%);
+  --sidebar-accent: hsl(0 0% 13%);
+  --sidebar-accent-foreground: hsl(0 0% 98%);
+}

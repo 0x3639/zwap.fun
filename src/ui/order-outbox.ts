@@ -1,4 +1,6 @@
 import type { PublicOrderPublication } from "../api/order-api.js";
+import { truncateHash } from "./format.js";
+import { icon } from "./icons.js";
 
 function element<K extends keyof HTMLElementTagNameMap>(
   name: K,
@@ -7,10 +9,6 @@ function element<K extends keyof HTMLElementTagNameMap>(
   const node = document.createElement(name);
   if (text !== undefined) node.textContent = text;
   return node;
-}
-
-function shortId(value: string): string {
-  return `${value.slice(0, 8)}…${value.slice(-8)}`;
 }
 
 export function renderPendingPublications(
@@ -23,18 +21,26 @@ export function renderPendingPublications(
   root.hidden = publications.length === 0;
   if (publications.length === 0) return;
 
-  root.append(element("h3", "Pending relay publication"));
+  const heading = element("p", "Pending relay publication");
+  heading.className = "text-ledger";
+  root.append(heading);
   const list = element("ul");
   for (const publication of publications) {
     const acknowledgements = publication.receipts.filter((receipt) => receipt.ok).length;
     const item = element("li");
     const description = element(
       "span",
-      `${shortId(publication.orderId)} · ${acknowledgements}/${relayCount} relay acknowledgements` +
+      `${truncateHash(publication.orderId)} · ${acknowledgements}/${relayCount} relay acknowledgements` +
       (acknowledgements > 0 ? " · sufficient" : "")
     );
-    const button = element("button", "Retry same signed projection");
+    description.className = "font-mono tabular-nums";
+    const button = element("button");
     button.type = "button";
+    button.className = "nom-btn nom-btn--sm nom-btn--outline";
+    button.append(icon("refresh"));
+    const label = element("span", "Retry same signed projection");
+    label.dataset.buttonLabel = "true";
+    button.append(label);
     button.addEventListener("click", () => retry(publication.orderId, button));
     item.append(description, button);
     list.append(item);

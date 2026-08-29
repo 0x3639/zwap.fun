@@ -23,10 +23,12 @@ describe("manual testnet swap tutorial", () => {
   });
 
   it("links the human tutorial from the deployed static shell", () => {
-    // TODO(Task 13): the shell still links the upstream repository. Assert the
-    // guide path only, so the organisation rename is Task 13's to make.
-    expect(html).toContain("/docs/guides/manual-testnet-swap.md");
+    // The shell links this repository's own docs, relative to the deployed
+    // base — never the upstream project it was forked from.
+    expect(html).toContain('href="docs/guides/manual-testnet-swap.md"');
+    expect(html).toContain('href="docs/guides/agent-api.md"');
     expect(html).toContain("Manual test tutorial");
+    expect(html).not.toContain("github.com/brenorb");
     expect(html).toContain('id="order-settlement-hint"');
     expect(html).not.toContain('id="mint-form"');
   });
