@@ -23,7 +23,7 @@ directly from the browser. Cloudflare Pages is the primary deployment target;
    | Variable | Mainnet value |
    | --- | --- |
    | `NODE_VERSION` | `22` |
-   | `VITE_ZENON_NODE_WS` | `wss://node.zenon.network:35998` |
+   | `VITE_ZENON_NODE_WS` | `wss://my.hc1node.com:35998` (alternative: `wss://node.zenon.network:35998`) |
    | `VITE_ZENON_CHAIN_ID` | `1` |
    | `VITE_PLASMA_BOT_URL` | `https://plazma.bot` |
    | `VITE_NOSTR_RELAYS` | `wss://relay.primal.net,wss://nos.lol,wss://offchain.pub` |

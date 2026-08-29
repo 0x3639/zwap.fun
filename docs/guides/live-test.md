@@ -75,7 +75,7 @@ needs plasma or proof-of-work. Two options:
 
 ```bash
 ZENON_INTEGRATION=1 \
-ZENON_NODE_WS=wss://node.zenon.network:35998 \
+ZENON_NODE_WS=wss://my.hc1node.com:35998 \
 ZENON_CHAIN_ID=1 \
 ZWAP_MAKER_MNEMONIC="<24 words>" \
 ZWAP_TAKER_MNEMONIC="<24 words>" \
@@ -85,7 +85,8 @@ npx vitest run src/zenon/live.integration.test.ts
 `ZENON_NODE_WS` and `ZENON_CHAIN_ID` default to zwap's mainnet configuration
 (`.env.example`'s values) if omitted, but pass them explicitly if you are
 targeting a different node — for example the public testnet, chain `73404`,
-which has no plasma bot yet, so budget for PoW there.
+which has no plasma bot yet, so budget for PoW there. An alternative public
+node is available at `wss://node.zenon.network:35998`.
 
 What the run does, in order: connects to the node; checks both addresses'
 balances (fails fast if either is short); generates one preimage/hash pair;

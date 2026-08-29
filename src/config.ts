@@ -31,7 +31,7 @@ function positiveInt(value: string | undefined, fallback: number, label: string)
 }
 
 export function loadConfig(env: Record<string, string | undefined>): ZwapConfig {
-  const nodeUrl = env.VITE_ZENON_NODE_WS ?? "wss://node.zenon.network:35998";
+  const nodeUrl = env.VITE_ZENON_NODE_WS ?? "wss://my.hc1node.com:35998";
   if (!/^wss?:\/\//.test(nodeUrl)) throw new Error("VITE_ZENON_NODE_WS must be a ws:// or wss:// URL");
   const chainId = positiveInt(env.VITE_ZENON_CHAIN_ID, 1, "Chain id (VITE_ZENON_CHAIN_ID)");
   const plasmaRaw = env.VITE_PLASMA_BOT_URL;

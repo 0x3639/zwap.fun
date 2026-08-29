@@ -12,6 +12,7 @@ Network of Momentum**. Both legs of every swap are Zenon ZTS tokens (ZNN, QSR,
 or any ZTS) settled through Zenon's native HTLC embedded contract.
 
 Target: **Zenon mainnet** (chain identifier `1`, node
+`wss://my.hc1node.com:35998`, with an alternative public node at
 `wss://node.zenon.network:35998`), tested with small real amounts, because the
 public testnet (chain `73404`, node `172.245.236.40`, HTTP `:35997`, WS
 `:35998`) has no plasma bot or faucet yet. The testnet remains a supported
@@ -119,7 +120,8 @@ Details:
 
 ```
 # mainnet (default, .env.example)
-VITE_ZENON_NODE_WS=wss://node.zenon.network:35998
+VITE_ZENON_NODE_WS=wss://my.hc1node.com:35998
+# alternative public node: wss://node.zenon.network:35998
 VITE_ZENON_CHAIN_ID=1
 VITE_PLASMA_BOT_URL=https://plazma.bot
 VITE_NOSTR_RELAYS=wss://relay.primal.net,wss://nos.lol,wss://offchain.pub

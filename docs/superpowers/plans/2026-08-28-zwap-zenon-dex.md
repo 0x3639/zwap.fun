@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Default network is Zenon **mainnet**: `VITE_ZENON_NODE_WS=wss://node.zenon.network:35998`, `VITE_ZENON_CHAIN_ID=1`. Testnet alternate: `ws://172.245.236.40:35998`, chain `73404`. Chain id is verified on connect and bound into every trade.
+- Default network is Zenon **mainnet**: `VITE_ZENON_NODE_WS=wss://my.hc1node.com:35998`, `VITE_ZENON_CHAIN_ID=1`. Testnet alternate: `ws://172.245.236.40:35998`, chain `73404`. Alternative public node: `wss://node.zenon.network:35998`. Chain id is verified on connect and bound into every trade.
 - Never log, render, persist unencrypted, or put in fixtures: mnemonics, private keys, unreleased preimages. Tests use `KeyStore.newRandom()` or fixed throwaway mnemonics clearly labelled as such.
 - Every Zenon action is an account block: sends from one address are **strictly sequential** (frontier-based autofill). PoW/plasma is decided by the node inside `zenon.send`.
 - `Hash.parse` takes bare 64-hex; the ABI layer wants `0x`-prefixed hex; `block.data` from the SDK is a `Buffer`. Convert at the `zenon/sdk-node` boundary only — everything above it uses bare lowercase hex strings.
@@ -125,7 +125,7 @@ import { loadConfig, networkName } from "./config.js";
 describe("loadConfig", () => {
   it("applies mainnet defaults", () => {
     const config = loadConfig({});
-    expect(config.nodeUrl).toBe("wss://node.zenon.network:35998");
+    expect(config.nodeUrl).toBe("wss://my.hc1node.com:35998");
     expect(config.chainId).toBe(1);
     expect(config.plasmaBotUrl).toBe("https://plazma.bot");
     expect(config.network).toBe("zenon-mainnet");
@@ -196,7 +196,7 @@ function positiveInt(value: string | undefined, fallback: number, label: string)
 }
 
 export function loadConfig(env: Record<string, string | undefined>): ZwapConfig {
-  const nodeUrl = env.VITE_ZENON_NODE_WS ?? "wss://node.zenon.network:35998";
+  const nodeUrl = env.VITE_ZENON_NODE_WS ?? "wss://my.hc1node.com:35998";
   if (!/^wss?:\/\//.test(nodeUrl)) throw new Error("VITE_ZENON_NODE_WS must be a ws:// or wss:// URL");
   const chainId = positiveInt(env.VITE_ZENON_CHAIN_ID, 1, "Chain id (VITE_ZENON_CHAIN_ID)");
   const plasmaRaw = env.VITE_PLASMA_BOT_URL;
@@ -231,7 +231,8 @@ Run: `npx vitest run src/config.test.ts` — Expected: PASS.
 
 `.env.example`:
 ```
-VITE_ZENON_NODE_WS=wss://node.zenon.network:35998
+VITE_ZENON_NODE_WS=wss://my.hc1node.com:35998
+# alternative public node: wss://node.zenon.network:35998
 VITE_ZENON_CHAIN_ID=1
 VITE_PLASMA_BOT_URL=https://plazma.bot
 VITE_NOSTR_RELAYS=wss://relay.primal.net,wss://nos.lol,wss://offchain.pub
@@ -2140,7 +2141,7 @@ const api = new ZwapApi({ keystore, node, config, createAccount: (keyPair) => ne
 - `account-actions.ts`: `renderAccountActions(root: HTMLElement, state: ZwapState, handlers: { onCreate; onImport(mnemonic); onReceive; onFuse(tier); onReveal; onCopyAddress }): void`.
 - `theme.ts`: `applyTheme(root: HTMLElement): void` — toggles `.dark` on `<html>` from `prefers-color-scheme` and persists an explicit choice in `localStorage["zwap.theme"]`.
 
-- [ ] **Step 1: Bring in the design system** — copy `tokens/*.css`, `components/components.css`, `styles.css` from the zenon-design-system repo (`/private/tmp/.../scratchpad/zds/design-system`, or clone `https://github.com/digitalSloth/zenon-design-system`) into `src/styles/design-system/`; add `assets/znn-logo.svg`, `assets/qsr-logo.svg` to `public/`. In `index.html` replace the `<link href="/src/styles.css">` with `/src/styles/design-system/styles.css` followed by `/src/styles.css`. Add `https://fonts.googleapis.com` and `https://fonts.gstatic.com` to the CSP `style-src`/`font-src`, the Zenon node host to `connect-src` (`wss://node.zenon.network:35998 ws://172.245.236.40:35998`), `https://plazma.bot` to `connect-src`, `blob:` to `worker-src`, and `'wasm-unsafe-eval'` to `script-src`; remove the testnut hosts.
+- [ ] **Step 1: Bring in the design system** — copy `tokens/*.css`, `components/components.css`, `styles.css` from the zenon-design-system repo (`/private/tmp/.../scratchpad/zds/design-system`, or clone `https://github.com/digitalSloth/zenon-design-system`) into `src/styles/design-system/`; add `assets/znn-logo.svg`, `assets/qsr-logo.svg` to `public/`. In `index.html` replace the `<link href="/src/styles.css">` with `/src/styles/design-system/styles.css` followed by `/src/styles.css`. Add `https://fonts.googleapis.com` and `https://fonts.gstatic.com` to the CSP `style-src`/`font-src`, the Zenon node hosts to `connect-src` (`wss://my.hc1node.com:35998 wss://node.zenon.network:35998 ws://172.245.236.40:35998`), `https://plazma.bot` to `connect-src`, `blob:` to `worker-src`, and `'wasm-unsafe-eval'` to `script-src`; remove the testnut hosts.
 
 - [ ] **Step 2: Rewrite `src/styles.css`** as app-layout-only rules using tokens (`var(--background)`, `var(--card)`, `var(--border)`, `var(--radius-xl)`, `var(--shadow-sm)`, `var(--font-mono)`, `.text-ledger` eyebrows). Remove every raw hex and the Georgia/Courier stacks. Fix the undefined `--muted` bug by using `var(--muted-foreground)`.
 

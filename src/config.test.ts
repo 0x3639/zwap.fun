@@ -4,7 +4,7 @@ import { loadConfig, networkName } from "./config.js";
 describe("loadConfig", () => {
   it("applies mainnet defaults", () => {
     const config = loadConfig({});
-    expect(config.nodeUrl).toBe("wss://node.zenon.network:35998");
+    expect(config.nodeUrl).toBe("wss://my.hc1node.com:35998");
     expect(config.chainId).toBe(1);
     expect(config.plasmaBotUrl).toBe("https://plazma.bot");
     expect(config.network).toBe("zenon-mainnet");

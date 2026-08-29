@@ -6,7 +6,7 @@ FROM node:22-alpine AS build
 # Mainnet defaults. Override at build time (`docker build --build-arg
 # VITE_ZENON_CHAIN_ID=73404 ...`, or Coolify's build-arg fields) for a
 # testnet image — see .env.testnet for the testnet values.
-ARG VITE_ZENON_NODE_WS=wss://node.zenon.network:35998
+ARG VITE_ZENON_NODE_WS=wss://my.hc1node.com:35998
 ARG VITE_ZENON_CHAIN_ID=1
 ARG VITE_PLASMA_BOT_URL=https://plazma.bot
 ARG VITE_NOSTR_RELAYS=wss://relay.primal.net,wss://nos.lol,wss://offchain.pub
