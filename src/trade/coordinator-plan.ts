@@ -54,7 +54,16 @@ function makerOffersBase(session: TradeSession): boolean {
   return session.orderSide !== "buy";
 }
 
-function slotLeg(session: TradeSession, slot: "base" | "quote"): "base" | "quote" {
+/**
+ * Maps the protocol's two lock slots onto the actual market legs.
+ *
+ * The choreography always calls the maker's offered lock the "base" slot and
+ * the taker's payment lock the "quote" slot. On a buy-side order the maker
+ * offers quote and receives base, so the two are swapped: every read of
+ * `session.privateState.legs` / `session.evidence.legs` from a slot-named
+ * action must go through here first.
+ */
+export function slotLeg(session: TradeSession, slot: "base" | "quote"): "base" | "quote" {
   if (slot === "base") return makerOffersBase(session) ? "base" : "quote";
   return makerOffersBase(session) ? "quote" : "base";
 }
@@ -132,6 +141,12 @@ function terminal(session: TradeSession): boolean {
   return false;
 }
 
+/**
+ * `leg` here is a protocol *slot*, not a market leg: `slotLeg` resolves it to
+ * the market leg that actually funds it, which is the flipped one on a
+ * buy-side order. Only `expirationTime` stays slot-indexed - the long locktime
+ * always belongs to the maker's offered lock, whichever market leg that is.
+ */
 function lockReady(session: TradeSession, leg: "base" | "quote"): boolean {
   const actualLeg = slotLeg(session, leg);
   const privateLeg = session.privateState.legs[actualLeg];

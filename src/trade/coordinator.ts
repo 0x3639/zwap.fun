@@ -1,5 +1,6 @@
 import {
   nextCoordinatorAction,
+  slotLeg,
   type CoordinatorAction
 } from "./coordinator-plan.js";
 import {
@@ -210,7 +211,7 @@ function externalArtifact(
       };
     case "observe_base":
     case "observe_quote": {
-      const leg = action.kind === "observe_base" ? "base" : "quote";
+      const leg = slotLeg(session, action.kind === "observe_base" ? "base" : "quote");
       const privateLeg = session.privateState.legs[leg];
       const evidence = session.evidence.legs[leg];
       if (
@@ -230,7 +231,7 @@ function externalArtifact(
     case "prepare_quote_claim":
     case "prepare_base_refund":
     case "prepare_quote_refund": {
-      const leg = action.kind.includes("base") ? "base" : "quote";
+      const leg = slotLeg(session, action.kind.includes("base") ? "base" : "quote");
       const privateLeg = session.privateState.legs[leg];
       const expected = privateLeg.expected;
       if (

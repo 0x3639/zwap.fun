@@ -423,4 +423,67 @@ describe("durable trade coordinator shell", () => {
       fingerprint: expect.stringMatching(/^prepare_base_lock:/)
     }));
   });
+  /**
+   * The protocol's "base" slot is the maker's offered leg. On a buy-side order
+   * that leg is the market *quote* leg, and the effects apply `slotLeg` to get
+   * there. The pre-effect checkpoint has to look at the same leg or it
+   * validates - and fingerprints - the wrong half of the swap.
+   */
+  function settlingBuySession(): TradeSession {
+    const current = session();
+    current.orderSide = "buy";
+    current.privateState.transcript.choreography.phase = "awaiting_settlement_ack";
+    // Market base leg = protocol quote slot on a buy: already claimed.
+    current.evidence.legs.base.htlcState = "UNLOCKED";
+    current.evidence.legs.base.observedAt = ANCHOR + 10;
+    current.evidence.legs.base.spendCommitment = "ee".repeat(32);
+    current.privateState.legs.base.observations = [{
+      observedAt: ANCHOR + 10,
+      state: "UNLOCKED",
+      witnessCommitment: "ee".repeat(32)
+    }];
+    // Market quote leg = protocol base slot on a buy: locked, still to observe.
+    current.privateState.legs.quote.htlcId = "77".repeat(32);
+    current.evidence.legs.quote.htlcId = "77".repeat(32);
+    current.evidence.legs.quote.htlcState = "LOCKED";
+    return current;
+  }
+
+  it("checkpoints observe_base against the flipped leg of a buy-side session", async () => {
+    const current = settlingBuySession();
+    const repository = new MemorySessionRepository(current);
+    const performExternal = vi.fn(async (input) => ({
+      ...clone(input.session),
+      revision: input.revision + 1,
+      updatedAt: input.now
+    }));
+    const coordinator = new TradeCoordinator({
+      repository,
+      effects: port({ classify: () => "external", performExternal }),
+      now: () => 1_800_000_100
+    });
+
+    await coordinator.advance(current.sessionId);
+
+    expect(performExternal).toHaveBeenCalledWith(expect.objectContaining({
+      action: { kind: "observe_base" }
+    }));
+  });
+
+  it("still rejects observe_base when the buy-side protocol base slot has no lock", async () => {
+    const current = settlingBuySession();
+    current.privateState.legs.quote.htlcId = null;
+    current.evidence.legs.quote.htlcId = null;
+    const repository = new MemorySessionRepository(current);
+    const performExternal = vi.fn();
+    const coordinator = new TradeCoordinator({
+      repository,
+      effects: port({ classify: () => "external", performExternal }),
+      now: () => 1_800_000_100
+    });
+
+    await expect(coordinator.advance(current.sessionId))
+      .rejects.toThrow(/observe_base requires a complete persisted pre-effect checkpoint/i);
+    expect(performExternal).not.toHaveBeenCalled();
+  });
 });
