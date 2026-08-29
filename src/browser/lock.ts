@@ -78,6 +78,26 @@ export async function withKeystoreLock<T>(
   );
 }
 
+/**
+ * Serializes the keystore's own check-then-write pairs (`create`, `import`).
+ *
+ * Deliberately a third name: the driver runner (`withKeystoreLock`) is
+ * re-acquired inside every `get`/`set`, so reusing it around a whole
+ * `create()` would deadlock, and the account lock is already held by the
+ * facade above.
+ */
+export async function withKeystoreWriteLock<T>(
+  profile: string,
+  action: () => Promise<T>,
+  locks: LockPort | undefined = hasNativeWebLocks() ? navigator.locks : undefined
+): Promise<T> {
+  return requestLock(
+    `zwap-keystore-${profile}-write`,
+    action,
+    locks
+  );
+}
+
 export async function withOrderOutboxLock<T>(
   profile: string,
   action: () => Promise<T>,

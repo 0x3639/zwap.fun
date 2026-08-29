@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { MemoryStorageDriver } from "../storage/driver.js";
 import { KeystoreRepository } from "../zenon/keystore-repository.js";
 import { composeKeystore } from "./keystore-compose.js";
-import { withAccountLock, withKeystoreLock } from "./lock.js";
+import { withAccountLock, withKeystoreLock, withKeystoreWriteLock } from "./lock.js";
 
 /** Resolves to "timed-out" rather than hanging the suite on a deadlock. */
 async function within<T>(
@@ -93,5 +93,47 @@ describe("keystore composition", () => {
   it("hands back a real KeystoreRepository", () => {
     expect(composeKeystore(new MemoryStorageDriver(), "maker"))
       .toBeInstanceOf(KeystoreRepository);
+  });
+  it("serializes racing creations with no account lock held at all", async () => {
+    // The account lock is the facade's doing; the keystore must not depend on
+    // it. Its own write lock has to be enough.
+    const keystore = composeKeystore(new MemoryStorageDriver(), "bare");
+
+    const settled = await within(2_000, () => Promise.allSettled([
+      keystore.create(),
+      keystore.create()
+    ]));
+
+    expect(settled).not.toBe("timed-out");
+    const results = settled as PromiseSettledResult<{ address: string }>[];
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(String(
+      (results.find((r) => r.status === "rejected") as PromiseRejectedResult).reason
+    )).toMatch(/already exists/);
+  }, 10_000);
+
+  it("keeps the keystore write lock distinct from the account and driver locks", async () => {
+    const order: string[] = [];
+    const port = {
+      request: async (
+        name: string,
+        _options: { mode: "exclusive" },
+        callback: () => Promise<unknown>
+      ) => {
+        order.push(name);
+        return callback();
+      }
+    };
+
+    await withAccountLock("maker", async () => undefined, port);
+    await withKeystoreLock("maker", async () => undefined, port);
+    await withKeystoreWriteLock("maker", async () => undefined, port);
+
+    expect(order).toEqual([
+      "zwap-account-maker-write",
+      "zwap-keystore-maker",
+      "zwap-keystore-maker-write"
+    ]);
+    expect(new Set(order).size).toBe(3);
   });
 });

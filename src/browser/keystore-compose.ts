@@ -1,4 +1,4 @@
-import { withKeystoreLock } from "./lock.js";
+import { withKeystoreLock, withKeystoreWriteLock } from "./lock.js";
 import type { StorageDriver } from "../storage/driver.js";
 import { KeystoreRepository } from "../zenon/keystore-repository.js";
 
@@ -11,6 +11,10 @@ import { KeystoreRepository } from "../zenon/keystore-repository.js";
  * facade wraps wallet mutations in the *account* lock, and reusing that here
  * would make `createWallet()` wait on the lock its own caller is holding.
  * Exclusive locks are not re-entrant, so that wait never ends.
+ *
+ * `create()`/`import()` get a third, cross-tab lock of their own so their
+ * check-then-write cannot interleave: the driver runner is re-acquired inside
+ * them, so it cannot be reused here either.
  */
 export function composeKeystore(
   driver: StorageDriver,
@@ -18,6 +22,7 @@ export function composeKeystore(
 ): KeystoreRepository {
   return new KeystoreRepository(
     driver,
-    (action) => withKeystoreLock(profile, action)
+    (action) => withKeystoreLock(profile, action),
+    (action) => withKeystoreWriteLock(profile, action)
   );
 }

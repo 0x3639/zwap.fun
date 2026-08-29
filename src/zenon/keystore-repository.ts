@@ -35,6 +35,17 @@ export function wipeKeyStore(keyStore: KeyStore): void {
   }
 }
 
+/** Serializes callers in arrival order within this page. */
+function queueRunner(): StorageExclusiveRunner {
+  let tail: Promise<unknown> = Promise.resolve();
+  return async <T>(action: () => Promise<T>): Promise<T> => {
+    const previous = tail.catch(() => undefined);
+    const current = previous.then(action);
+    tail = current.catch(() => undefined);
+    return current;
+  };
+}
+
 /**
  * The single self-custodial wallet this browser profile holds.
  *
@@ -46,11 +57,27 @@ export function wipeKeyStore(keyStore: KeyStore): void {
  */
 export class KeystoreRepository {
   private readonly storage: EncryptedStorageDriver;
+  private readonly runSerialized: StorageExclusiveRunner;
 
-  constructor(driver: StorageDriver, runExclusive?: StorageExclusiveRunner) {
+  /**
+   * @param runExclusive guards the encrypted namespace; re-entered on every
+   *   `get`/`set`.
+   * @param runSerialized guards a whole check-then-write (`create`, `import`)
+   *   so two racing calls cannot both observe an empty keystore and overwrite
+   *   each other. It must be a *different* lock from `runExclusive` - that one
+   *   is re-acquired underneath - and from any lock the caller already holds.
+   *   Defaults to an in-memory queue, which covers a single repository
+   *   instance but not two tabs.
+   */
+  constructor(
+    driver: StorageDriver,
+    runExclusive?: StorageExclusiveRunner,
+    runSerialized: StorageExclusiveRunner = queueRunner()
+  ) {
     this.storage = runExclusive === undefined
       ? new EncryptedStorageDriver(driver, NAMESPACE)
       : new EncryptedStorageDriver(driver, NAMESPACE, runExclusive);
+    this.runSerialized = runSerialized;
   }
 
   async exists(): Promise<boolean> {
@@ -59,14 +86,18 @@ export class KeystoreRepository {
 
   /** Generates a fresh 24-word wallet. Refuses to shadow an existing seed. */
   async create(): Promise<{ address: string }> {
-    await this.assertEmpty();
-    return this.persist(KeyStore.newRandom());
+    return this.runSerialized(async () => {
+      await this.assertEmpty();
+      return this.persist(KeyStore.newRandom());
+    });
   }
 
   /** Restores a wallet from user-supplied words after validating them. */
   async import(mnemonic: string): Promise<{ address: string }> {
-    await this.assertEmpty();
-    return this.persist(this.parse(mnemonic));
+    return this.runSerialized(async () => {
+      await this.assertEmpty();
+      return this.persist(this.parse(mnemonic));
+    });
   }
 
   /**

@@ -163,4 +163,56 @@ describe("KeystoreRepository", () => {
 
     expect(maximumDepth).toBe(1);
   });
+  it("lets only one of two concurrent create() calls win", async () => {
+    // `assertEmpty()` then `persist()` is a check-then-write: without the
+    // serializing runner both calls see an empty keystore and the second
+    // silently overwrites the first wallet's seed.
+    const repository = new KeystoreRepository(new MemoryStorageDriver());
+
+    const settled = await Promise.allSettled([
+      repository.create(),
+      repository.create()
+    ]);
+
+    expect(settled.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = settled.filter((result) => result.status === "rejected");
+    expect(rejected).toHaveLength(1);
+    expect(String((rejected[0] as PromiseRejectedResult).reason))
+      .toMatch(/already exists/);
+  });
+
+  it("lets only one of two concurrent import() calls win", async () => {
+    const repository = new KeystoreRepository(new MemoryStorageDriver());
+
+    const settled = await Promise.allSettled([
+      repository.import(MNEMONIC),
+      repository.import(MNEMONIC)
+    ]);
+
+    expect(settled.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(String(
+      (settled.find((result) => result.status === "rejected") as PromiseRejectedResult).reason
+    )).toMatch(/already exists/);
+  });
+
+  it("keeps the write runner outside the driver runner", async () => {
+    const seen: string[] = [];
+    const repository = new KeystoreRepository(
+      new MemoryStorageDriver(),
+      async (action) => {
+        seen.push("driver");
+        return action();
+      },
+      async (action) => {
+        seen.push("write");
+        return action();
+      }
+    );
+
+    await repository.create();
+
+    expect(seen[0]).toBe("write");
+    expect(seen.filter((entry) => entry === "write")).toHaveLength(1);
+    expect(seen).toContain("driver");
+  });
 });
