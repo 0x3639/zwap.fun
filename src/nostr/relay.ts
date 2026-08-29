@@ -3,12 +3,19 @@ import { SimplePool } from "nostr-tools/pool";
 
 import type { NostrEvent } from "../order/events.js";
 
+/**
+ * A developer mesh node. `normalizePublicRelay` still accepts it, so a local
+ * run can opt in through `RelayClientOptions.relays` - but it is deliberately
+ * not in `PUBLIC_RELAYS`: shipping it as a default makes every browser attempt
+ * a plaintext ws:// connection to the user's own machine, which fails on any
+ * https page and leaks the app's traffic pattern to whatever answers on 4870.
+ */
 export const LOCAL_MESH_RELAY = "ws://localhost:4870";
+
 export const PUBLIC_RELAYS = [
   "wss://nos.lol",
   "wss://relay.primal.net",
-  "wss://offchain.pub",
-  LOCAL_MESH_RELAY
+  "wss://offchain.pub"
 ] as const;
 
 export interface RelayReceipt {

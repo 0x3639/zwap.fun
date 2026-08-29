@@ -43,8 +43,9 @@ class FakePool implements RelayPoolPort {
 }
 
 describe("relay client", () => {
-  it("includes and accepts the local mesh relay", () => {
-    expect(PUBLIC_RELAYS).toContain(LOCAL_MESH_RELAY);
+  it("keeps the local mesh relay opt-in but still accepts it", () => {
+    expect(PUBLIC_RELAYS).not.toContain(LOCAL_MESH_RELAY);
+    expect(PUBLIC_RELAYS.every((relay) => relay.startsWith("wss://"))).toBe(true);
 
     const client = new RelayClient({
       relays: [`${LOCAL_MESH_RELAY}/`],

@@ -576,7 +576,8 @@ async function refreshPendingPublications(): Promise<void> {
   renderPendingPublications(
     pendingPublications,
     await orderApi.getPendingOrderPublications(),
-    retryPendingPublication
+    retryPendingPublication,
+    relayClient.relays.length
   );
   if (blockedReason !== undefined) disableRetryActions();
 }

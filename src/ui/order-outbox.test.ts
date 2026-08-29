@@ -19,10 +19,10 @@ describe("pending order publications", () => {
     const root = document.createElement("section");
     const retry = vi.fn();
 
-    renderPendingPublications(root, [pending], retry);
+    renderPendingPublications(root, [pending], retry, 2);
 
     expect(root.hidden).toBe(false);
-    expect(root.textContent).toContain("1/3 relay acknowledgements · sufficient");
+    expect(root.textContent).toContain("1/2 relay acknowledgements · sufficient");
     expect(root.textContent).toContain("11111111…11111111");
     expect(root.textContent).not.toContain(pending.makerPubkey);
     root.querySelector("button")?.click();
@@ -31,8 +31,16 @@ describe("pending order publications", () => {
 
   it("hides the outbox when no retry is pending", () => {
     const root = document.createElement("section");
-    renderPendingPublications(root, [], () => undefined);
+    renderPendingPublications(root, [], () => undefined, 3);
     expect(root.hidden).toBe(true);
     expect(root.textContent).toBe("");
+  });
+  it("counts the relays the caller actually attempted, not a fixed three", () => {
+    const root = document.createElement("section");
+
+    renderPendingPublications(root, [pending], vi.fn(), 5);
+
+    expect(root.textContent).toContain("1/5 relay acknowledgements");
+    expect(root.textContent).not.toContain("1/3");
   });
 });

@@ -15,7 +15,8 @@ export function renderPendingPublications(
   root: HTMLElement,
   publications: PublicOrderPublication[],
   retry: (orderId: string, button: HTMLButtonElement) => void,
-  relayCount = 3
+  /** How many relays were actually attempted - never a guess. */
+  relayCount: number
 ): void {
   root.replaceChildren();
   root.hidden = publications.length === 0;
