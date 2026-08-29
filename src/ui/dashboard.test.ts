@@ -20,6 +20,7 @@ function state(overrides: Partial<ZwapState> = {}): ZwapState {
     plasma: { currentPlasma: 21000, maxPlasma: 21000, qsrFused: "50000000000" },
     powRequired: false,
     plasmaBotAvailable: true,
+    walletSource: "keystore",
     ...overrides
   };
 }

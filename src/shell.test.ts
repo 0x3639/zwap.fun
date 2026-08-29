@@ -20,7 +20,8 @@ const state: ZwapState = {
   unreceived: 1,
   plasma: { currentPlasma: 21000, maxPlasma: 21000, qsrFused: "1" },
   powRequired: false,
-  plasmaBotAvailable: true
+  plasmaBotAvailable: true,
+  walletSource: "keystore"
 };
 
 describe("the deployed shell and the renderers agree", () => {

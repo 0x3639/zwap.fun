@@ -32,6 +32,7 @@ function state(overrides: Partial<ZwapState> = {}): ZwapState {
     plasma: { currentPlasma: 21000, maxPlasma: 21000, qsrFused: "80000000000" },
     powRequired: false,
     plasmaBotAvailable: true,
+    walletSource: "keystore",
     ...overrides
   };
 }
@@ -236,5 +237,78 @@ describe("account panel with a wallet", () => {
     renderAccountActions(root, state({ powRequired: true, unreceived: 2 }), handlers());
 
     expect(root.textContent ?? "").not.toMatch(/\p{Extended_Pictographic}/u);
+  });
+});
+
+describe("account panel with a browser-extension wallet", () => {
+  const extension = { injectedProvider: { name: "Syrius Extension" } };
+
+  it("stays keystore-only when no extension announced itself", () => {
+    const root = document.createElement("section");
+
+    renderAccountActions(root, state(), handlers());
+
+    expect(root.querySelector("[data-account-connect]")).toBeNull();
+    expect(root.querySelector("[data-account-extension]")).toBeNull();
+  });
+
+  it("offers an outline connect action naming the detected extension", () => {
+    const root = document.createElement("section");
+    const onConnectInjected = vi.fn();
+
+    renderAccountActions(
+      root,
+      state({ address: null, balances: [], plasma: null }),
+      handlers({ ...extension, onConnectInjected })
+    );
+
+    const connect = root.querySelector<HTMLButtonElement>("[data-account-connect]");
+    expect(connect?.textContent).toContain("Connect wallet");
+    expect(connect?.className).toContain("nom-btn--outline");
+    // Creating a local wallet stays the one plasma-filled action.
+    expect(root.querySelectorAll(".nom-btn--primary")).toHaveLength(1);
+
+    const badge = root.querySelector<HTMLElement>("[data-account-extension]");
+    expect(badge?.className).toContain("nom-badge--info");
+    expect(badge?.textContent).toContain("extension");
+    expect(badge?.textContent).toContain("Syrius Extension");
+
+    connect?.click();
+    expect(onConnectInjected).toHaveBeenCalledWith(expect.any(HTMLButtonElement));
+  });
+
+  it("still offers the extension beside an existing keystore wallet", () => {
+    const root = document.createElement("section");
+
+    renderAccountActions(root, state(), handlers(extension));
+
+    expect(root.querySelector("[data-account-connect]")).not.toBeNull();
+    expect(root.querySelector("[data-account-reveal]")).not.toBeNull();
+  });
+
+  it("renders the extension address and hides the keystore escape hatches once connected", () => {
+    const root = document.createElement("section");
+
+    renderAccountActions(root, state({ walletSource: "injected" }), handlers(extension));
+
+    expect(root.querySelector<HTMLElement>("[data-account-address]")?.title).toBe(ADDRESS);
+    expect(root.querySelector("[data-account-extension]")?.textContent)
+      .toContain("Syrius Extension");
+    expect(root.querySelector("[data-account-connect]")).toBeNull();
+    expect(root.querySelector("[data-account-reveal]")).toBeNull();
+    expect(root.querySelector("[data-account-receive]")).not.toBeNull();
+  });
+
+  it("never offers wallet creation or seed import to a connected extension", () => {
+    const root = document.createElement("section");
+
+    renderAccountActions(
+      root,
+      state({ walletSource: "injected", address: null }),
+      handlers(extension)
+    );
+
+    expect(root.querySelector("[data-account-create]")).toBeNull();
+    expect(root.querySelector("[data-account-import]")).toBeNull();
   });
 });

@@ -64,7 +64,8 @@ describe("ZwapApi", () => {
       unreceived: 0,
       plasma: null,
       powRequired: false,
-      plasmaBotAvailable: true
+      plasmaBotAvailable: true,
+      walletSource: "keystore"
     });
     expect(api.account()).toBeNull();
   });

@@ -52,6 +52,13 @@ describe("loadConfig", () => {
     }).longLockSeconds).toBe(2400);
   });
 
+  it("keeps browser-extension wallets off unless the flag is exactly 1", () => {
+    expect(loadConfig({}).injectedWallet).toBe(false);
+    expect(loadConfig({ VITE_INJECTED_WALLET: "" }).injectedWallet).toBe(false);
+    expect(loadConfig({ VITE_INJECTED_WALLET: "true" }).injectedWallet).toBe(false);
+    expect(loadConfig({ VITE_INJECTED_WALLET: "1" }).injectedWallet).toBe(true);
+  });
+
   it("names networks", () => {
     expect(networkName(1)).toBe("zenon-mainnet");
     expect(networkName(73404)).toBe("zenon-testnet-73404");

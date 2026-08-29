@@ -25,6 +25,12 @@ export interface ZwapState {
   plasma: PlasmaView | null;
   powRequired: boolean;
   plasmaBotAvailable: boolean;
+  /**
+   * Which wallet signs for this address. `ZwapApi` only ever produces
+   * `"keystore"`; the composition root substitutes an injected-provider
+   * snapshot when a browser-extension wallet is connected.
+   */
+  walletSource: "keystore" | "injected";
 }
 
 /** The unlocked account, or `null` until a keystore exists in this profile. */
@@ -96,7 +102,8 @@ export class ZwapApi implements ZenonPort {
     const empty = {
       network: this.config.network,
       chainId: this.config.chainId,
-      plasmaBotAvailable: this.config.plasmaBotUrl !== null
+      plasmaBotAvailable: this.config.plasmaBotUrl !== null,
+      walletSource: "keystore" as const
     };
     if (account === null) {
       return {

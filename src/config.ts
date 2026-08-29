@@ -11,6 +11,8 @@ export interface ZwapConfig {
   /** How many account-block pages a chain observation scans back. */
   htlcScanPages: number;
   htlcPageSize: number;
+  /** Offer a browser-extension wallet instead of the in-page keystore. */
+  injectedWallet: boolean;
   network: string;
 }
 
@@ -49,6 +51,9 @@ export function loadConfig(env: Record<string, string | undefined>): ZwapConfig 
   }
   const htlcScanPages = positiveInt(env.VITE_HTLC_SCAN_PAGES, 3, "HTLC scan pages");
   const htlcPageSize = positiveInt(env.VITE_HTLC_PAGE_SIZE, 100, "HTLC scan page size");
+  // Opt-in, and opt-in by exact value: a half-set env var must leave the
+  // self-custodial keystore in charge rather than half-enable another wallet.
+  const injectedWallet = env.VITE_INJECTED_WALLET === "1";
   return {
     nodeUrl,
     chainId,
@@ -59,6 +64,7 @@ export function loadConfig(env: Record<string, string | undefined>): ZwapConfig 
     longLockSeconds,
     htlcScanPages,
     htlcPageSize,
+    injectedWallet,
     network: networkName(chainId)
   };
 }

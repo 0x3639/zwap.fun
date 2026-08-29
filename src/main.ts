@@ -33,11 +33,19 @@ import { RelayClient } from "./nostr/relay.js";
 import { OrderOutboxRepository } from "./storage/order-outbox.js";
 import { IndexedDbStorageDriver } from "./storage/driver.js";
 import { ZenonAccount } from "./zenon/account.js";
+import {
+  detectInjectedProvider,
+  InjectedZenonSigner,
+  type DetectedProvider
+} from "./zenon/injected-signer.js";
 import { KeystoreSigner } from "./zenon/keystore-signer.js";
 import type { PlasmaTier } from "./zenon/plasma-bot.js";
 import { ChainMismatchError, SdkZenonNode } from "./zenon/sdk-node.js";
-import { QSR_ZTS, ZNN_ZTS } from "./zenon/types.js";
-import { renderAccountActions } from "./ui/account-actions.js";
+import { QSR_ZTS, ZNN_ZTS, type ZenonSigner } from "./zenon/types.js";
+import {
+  renderAccountActions,
+  type AccountActionHandlers
+} from "./ui/account-actions.js";
 import { renderDashboard, renderWalletSummary } from "./ui/dashboard.js";
 import { formatTokenAmount } from "./ui/format.js";
 import {
@@ -217,6 +225,16 @@ const orderApi = new OrderApi(
  */
 let walletSigner: KeystoreSigner | undefined;
 let walletApi: ZwapApi | undefined;
+/**
+ * The browser-extension wallet, when `VITE_INJECTED_WALLET=1` and one
+ * announced itself. `injectedSigner` is set only after the user connects; from
+ * that point it, and not the keystore, is the page's signer — zwap holds no
+ * key for this address at all.
+ */
+let injectedWallet: DetectedProvider | null = null;
+let injectedSigner: InjectedZenonSigner | undefined;
+let injectedAccount: ZenonAccount | undefined;
+let connectInjectedWallet: (() => Promise<void>) | undefined;
 let createTradeRuntime: (() => Promise<BrowserTradeRuntime>) | undefined;
 let resetTradeRuntime: (() => void) | undefined;
 let powWorkerFailure: string | undefined;
@@ -242,13 +260,34 @@ try {
   };
   const api = new ZwapApi({ keystore, node, config, createAccount });
   walletApi = api;
+  if (config.injectedWallet) {
+    // Discovery is a 300 ms race at worst and resolves `null` on a page with
+    // no extension, which leaves the keystore in charge unchanged.
+    injectedWallet = await detectInjectedProvider(window).catch(() => null);
+  }
+  connectInjectedWallet = async () => {
+    const detected = injectedWallet;
+    if (detected === null) throw new Error("No browser-extension wallet is available");
+    const signer = await InjectedZenonSigner.connect(detected.provider, config.chainId);
+    injectedSigner = signer;
+    injectedAccount = new ZenonAccount({ node, signer });
+    // Any runtime built over the keystore signer is now signing for the wrong
+    // address; drop it so the next trade action rebuilds over the extension.
+    await teardownWallet();
+    // The account the extension signs with is the whole identity of this
+    // session. When the user switches it, restart rather than half-migrate.
+    signer.onAccountsChanged(() => window.location.reload());
+  };
   let runtimePromise: Promise<BrowserTradeRuntime> | undefined;
   resetTradeRuntime = () => { runtimePromise = undefined; };
   createTradeRuntime = async () => {
-    // `createAccount` runs on the first wallet read, which is what publishes
-    // the shared signer. Force it before the runtime asks for one.
-    if (walletSigner === undefined) await api.getState();
-    const signer = walletSigner;
+    let signer: ZenonSigner | undefined = injectedSigner;
+    if (signer === undefined) {
+      // `createAccount` runs on the first wallet read, which is what publishes
+      // the shared signer. Force it before the runtime asks for one.
+      if (walletSigner === undefined) await api.getState();
+      signer = walletSigner;
+    }
     if (signer === undefined) {
       throw new Error("Create or import a wallet before trading");
     }
@@ -381,12 +420,37 @@ async function refresh(state?: ZwapState): Promise<ZwapState> {
     accountActions.textContent = unavailable();
     throw new Error(unavailable());
   }
-  const next = state ?? await walletApi.getState();
+  const next = state ?? await walletState();
   tokens = tokenDirectory(next.balances);
   renderWalletSummary(walletSummary, next);
   renderDashboard(dashboard, next);
   renderAccountActions(accountActions, next, accountHandlers);
   return next;
+}
+
+/**
+ * The wallet snapshot the whole page paints from. While a browser-extension
+ * wallet is connected it describes that address, not the keystore's: the
+ * extension is the signer, and a panel showing the local address would be
+ * showing balances no button on this page can move.
+ */
+async function walletState(): Promise<ZwapState> {
+  const account = injectedAccount;
+  if (account === undefined) return requireWallet().getState();
+  const snapshot = await account.snapshot();
+  return {
+    address: snapshot.address,
+    balances: snapshot.balances,
+    unreceived: snapshot.unreceived,
+    plasma: snapshot.plasma,
+    // The extension decides plasma versus proof of work and says so in its own
+    // confirmation, so the page neither warns about PoW nor offers to fuse.
+    powRequired: false,
+    plasmaBotAvailable: false,
+    network: config.network,
+    chainId: config.chainId,
+    walletSource: "injected"
+  };
 }
 
 async function refreshOrderBook(): Promise<void> {
@@ -596,13 +660,20 @@ async function teardownWallet(): Promise<void> {
 }
 
 const zwap: ZwapBrowserFacade = {
-  getState: () => requireWallet().getState(),
+  getState: () => walletState(),
   createWallet: () => locked(() => requireWallet().createWallet()),
   importWallet: (mnemonic) => locked(() => requireWallet().importWallet(mnemonic)),
-  receivePending: () => locked(() => requireWallet().receivePending()),
+  receivePending: () => locked(async () => {
+    const account = injectedAccount;
+    if (account === undefined) return requireWallet().receivePending();
+    await account.receiveAll();
+    return walletState();
+  }),
   fusePlasma: (tier: PlasmaTier) => requireWallet().fusePlasma(tier),
   send: (toAddress, tokenStandard, amount) =>
-    locked(() => requireWallet().send(toAddress, tokenStandard, amount)),
+    locked(() => injectedAccount === undefined
+      ? requireWallet().send(toAddress, tokenStandard, amount)
+      : injectedAccount.send(toAddress, tokenStandard, amount)),
   // Reading and erasing the seed touch the keystore only, so they keep working
   // while the node is unreachable.
   revealMnemonic: (confirmation) => keystore.revealMnemonic(confirmation),
@@ -728,7 +799,18 @@ function revealSeed(button: HTMLButtonElement): void {
     .catch((error: unknown) => report(messageOf(error), true));
 }
 
-const accountHandlers = {
+/**
+ * Once the extension signs, this profile's seed is beside the point: hide the
+ * reveal and the erase so the custody panel cannot describe a wallet that is
+ * no longer the one in use.
+ */
+function hideKeystoreCustody(): void {
+  for (const id of ["backup", "clear-wallet"]) {
+    byId(id).hidden = true;
+  }
+}
+
+const accountHandlers: AccountActionHandlers = {
   onCreate: (button: HTMLButtonElement) => {
     void withButtonFeedback(button, "Creating…", () => zwap.createWallet())
       .then((state) => refresh(state))
@@ -763,6 +845,26 @@ const accountHandlers = {
   onCopyAddress: (address: string, button: HTMLButtonElement) => {
     void withButtonFeedback(button, "…", () => navigator.clipboard.writeText(address))
       .then(() => report("Address copied"))
+      .catch((error: unknown) => report(messageOf(error), true));
+  },
+  get injectedProvider(): { name: string } | null {
+    const detected = injectedWallet;
+    if (detected === null) return null;
+    return { name: detected.info?.name ?? "Browser extension" };
+  },
+  onConnectInjected: (button: HTMLButtonElement) => {
+    void withButtonFeedback(button, "Connecting…", async () => {
+      await connectInjectedWallet?.();
+      return refresh();
+    })
+      .then((state) => {
+        hideKeystoreCustody();
+        trace("Account", "Browser-extension wallet connected", [
+          { label: "wallet", value: accountHandlers.injectedProvider?.name ?? "extension" },
+          { label: "address", value: `${(state.address ?? "").slice(0, 8)}…` }
+        ]);
+        report("Signing through the browser-extension wallet");
+      })
       .catch((error: unknown) => report(messageOf(error), true));
   }
 };
