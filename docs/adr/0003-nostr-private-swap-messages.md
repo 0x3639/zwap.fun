@@ -4,6 +4,17 @@
 - Date: 2026-07-23
 - Decision owners: Granola implementers
 
+> **Historical note.** This ADR predates zwap's Zenon port and documents
+> granola's original NIP-17 transport design for the still-current private
+> message layer (session/reservation binding, transcript hashing, kind
+> `10050` inbox discovery). The macro-level transport decision is unchanged,
+> but the schema example below uses the original `granola/dm/v1` naming and
+> the `cashu-testnet-v1` deployment string with mint/keyset fields
+> (`base_mint`, `base_keyset`, …). The live implementation carries
+> `chain_id`, `token_standard`, and HTLC ids instead — see
+> [ADR 0006](0006-zenon-htlc-settlement.md) for the settlement fields this
+> ADR's example does not reflect.
+
 ## Context
 
 Granola needs asynchronous private messages for reservation and atomic-settlement

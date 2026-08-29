@@ -1,76 +1,101 @@
-# ADR 0005: Integer cents-per-BTC pricing and truncated settlement
+# ADR 0005: Integer `price` — quote minor units per 10^8 base minor units
 
 ## Status
 
-Accepted for the testnet proof of concept.
+Accepted. Amends the field this ADR originally defined
+(`price_cents_per_btc`, SAT/USD-specific) to `price`, the general two-ZTS-leg
+field zwap uses today. The truncation rule and the reasoning below are
+unchanged; only the field name, unit, and worked examples moved from
+cents-per-BTC to Zenon minor units.
 
 ## Context
 
-The SAT/USD testnet protocol represented a limit price as a reduced rational
-number of quote cents per SAT. Publishing and matching therefore required GCD
-reduction, exposed implementation details such as `101/2000` in the interface,
-and rejected or changed SAT amounts whenever the quote contained a fractional
-cent.
+zwap trades two arbitrary Zenon ZTS tokens (by default ZNN and QSR, both with
+8 decimals) instead of SAT against a fiat-minor-unit mint quote. A limit price
+still has to be one canonical positive integer — no floating point, no GCD
+reduction, no numerator/denominator pair — but it can no longer be scoped to
+"cents per BTC," because neither leg of a ZTS/ZTS market is guaranteed to be
+BTC-shaped or fiat-shaped.
 
-The user-selected base amount is the economic intent. A quote mint can settle
-only whole cents, but that does not justify changing the number of SAT being
-sold.
+The user-selected base amount remains the economic intent. Truncation on the
+quote leg is still preferred to changing the base amount, for the same reason
+as before: a maker who asked to sell exactly `N` base minor units should sell
+exactly `N`, not a rounded neighbor.
 
 ## Decision
 
-Public order state and private trade terms carry one positive canonical decimal
-string:
+Public order state and private trade terms carry one positive canonical
+decimal integer string, `price`, defined as **quote minor units per 10^8 base
+minor units** — i.e. per one whole base token, regardless of the base token's
+own decimal count:
 
 ```json
-{ "price_cents_per_btc": "4950000" }
+{ "price": "350000000" }
 ```
-
-Granola is still a testnet proof of concept, so the protocol `v1` is rewritten in
-place. Public order projections, private messages, and the terms-hash domain all
-use the canonical integer field; there is no compatibility path for the mistaken
-rational representation.
 
 Settlement uses integer arithmetic only:
 
 ```text
-quote_cents = (base_sats * price_cents_per_btc) / 100_000_000
+quote_minor = (base_minor * price) / 100_000_000n
 ```
 
-For positive JavaScript `BigInt` values, `/` truncates the remainder. This is
-equivalent to Python `//` for these operands. The signed base amount is never
-rounded or replaced. A result of zero cents is rejected because no quote token
-can represent it.
+For positive JavaScript `BigInt` values, `/` truncates the remainder. A result
+of zero is rejected (`quoteAmountForSettlement` in `src/order/model.ts`
+throws) because no ZTS token can represent a zero-value leg.
 
-Examples:
+`10^8` is fixed in the formula regardless of the base token's actual decimal
+count: it mirrors "per whole token" the way `price_cents_per_btc` meant "per
+whole BTC" even though BTC amounts were carried in satoshis (also 8
+decimals). For ZNN and QSR, both 8-decimal tokens, `price` is directly "quote
+minor units per one ZNN," which is why `3.5` QSR per ZNN encodes as
+`350000000`.
 
-- `200 SAT` at `4_950_000 cents/BTC` settles `9 cents`;
-- `2_000 SAT` at `4_960_000 cents/BTC` settles `99 cents`;
-- `2_000 SAT` at `5_000_000 cents/BTC` settles `100 cents`.
+Human-facing amount and price fields are decimal strings (`"20"` ZNN, `"3.5"`
+QSR/ZNN) converted with exact bigint arithmetic — `humanAmountToMinor` for
+amounts (never rounds; a fraction finer than the token's decimals is rejected
+outright, since this is real-funds input, not a demo) and `humanPriceToPrice`
+for price (rounds to the nearest representable minor unit under
+`quoteDecimals`, half-up) — both in `src/order/human-price.ts`. The order form
+and `describeSettlement` (`src/ui/order-form.ts`) show the exact converted
+integers next to the human input before signing.
 
-Each partial fill applies the formula independently. Both parties bind the
-actual integer quote amount, exact base amount, and integer price into the
-encrypted trade terms before either party locks proofs.
+Examples (`quoteDecimals = 8`, ZNN/QSR):
+
+- `20` ZNN at `3.5` QSR/ZNN → `price = 350000000`, `amount = 2000000000`
+  (minor), settles `2000000000 * 350000000 / 100000000 = 7000000000` QSR minor
+  units = `70` QSR.
+- `1` ZNN at `10.5` QSR/ZNN → `price = 1050000000`, settles `10.5` QSR exactly.
+- A base amount and price whose truncated quote is zero minor units is
+  rejected at order-creation time.
+
+Each partial fill applies the formula independently against the exact fill
+amount. Both parties bind the actual integer quote amount, exact base amount,
+and integer `price` into the encrypted trade terms before either HTLC is
+created.
 
 ## Consequences
 
-- No binary floating point, GCD, numerator, denominator, or “exact ratio” is
+- No binary floating point, GCD, numerator, denominator, or "exact ratio" is
   part of pricing.
 - Order-book comparison is direct `BigInt` comparison.
-- The user's SAT quantity is never silently changed.
-- Any sub-cent remainder is discarded from the quote leg.
+- The maker's base quantity is never silently changed by the price
+  conversion.
+- Any sub-minor-unit remainder is discarded from the quote leg.
 - The realized rate can differ materially for very small orders, though the
   absolute difference is always less than one quote minor unit per fill.
-- Orders whose truncated quote is zero remain invalid because Cashu cannot
-  settle a zero-value quote leg.
+- Orders whose truncated quote is zero remain invalid because Zenon cannot
+  settle a zero-value HTLC leg.
 - Counterparties can deterministically recompute and validate the settlement
   amount using integer arithmetic.
-- This field is specific to the current SAT/fiat-minor-unit deployment. A
-  future multi-asset price format requires a separate protocol decision.
+- `price` is generic to any two-ZTS-token market; a market whose base token
+  has a decimal count other than 8 still divides by the fixed `10^8`, because
+  `price` is defined per whole base token, not per base minor unit.
 
 ## Executable vectors
 
-- `src/order/model.test.ts`: 200 SAT at 4,950,000 cents/BTC settles 9 cents.
-- `src/order/human-price.test.ts`: UI guidance preserves 200 SAT and displays
-  the 9-cent settlement.
-- `src/trade/model.test.ts`: session terms derive the same integer quote.
-- `src/trade/messages.test.ts`: encrypted terms reject any other quote amount.
+- `src/order/model.test.ts`: base/price pairs settle the expected truncated
+  quote amount, and a truncated-to-zero pair is rejected.
+- `src/order/human-price.test.ts`: human-entered amount and price round-trip
+  through the exact bigint conversions.
+- `src/order/funding.ts` / its tests: the funding check for a buy order uses
+  the same `quoteAmountForSettlement` formula the settlement plan will use.

@@ -3,23 +3,23 @@ import { describe, expect, it } from "vitest";
 import tutorial from "../docs/guides/manual-swap.md?raw";
 import html from "../index.html?raw";
 
-describe("manual testnet swap tutorial", () => {
+describe("manual swap tutorial", () => {
   it("keeps the complete shared-page happy-path recipe", () => {
-    expect(tutorial).toContain("?wallet=maker-tutorial");
-    expect(tutorial).toContain("?wallet=taker-tutorial");
-    expect(tutorial).toContain("Fund SAT");
-    expect(tutorial).toContain("Fund USD");
-    expect(tutorial).toContain("automatically registers and listens");
+    expect(tutorial).toContain("?wallet=maker");
+    expect(tutorial).toContain("?wallet=taker");
+    expect(tutorial).toContain("Create wallet");
+    expect(tutorial).toContain("Fuse plasma");
+    expect(tutorial).toContain("Receive pending");
+    expect(tutorial).toContain("automatically");
     expect(tutorial).not.toContain("Sync maker listener");
-    expect(tutorial).toContain("20 SAT");
-    expect(tutorial).toContain("50,000.00");
-    expect(tutorial).toContain("Retry same signed projection");
-    expect(tutorial).toContain("Take ask");
-    expect(tutorial).not.toContain("runUntilSettled");
-    expect(tutorial).not.toContain("Advance safely");
+    expect(tutorial).toContain("20 ZNN");
+    expect(tutorial).toContain("3.5 QSR/ZNN");
+    expect(tutorial).not.toContain("runUntilSettled(");
+    expect(tutorial).toContain("advanceTrade");
+    expect(tutorial).toContain("Filled");
     expect(tutorial).toContain("filled");
-    expect(tutorial).toContain("4-day");
-    expect(tutorial).toContain("7-day");
+    expect(tutorial).toContain("long locktime");
+    expect(tutorial).toContain("refund");
   });
 
   it("links the human tutorial from the deployed static shell", () => {

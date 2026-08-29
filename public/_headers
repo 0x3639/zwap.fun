@@ -1,0 +1,10 @@
+/index.html
+  Cache-Control: no-cache
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+/pow.wasm
+  Content-Type: application/wasm
+/pow.js
+  Content-Type: application/javascript

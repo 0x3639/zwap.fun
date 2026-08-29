@@ -3,6 +3,13 @@
 - Status: Accepted
 - Date: 2026-07-23
 
+> **Historical note.** This ADR predates zwap's Zenon port. The per-order
+> Nostr key rotation it describes is unchanged, but its references to "Cashu
+> wallet and refund keys" describe granola's original ecash settlement keys,
+> which no longer exist — settlement now signs Zenon account blocks through
+> `zenon/keystore-signer.ts`. See
+> [ADR 0006](0006-zenon-htlc-settlement.md) for the current settlement layer.
+
 ## Context
 
 An order projection is public and replaceable, so its author key is visible to

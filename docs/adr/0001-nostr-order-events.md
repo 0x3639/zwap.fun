@@ -3,6 +3,16 @@
 - Status: Accepted
 - Date: 2026-07-23
 
+> **Historical note.** This ADR predates zwap's Zenon port and documents
+> granola's original design for the still-current Nostr order-book layer
+> (kind `30078` addressable events, one signed projection per order). The
+> macro-level decision is unchanged, but the schema examples below use the
+> original `granola/order/v1` naming and the `d` tag `granola:order:v1:…`.
+> The live implementation uses schema `zwap/order/v1` and tag
+> `zwap:order:v1:<order-id>` (`src/order/events.ts`). See
+> [ADR 0006](0006-zenon-htlc-settlement.md) for the settlement layer this ADR
+> does not cover.
+
 ## Context
 
 Granola needs a public order book that is cheap to query and safe to consume
