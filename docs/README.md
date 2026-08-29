@@ -8,6 +8,7 @@
 ## Guides
 
 - [Manual swap walkthrough](guides/manual-swap.md)
+- [Gated live-chain integration test](guides/live-test.md)
 - [Browser agent API](guides/agent-api.md)
 - [Wallet notes](guides/wallet.md)
 - [Deploy to Cloudflare Pages](guides/deploy-cloudflare.md)

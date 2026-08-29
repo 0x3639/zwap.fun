@@ -74,6 +74,12 @@ a demonstrated swap end to end, including a refund drill. The
 methods, amounts, and the one method that can return bearer material
 (`revealMnemonic`).
 
+`npm test` runs 58+ files of unit and fake-node integration tests; it never
+touches a real node. A separate, real-funds
+[gated live-chain integration test](docs/guides/live-test.md)
+(`src/zenon/live.integration.test.ts`) is skipped unless `ZENON_INTEGRATION=1`
+is set — see that guide for how to fund two throwaway seeds and run it.
+
 Production builds use `npm run build` and write the static site to `dist/`.
 
 ## What the protocol treats as authoritative
