@@ -1,0 +1,13 @@
+/*
+  X-Frame-Options: DENY
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' wss://my.hc1node.com:35998 wss://node.zenon.network:35998 ws://172.245.236.40:35998 https://plazma.bot https://auth.nostr1.com https://nos.lol https://relay.primal.net https://offchain.pub wss://auth.nostr1.com wss://nos.lol wss://relay.primal.net wss://offchain.pub; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+/index.html
+  Cache-Control: no-cache
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+/pow.wasm
+  Content-Type: application/wasm
+/pow.js
+  Content-Type: application/javascript

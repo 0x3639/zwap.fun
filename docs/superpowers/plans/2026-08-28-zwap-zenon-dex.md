@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Default network is Zenon **mainnet**: `VITE_ZENON_NODE_WS=wss://node.zenon.network:35998`, `VITE_ZENON_CHAIN_ID=1`. Testnet alternate: `ws://172.245.236.40:35998`, chain `73404`. Chain id is verified on connect and bound into every trade.
+- Default network is Zenon **mainnet**: `VITE_ZENON_NODE_WS=wss://my.hc1node.com:35998`, `VITE_ZENON_CHAIN_ID=1`. Testnet alternate: `ws://172.245.236.40:35998`, chain `73404`. Alternative public node: `wss://node.zenon.network:35998`. Chain id is verified on connect and bound into every trade.
 - Never log, render, persist unencrypted, or put in fixtures: mnemonics, private keys, unreleased preimages. Tests use `KeyStore.newRandom()` or fixed throwaway mnemonics clearly labelled as such.
 - Every Zenon action is an account block: sends from one address are **strictly sequential** (frontier-based autofill). PoW/plasma is decided by the node inside `zenon.send`.
 - `Hash.parse` takes bare 64-hex; the ABI layer wants `0x`-prefixed hex; `block.data` from the SDK is a `Buffer`. Convert at the `zenon/sdk-node` boundary only — everything above it uses bare lowercase hex strings.
@@ -125,7 +125,7 @@ import { loadConfig, networkName } from "./config.js";
 describe("loadConfig", () => {
   it("applies mainnet defaults", () => {
     const config = loadConfig({});
-    expect(config.nodeUrl).toBe("wss://node.zenon.network:35998");
+    expect(config.nodeUrl).toBe("wss://my.hc1node.com:35998");
     expect(config.chainId).toBe(1);
     expect(config.plasmaBotUrl).toBe("https://plazma.bot");
     expect(config.network).toBe("zenon-mainnet");
@@ -196,7 +196,7 @@ function positiveInt(value: string | undefined, fallback: number, label: string)
 }
 
 export function loadConfig(env: Record<string, string | undefined>): ZwapConfig {
-  const nodeUrl = env.VITE_ZENON_NODE_WS ?? "wss://node.zenon.network:35998";
+  const nodeUrl = env.VITE_ZENON_NODE_WS ?? "wss://my.hc1node.com:35998";
   if (!/^wss?:\/\//.test(nodeUrl)) throw new Error("VITE_ZENON_NODE_WS must be a ws:// or wss:// URL");
   const chainId = positiveInt(env.VITE_ZENON_CHAIN_ID, 1, "Chain id (VITE_ZENON_CHAIN_ID)");
   const plasmaRaw = env.VITE_PLASMA_BOT_URL;
@@ -231,7 +231,8 @@ Run: `npx vitest run src/config.test.ts` — Expected: PASS.
 
 `.env.example`:
 ```
-VITE_ZENON_NODE_WS=wss://node.zenon.network:35998
+VITE_ZENON_NODE_WS=wss://my.hc1node.com:35998
+# alternative public node: wss://node.zenon.network:35998
 VITE_ZENON_CHAIN_ID=1
 VITE_PLASMA_BOT_URL=https://plazma.bot
 VITE_NOSTR_RELAYS=wss://relay.primal.net,wss://nos.lol,wss://offchain.pub
@@ -2140,7 +2141,7 @@ const api = new ZwapApi({ keystore, node, config, createAccount: (keyPair) => ne
 - `account-actions.ts`: `renderAccountActions(root: HTMLElement, state: ZwapState, handlers: { onCreate; onImport(mnemonic); onReceive; onFuse(tier); onReveal; onCopyAddress }): void`.
 - `theme.ts`: `applyTheme(root: HTMLElement): void` — toggles `.dark` on `<html>` from `prefers-color-scheme` and persists an explicit choice in `localStorage["zwap.theme"]`.
 
-- [ ] **Step 1: Bring in the design system** — copy `tokens/*.css`, `components/components.css`, `styles.css` from the zenon-design-system repo (`/private/tmp/.../scratchpad/zds/design-system`, or clone `https://github.com/digitalSloth/zenon-design-system`) into `src/styles/design-system/`; add `assets/znn-logo.svg`, `assets/qsr-logo.svg` to `public/`. In `index.html` replace the `<link href="/src/styles.css">` with `/src/styles/design-system/styles.css` followed by `/src/styles.css`. Add `https://fonts.googleapis.com` and `https://fonts.gstatic.com` to the CSP `style-src`/`font-src`, the Zenon node host to `connect-src` (`wss://node.zenon.network:35998 ws://172.245.236.40:35998`), `https://plazma.bot` to `connect-src`, `blob:` to `worker-src`, and `'wasm-unsafe-eval'` to `script-src`; remove the testnut hosts.
+- [ ] **Step 1: Bring in the design system** — copy `tokens/*.css`, `components/components.css`, `styles.css` from the zenon-design-system repo (`/private/tmp/.../scratchpad/zds/design-system`, or clone `https://github.com/digitalSloth/zenon-design-system`) into `src/styles/design-system/`; add `assets/znn-logo.svg`, `assets/qsr-logo.svg` to `public/`. In `index.html` replace the `<link href="/src/styles.css">` with `/src/styles/design-system/styles.css` followed by `/src/styles.css`. Add `https://fonts.googleapis.com` and `https://fonts.gstatic.com` to the CSP `style-src`/`font-src`, the Zenon node hosts to `connect-src` (`wss://my.hc1node.com:35998 wss://node.zenon.network:35998 ws://172.245.236.40:35998`), `https://plazma.bot` to `connect-src`, `blob:` to `worker-src`, and `'wasm-unsafe-eval'` to `script-src`; remove the testnut hosts.
 
 - [ ] **Step 2: Rewrite `src/styles.css`** as app-layout-only rules using tokens (`var(--background)`, `var(--card)`, `var(--border)`, `var(--radius-xl)`, `var(--shadow-sm)`, `var(--font-mono)`, `.text-ledger` eyebrows). Remove every raw hex and the Georgia/Courier stacks. Fix the undefined `--muted` bug by using `var(--muted-foreground)`.
 
@@ -2160,17 +2161,32 @@ const api = new ZwapApi({ keystore, node, config, createAccount: (keyPair) => ne
 
 **Files:**
 - Create: `docs/adr/0006-zenon-htlc-settlement.md`, `docs/guides/manual-swap.md`
-- Modify: `README.md`, `docs/README.md`, `docs/guides/agent-api.md`, `docs/guides/testnet-wallet.md` → rename `docs/guides/wallet.md`, `docs/protocol/security-invariants.md`, `AGENTS.md`, `.github/workflows/pages.yml`, `src/manual-tutorial.test.ts`
+- Modify: `README.md`, `docs/README.md`, `docs/guides/agent-api.md`, `docs/guides/testnet-wallet.md` → rename `docs/guides/wallet.md`, `docs/protocol/security-invariants.md`, `AGENTS.md`, `src/manual-tutorial.test.ts`
+- Create: `public/_headers`, `docs/guides/deploy-cloudflare.md`, `Dockerfile`, `deploy/nginx.conf`, `.dockerignore`, `docs/guides/deploy-docker.md`, `.github/workflows/ci.yml`
+- Delete: `.github/workflows/pages.yml`
 - Delete: `docs/adr/0004-cashu-htlc-settlement.md` (superseded — keep a one-line stub pointing at 0006), `docs/adr/0005-quote-minor-unit-settlement.md` content replaced with the `price` rule
 
 - [ ] **Step 1: ADR 0006** — decision: Zenon HTLC embedded contract as the settlement layer; hashType SHA-256 / keyMaxSize 32; maker locks base with the long locktime, taker locks quote with the short one; preimage learned from the on-chain Unlock block (scan of `hashLocked` address account chain, `scanPages × pageSize`); refund = `Reclaim` after expiry + guard; plasma/PoW requirement and `plasma_unavailable` retry semantics; trust boundary: the node you connect to is your view of the chain (recommend running your own node for real volume); no list-HTLC RPC, hence ids travel in DMs and are re-verified.
 - [ ] **Step 2: `manual-swap.md`** — two browsers (`?wallet=maker`, `?wallet=taker`), fund both via go-syrius or nom-webwallet with ≥ 1 ZNN / ≥ 4 QSR plus 10 QSR fused (or accept PoW), publish a sell order, take it, watch the phases through `filled`, then `Receive pending`; include the refund drill (take an order, close the taker tab, wait `long locktime + 60 s`, advance the maker). Update `manual-tutorial.test.ts` to assert the guide mentions the steps it checks (`Create wallet`, `Fuse plasma`, `Receive pending`).
 - [ ] **Step 3: `agent-api.md`** — document `window.zwap` methods and which ones return bearer material (`revealMnemonic` only).
 - [ ] **Step 4: `security-invariants.md` / `AGENTS.md`** — replace mint/NUT language with chain invariants: verify every HTLC from the node before acting; never trust DM-carried ids without `getById`; chain-id binding; sequential sends; never expose mnemonic/preimage.
-- [ ] **Step 5: `pages.yml`** — unchanged steps, add `VITE_*` defaults via `env:` on the build step (mainnet). Add `.env.testnet` usage note to README (`vite --mode testnet`).
+- [ ] **Step 5: Deployment — Cloudflare Pages primary, Docker/Coolify secondary (replaces GitHub Pages)** — delete `.github/workflows/pages.yml`; add `.github/workflows/ci.yml` (Node 22, `npm ci`, `npm run typecheck`, `npm test`, `npm run build` on push/PR; no deploy step — Cloudflare's Git integration deploys). Add `public/_headers` (copied verbatim into `dist/` by Vite):
+```
+/index.html
+  Cache-Control: no-cache
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+/pow.wasm
+  Content-Type: application/wasm
+/pow.js
+  Content-Type: application/javascript
+```
+Write `docs/guides/deploy-cloudflare.md`: Cloudflare Pages → connect the GitHub repo; production branch `main`; build command `npm run build`; build output `dist`; Node version via env `NODE_VERSION=22`; build environment variables = the five `VITE_*` keys with the mainnet values (a second Pages project or a preview-branch env with the testnet values gives a testnet instance); custom domain `zwap.fun`; note that every `wss://` target and `https://plazma.bot` must appear in `index.html`'s CSP `connect-src` (already the case) and that Pages serves the site over HTTPS (required for `wss://`). Also add the secondary path — a multi-stage `Dockerfile` (`node:22-alpine` build with the five `VITE_*` as `ARG`s defaulting to mainnet → `nginx:1.27-alpine` serving `dist` with `deploy/nginx.conf`: wasm MIME, `no-cache` for `index.html`, immutable `/assets/`) plus `.dockerignore` (`node_modules`, `dist`, `.git`, `.superpowers`, `docs`) and a short `docs/guides/deploy-docker.md` (works for Coolify's Dockerfile build pack with the same variables as build args). README: replace the Pages note with links to both guides and the `vite --mode testnet` note. Verify locally: `npm run build && ls dist/_headers dist/pow.wasm` and `docker build -t zwap . && docker run -d -p 8080:80 zwap && curl -sI localhost:8080/pow.wasm | grep -i 'application/wasm'`.
 - [ ] **Step 6: `scripts/probe-inbox.ts`** — keep; update imports. Delete `publish:test-orders` if it can't run without a keystore, or make it read `ZWAP_TEST_NSEC` from env and publish to relays with `price` semantics.
 - [ ] **Step 7: Run** — `npm run typecheck && npm test && npm run build` — PASS.
-- [ ] **Step 8: Commit** — `git add -A && git commit -m "docs: Zenon HTLC ADR, manual swap guide, agent API, CI env"`
+- [ ] **Step 8: Commit** — `git add -A && git commit -m "docs+deploy: Zenon HTLC ADR, guides, Cloudflare Pages + Docker, CI"`
 
 ---
 

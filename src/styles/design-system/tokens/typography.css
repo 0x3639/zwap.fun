@@ -1,0 +1,43 @@
+/* ============================================================================
+   TYPOGRAPHY — Two roles, no more.
+     UI / sans  → Space Grotesk  (--font-sans)  headings, labels, body, buttons
+     Data / mono → JetBrains Mono (--font-mono)  addresses, hashes, amounts, code
+   Rule: every identifier and number is mono + tabular-nums. The data is the hero.
+   ============================================================================ */
+
+:root {
+  --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Menlo", monospace;
+
+  /* Heading scale (matches nom-ui Heading levels 1–6) */
+  --text-h1: 2.25rem;  /* 36px / extrabold  */
+  --text-h2: 1.875rem; /* 30px / semibold   */
+  --text-h3: 1.5rem;   /* 24px / semibold   */
+  --text-h4: 1.25rem;  /* 20px / semibold   */
+  --text-h5: 1.125rem; /* 18px / semibold   */
+  --text-h6: 1rem;     /* 16px / semibold   */
+
+  /* Body + supporting scale */
+  --text-lead: 1.25rem;   /* 20px muted intro */
+  --text-large: 1.125rem; /* 18px            */
+  --text-base: 1rem;      /* 16px            */
+  --text-sm: 0.875rem;    /* 14px            */
+  --text-xs: 0.75rem;     /* 12px            */
+  --text-ledger: 0.6875rem; /* 11px mono eyebrow */
+
+  /* Weights */
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --font-weight-extrabold: 800;
+
+  /* Line heights */
+  --leading-tight: 1.1;
+  --leading-snug: 1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.75; /* prose body (leading-7) */
+
+  /* The signature ledger-label texture */
+  --ledger-tracking: 0.06em;
+}
