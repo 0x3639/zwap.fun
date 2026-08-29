@@ -3,3 +3,6 @@ dist
 .git
 .superpowers
 docs
+.env
+.env.local
+.env.*.local

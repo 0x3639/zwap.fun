@@ -13,16 +13,16 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "buffer": "^6.0.3",
+    "buffer": "6.0.3",
     "nostr-tools": "2.23.3",
-    "znn-typescript-sdk": "^1.0.5"
+    "znn-typescript-sdk": "1.0.5"
   },
   "devDependencies": {
     "jsdom": "29.1.1",
     "tsx": "4.20.6",
     "typescript": "7.0.2",
     "vite": "8.1.4",
-    "vite-plugin-node-polyfills": "^0.28.0",
+    "vite-plugin-node-polyfills": "0.28.0",
     "vitest": "4.1.10"
   }
 }
