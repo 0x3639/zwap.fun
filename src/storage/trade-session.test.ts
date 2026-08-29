@@ -1265,6 +1265,24 @@ describe("zwap trade session repository", () => {
     await expect(new TradeSessionRepository(driver).list()).rejects.toThrow(pattern);
   });
 
+  it("rejects a stray top-level field on a stored session", async () => {
+    // Regression: only nested objects were key-checked, so an attacker-supplied
+    // or migration-corrupted top-level field rode along untouched.
+    const corrupt = structuredClone(session) as TradeSession & { mnemonic?: string };
+    corrupt.mnemonic = "abandon abandon abandon";
+    const driver = new MemoryStorageDriver();
+    await driver.set(STORAGE_KEY, [corrupt]);
+    await expect(new TradeSessionRepository(driver).list())
+      .rejects.toThrow(/Trade session contains missing or unknown fields/i);
+
+    const missing = structuredClone(session) as Partial<TradeSession>;
+    delete missing.plan;
+    const other = new MemoryStorageDriver();
+    await other.set(STORAGE_KEY, [missing]);
+    await expect(new TradeSessionRepository(other).list())
+      .rejects.toThrow(/Trade session contains missing or unknown fields/i);
+  });
+
   it("rejects a settlement plan whose recovery window is not derived from its locktimes", async () => {
     for (const mutate of [
       (candidate: TradeSession) => {

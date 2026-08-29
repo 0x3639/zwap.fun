@@ -187,7 +187,8 @@ export async function createBrowserTradeRuntime(
     makerIdentity: input.makerIdentity,
     discoveryRelays,
     withAccountLock: (action) => withAccountLock(input.profile, action),
-    network: deploymentFor(chainId)
+    network: deploymentFor(chainId),
+    shortLockSeconds: input.config.shortLockSeconds
   });
   const coordinator = new TradeCoordinator({
     repository: sessions,

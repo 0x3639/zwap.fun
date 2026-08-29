@@ -143,6 +143,32 @@ describe("ZenonTradeClient", () => {
     await expect(h.takerClient.validateIncomingLock("00".repeat(32), expected)).rejects.toThrow(expect.objectContaining({ code: "htlc-missing" }));
   });
 
+  it("refuses to prepare a claim whose preimage does not open the lock", async () => {
+    // Regression: `prepareClaim` took a preimage and ignored it, so a wrong or
+    // corrupted one was only caught by the node after the block was signed.
+    const h = harness();
+    const m = await createHtlcMaterial();
+    const other = await createHtlcMaterial();
+    const expected: ExpectedZenonLock = { leg: "quote", chainId: "1", tokenStandard: QSR_ZTS, amount: "1", hashLock: m.hash, hashType: 1, keyMaxSize: 32, hashLockedAddress: h.maker, timeLockedAddress: h.taker, expirationTime: h.now() + 1800, binding: h.binding };
+    const lock = await h.takerClient.completeLock(await h.takerClient.prepareLock({ expected, now: h.now() }));
+
+    await expect(h.makerClient.prepareClaim({
+      htlcId: lock.htlcId, expected, preimage: other.preimage,
+      now: h.now(), claimCutoff: expected.expirationTime - 120
+    })).rejects.toThrow(expect.objectContaining({ code: "preimage-mismatch" }));
+
+    await expect(h.makerClient.prepareClaim({
+      htlcId: lock.htlcId, expected, preimage: "not hex",
+      now: h.now(), claimCutoff: expected.expirationTime - 120
+    })).rejects.toThrow(expect.objectContaining({ code: "preimage-mismatch" }));
+
+    const prepared = await h.makerClient.prepareClaim({
+      htlcId: lock.htlcId, expected, preimage: m.preimage,
+      now: h.now(), claimCutoff: expected.expirationTime - 120
+    });
+    expect(prepared.kind).toBe("claim");
+  });
+
   it("adopts its own existing HTLC instead of creating a second one after a failed read-back", async () => {
     const h = harness();
     const m = await createHtlcMaterial();

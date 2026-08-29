@@ -12,6 +12,30 @@ const REVEAL_CONFIRMATION = "REVEAL SEED";
 const DELETE_CONFIRMATION = "DELETE WALLET";
 
 /**
+ * Overwrites every secret a loaded `KeyStore` holds.
+ *
+ * Known limitation: JavaScript strings are immutable, so the `mnemonic`,
+ * `entropy` and `seed` this drops are only *unreferenced*, not erased - their
+ * original allocations stay in the heap until the collector runs, and may be
+ * copied by it before then. There is no way to zero a string in place. What
+ * this does buy is that nothing reachable from the repository still points at
+ * them, so a heap snapshot has to find an unreferenced allocation rather than
+ * a live wallet object. Any `Buffer`/typed array the SDK might add later is
+ * zeroed properly.
+ */
+export function wipeKeyStore(keyStore: KeyStore): void {
+  const holder = keyStore as unknown as Record<string, unknown>;
+  for (const key of Object.keys(holder)) {
+    const value = holder[key];
+    if (value instanceof Uint8Array) {
+      value.fill(0);
+    } else if (typeof value === "string") {
+      holder[key] = "";
+    }
+  }
+}
+
+/**
  * The single self-custodial wallet this browser profile holds.
  *
  * Only the BIP-39 mnemonic is persisted, encrypted through
@@ -64,12 +88,22 @@ export class KeystoreRepository {
    * lifetime and must call `clear()` when it is done with it.
    */
   async loadKeyPair(): Promise<KeyPair> {
-    return (await this.load()).getKeyPair(0);
+    const keyStore = await this.load();
+    try {
+      return keyStore.getKeyPair(0);
+    } finally {
+      wipeKeyStore(keyStore);
+    }
   }
 
   async revealMnemonic(confirmation: string): Promise<string> {
     this.assertConfirmation(confirmation, REVEAL_CONFIRMATION);
-    return (await this.load()).mnemonic;
+    const keyStore = await this.load();
+    try {
+      return keyStore.mnemonic;
+    } finally {
+      wipeKeyStore(keyStore);
+    }
   }
 
   async clear(confirmation: string): Promise<void> {
@@ -104,6 +138,7 @@ export class KeystoreRepository {
       return { address: keyPair.address.toString() };
     } finally {
       keyPair.clear();
+      wipeKeyStore(keyStore);
     }
   }
 

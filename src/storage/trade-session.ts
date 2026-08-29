@@ -1010,6 +1010,21 @@ async function assertSession(value: unknown): Promise<TradeSession> {
   if (session.schema !== "zwap/trade-session/v1") {
     throw new Error(`Unsupported trade session schema: ${String(session.schema)}`);
   }
+  // Exact at the root as well as in every nested object: a stored session is
+  // decrypted attacker-reachable data, and a field nothing validates is a
+  // field nothing can be trusted about.
+  exactAllowedKeys(
+    session,
+    [
+      "schema", "revision", "sessionId", "reservationId", "role", "phase",
+      "orderAddress", "offeredProjectionId", "offeredProjectionRevision",
+      "reserveProjectionId", "reserveProjectionRevision",
+      "fillProjectionId", "fillProjectionRevision", "pendingOrderPublication",
+      "createdAt", "updatedAt", "terms", "plan", "evidence", "privateState"
+    ],
+    ["orderSide"],
+    "Trade session"
+  );
   if (
     !Number.isSafeInteger(session.revision) ||
     (session.revision as number) < 0 ||

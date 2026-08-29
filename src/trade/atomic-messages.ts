@@ -912,6 +912,11 @@ export async function advanceAtomicSwapChoreography(
     const body = message.body as LockBody;
     assertRole(message, takerSession, makerSession);
     assertLockTerms(state, body, "quote");
+    // One HTLC cannot fund both legs: pointing the quote lock at the maker's
+    // own base HTLC would "fund" the payment leg with the offer leg.
+    if (body.htlc_id === state.baseHtlcId) {
+      throw new Error("Quote lock reuses the base HTLC id");
+    }
     if (
       body.hash_locked_address !== state.participants.makerAddress ||
       body.time_locked_address !== state.participants.takerAddress

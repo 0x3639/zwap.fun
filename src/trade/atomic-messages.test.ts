@@ -334,6 +334,22 @@ describe("atomic swap message bodies", () => {
     )).rejects.toThrow(/terms|price/i);
   });
 
+  it("rejects a quote lock that reuses the base HTLC id", async () => {
+    // One HTLC cannot be both legs: accepting it would let a taker "fund" the
+    // quote leg with the maker's own lock.
+    let state = initialAtomicSwapChoreography(makerOrder);
+    for (const [index, type] of ["reserve_propose", "reserve_accept"].entries()) {
+      state = await advanceAtomicSwapChoreography(
+        state,
+        await message(type as AtomicSwapMessageType, index)
+      );
+    }
+    await expect(advanceAtomicSwapChoreography(
+      state,
+      await message("quote_lock", 2, {}, { htlc_id: baseHtlcId })
+    )).rejects.toThrow(/base HTLC/i);
+  });
+
   it("rejects a lock whose hash-locked and time-locked addresses are identical", async () => {
     await expect(validateAtomicSwapMessage(
       await message("base_lock", 3, {}, { hash_locked_address: makerAddress })

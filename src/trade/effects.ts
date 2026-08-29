@@ -63,7 +63,7 @@ import {
   type ZwapTradeMessage,
   type ZwapTradeTerms
 } from "./messages.js";
-import { advanceTrade, canAdvanceTrade } from "./model.js";
+import { advanceTrade, canAdvanceTrade, SHORT_LOCK_SECONDS } from "./model.js";
 import type {
   ChainOperationResult,
   PersistedHtlcState,
@@ -91,7 +91,9 @@ export class ZwapChainEffectError extends Error {
   }
 }
 
-const PLASMA_PATTERN = /plasma|pow/i;
+// `\bpow\b` and not a bare `pow`: "empowered" is not a plasma shortfall, and
+// mistaking one for the other makes a terminal failure look retryable.
+const PLASMA_PATTERN = /plasma|\bpow\b/i;
 const NETWORK_PATTERN = /network|timeout|ECONN|socket/i;
 
 /**
@@ -214,6 +216,12 @@ export interface ZwapCoordinatorEffectsOptions {
   discoveryRelays: readonly string[];
   withAccountLock: WithAccountLock;
   network: string;
+  /**
+   * The short locktime this deployment plans with. The taker rebuilds the
+   * maker's plan anchor from it, because `reserve_accept` carries the absolute
+   * deadlines but not the anchor they were derived from.
+   */
+  shortLockSeconds?: number;
   entropy?: CoordinatorEffectsEntropy;
   commitment?: (value: string) => Promise<string>;
 }
@@ -542,6 +550,7 @@ export class ZwapCoordinatorEffects implements CoordinatorEffectPort {
   private readonly discoveryRelays: string[];
   private readonly withAccountLock: WithAccountLock;
   private readonly network: string;
+  private readonly shortLockSeconds: number;
   private readonly entropy: CoordinatorEffectsEntropy;
   private readonly commitment: (value: string) => Promise<string>;
 
@@ -557,6 +566,7 @@ export class ZwapCoordinatorEffects implements CoordinatorEffectPort {
     this.discoveryRelays = [...options.discoveryRelays];
     this.withAccountLock = options.withAccountLock;
     this.network = options.network;
+    this.shortLockSeconds = options.shortLockSeconds ?? SHORT_LOCK_SECONDS;
     this.entropy = options.entropy ?? defaultEntropy;
     this.commitment = options.commitment ?? sha256;
   }
@@ -1411,10 +1421,7 @@ export class ZwapCoordinatorEffects implements CoordinatorEffectPort {
       const acceptedPlan = acceptance === null
         ? session.plan
         : {
-            anchor: acceptance.short_locktime -
-              (acceptance.long_locktime - acceptance.short_locktime === 3 * 86_400
-                ? 4 * 86_400
-                : 600),
+            anchor: acceptance.short_locktime - this.shortLockSeconds,
             shortLocktime: acceptance.short_locktime,
             makerClaimCutoff: acceptance.maker_claim_cutoff,
             longLocktime: acceptance.long_locktime,
@@ -1516,11 +1523,11 @@ export class ZwapCoordinatorEffects implements CoordinatorEffectPort {
     next.phase = rootPhase(choreography);
     if (message.type === "reserve_accept") {
       const body = message.body as AtomicSwapBody<"reserve_accept">;
-      const locktimeGap = body.long_locktime - body.short_locktime;
       next.plan = {
-        anchor: body.short_locktime -
-          (locktimeGap === 3 * 86_400 ? 4 * 86_400 : 600),
-          shortLocktime: body.short_locktime,
+        // The acceptance carries absolute deadlines, not the anchor they came
+        // from; this side rebuilds it with the short lock it is configured for.
+        anchor: body.short_locktime - this.shortLockSeconds,
+        shortLocktime: body.short_locktime,
         makerClaimCutoff: body.maker_claim_cutoff,
         longLocktime: body.long_locktime,
         takerClaimCutoff: body.taker_claim_cutoff,

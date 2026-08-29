@@ -1,4 +1,5 @@
 import { sha256Text } from "./hex.js";
+import { verifyHtlcMaterial } from "./htlc-material.js";
 import { findReclaim, findUnlockPreimage, htlcValidationCommitment, validateHtlcInfo, type ExpectedZenonLock, type ReclaimDecoder, type UnlockDecoder } from "./htlc.js";
 import { HTLC_ADDRESS, type HtlcState, type ZenonNodePort, type ZenonSigner } from "./types.js";
 
@@ -132,9 +133,18 @@ export class ZenonTradeClient {
     return { htlcId, validationCommitment: await htlcValidationCommitment(info), observedAt: this.deps.now() };
   }
 
+  /**
+   * Checks the preimage against the agreed hashlock before anything is signed.
+   * The node would reject a wrong one anyway, but only after a block was built
+   * and plasma or PoW spent on it - and a claim that fails at the wire this
+   * close to the cutoff is a claim that may not get retried in time.
+   */
   async prepareClaim(input: { htlcId: string; expected: ExpectedZenonLock; preimage: string; now: number; claimCutoff: number }): Promise<PreparedChainOperation> {
     if (input.expected.hashLockedAddress !== this.address()) throw new ZenonTradeError("wrong-signer");
     if (input.now > input.claimCutoff) throw new ZenonTradeError("claim-cutoff");
+    if (!(await verifyHtlcMaterial(input.preimage, input.expected.hashLock))) {
+      throw new ZenonTradeError("preimage-mismatch");
+    }
     await this.validateIncomingLock(input.htlcId, input.expected);
     return this.artifact("claim", input.expected, input.htlcId);
   }

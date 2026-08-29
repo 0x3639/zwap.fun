@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { KeyStore, type KeyPair } from "znn-typescript-sdk";
 
 import { MemoryStorageDriver } from "../storage/driver.js";
-import { KeystoreRepository } from "./keystore-repository.js";
+import { KeystoreRepository, wipeKeyStore } from "./keystore-repository.js";
 
 const MNEMONIC = KeyStore.newRandom().mnemonic; // throwaway, never funded
 const ADDRESS = /^z1[02-9ac-hj-np-z]{38}$/;
@@ -116,6 +116,30 @@ describe("KeystoreRepository", () => {
     await expect(repository.revealMnemonic("REVEAL SEED")).rejects.toThrow(/no wallet/i);
     await expect(repository.useKeyPair(async () => 1)).rejects.toThrow(/no wallet/i);
     await expect(repository.loadKeyPair()).rejects.toThrow(/no wallet/i);
+  });
+
+  it("wipes the loaded KeyStore after every use", async () => {
+    // Regression: `load()` built a KeyStore holding the mnemonic, its entropy
+    // and its seed, and left the whole thing to the garbage collector.
+    const store = KeyStore.fromMnemonic(MNEMONIC);
+    expect(store.seed.length).toBeGreaterThan(0);
+
+    wipeKeyStore(store);
+
+    expect(store.mnemonic).toBe("");
+    expect(store.entropy).toBe("");
+    expect(store.seed).toBe("");
+
+    // The repository still answers correctly with the wipe in place: the
+    // mnemonic is copied out before the store is cleared, and the key pair is
+    // derived before it too.
+    const repository = new KeystoreRepository(new MemoryStorageDriver());
+    const { address } = await repository.import(MNEMONIC);
+    await expect(repository.revealMnemonic("REVEAL SEED")).resolves.toBe(MNEMONIC);
+    const keyPair = await repository.loadKeyPair();
+    expect(keyPair.address.toString()).toBe(address);
+    expect(zeroed(keyPair)).toBe(false);
+    keyPair.clear();
   });
 
   it("sets up the profile key through the exclusive runner without nesting", async () => {

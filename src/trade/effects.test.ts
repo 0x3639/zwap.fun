@@ -313,7 +313,11 @@ function flakyNode(node: FakeZenonNode, faults: NodeFaults): ZenonNodePort {
 }
 
 function harness(
-  options: { makerBalance?: string; takerBalance?: string } = {}
+  options: {
+    makerBalance?: string;
+    takerBalance?: string;
+    shortLockSeconds?: number;
+  } = {}
 ): Harness {
   const clock = { now: NOW };
   const node = new FakeZenonNode({ chainId: 1, now: () => clock.now });
@@ -374,6 +378,9 @@ function harness(
         return action();
       },
       network: NETWORK,
+      ...(options.shortLockSeconds === undefined
+        ? {}
+        : { shortLockSeconds: options.shortLockSeconds }),
       entropy: {
         messageId: () => "11111111-1111-4111-8111-111111111113",
         operationId: () => "11111111-1111-4111-8111-111111111114",
@@ -562,6 +569,12 @@ describe("ZwapCoordinatorEffects", () => {
         .toEqual({ code: "chain_rejected", retryable: false });
       expect(classifyChainError(new Error("something else")))
         .toEqual({ code: "internal_error", retryable: false });
+      // Regression: a bare `pow` substring matched words like "empowered",
+      // turning an unrelated failure into a retryable plasma shortfall.
+      expect(classifyChainError(new Error("The maker empowered a stale session")))
+        .toEqual({ code: "internal_error", retryable: false });
+      expect(classifyChainError(new Error("PoW worker unavailable")))
+        .toEqual({ code: "plasma_unavailable", retryable: true });
     });
 
     it("keeps polling on a missing HTLC unless the leg was already reclaimed", () => {
@@ -947,12 +960,18 @@ describe("ZwapCoordinatorEffects", () => {
   });
 
   describe("validate_incoming for a reserve_accept body", () => {
-    async function acceptance(htlcAmount: string): Promise<{
+    async function acceptance(
+      htlcAmount: string,
+      shortLockSeconds?: number
+    ): Promise<{
       context: Harness;
       pending: TradeSession;
       body: AtomicSwapBody<"reserve_accept">;
     }> {
-      const context = harness({ makerBalance: "40" });
+      const context = harness({
+        makerBalance: "40",
+        ...(shortLockSeconds === undefined ? {} : { shortLockSeconds })
+      });
       const { addresses, maker, taker } = context;
       const expected = expectedFor("base", addresses);
       const completed = await maker.chain.completeLock(
@@ -1081,6 +1100,29 @@ describe("ZwapCoordinatorEffects", () => {
       });
       expect(validated.privateState.pendingIncoming?.validation.status)
         .toBe("validated");
+    });
+
+    it("rebuilds the plan anchor from the configured short locktime", async () => {
+      // Regression: the anchor was reverse-engineered from a hardcoded
+      // 3-day/4-day locktime table, so any other configured profile stored an
+      // anchor that never matched the maker's plan.
+      const { context, pending } = await acceptance("20", 500);
+
+      const validated = await context.taker.effects.performExternal(
+        externalInput({ kind: "validate_incoming" }, pending)
+      );
+      const committed = await context.taker.effects.applyLocal({
+        action: { kind: "commit_incoming" },
+        session: validated,
+        now: NOW
+      });
+
+      expect(committed.plan.anchor).toBe(SHORT_LOCKTIME - 500);
+      expect(committed.plan).toMatchObject({
+        shortLocktime: SHORT_LOCKTIME,
+        longLocktime: LONG_LOCKTIME,
+        reservationExpiresAt: RESERVATION_EXPIRES_AT
+      });
     });
 
     it("rejects a nested base_lock whose on-chain amount was tampered with", async () => {
