@@ -41,9 +41,9 @@ If you also need non-default locktimes or a non-default relay list, edit the
 `ARG`/`ENV` lines in the `Dockerfile` directly, or pass the matching
 `--build-arg` after adding it there — the Dockerfile currently only
 parameterizes the five variables without a safe code default worth
-overriding at deploy time; `VITE_SHORT_LOCK_SECONDS` and
-`VITE_LONG_LOCK_SECONDS` already default sensibly in `src/config.ts` if
-unset.
+overriding at deploy time; `VITE_SHORT_LOCK_SECONDS`,
+`VITE_LONG_LOCK_SECONDS`, `VITE_HTLC_SCAN_PAGES` and `VITE_HTLC_PAGE_SIZE`
+already default sensibly in `src/config.ts` if unset.
 
 ## Run
 

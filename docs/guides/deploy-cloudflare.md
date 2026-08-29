@@ -30,6 +30,8 @@ directly from the browser. Cloudflare Pages is the primary deployment target;
    | `VITE_NOSTR_INBOX_RELAY` | `wss://auth.nostr1.com` |
    | `VITE_SHORT_LOCK_SECONDS` | `1800` |
    | `VITE_LONG_LOCK_SECONDS` | `3600` |
+   | `VITE_HTLC_SCAN_PAGES` | `3` |
+   | `VITE_HTLC_PAGE_SIZE` | `100` |
 
    Vite only inlines `VITE_*` variables that are set at build time, so these
    must be configured as Pages **build** environment variables, not runtime
@@ -84,3 +86,9 @@ ls dist/_headers dist/pow.wasm
 output to set response headers (cache policy for `index.html` vs. hashed
 assets, and the correct MIME types for `pow.wasm`/`pow.js`, which some static
 hosts otherwise misserve).
+
+Its `/*` block carries the security headers every path needs: `X-Frame-Options:
+DENY` and `Content-Security-Policy: frame-ancestors 'none'` (the page holds a
+hot signing key - a framing attacker could overlay every confirmation),
+`X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. HSTS
+comes from Cloudflare's own TLS settings, not from this file.
