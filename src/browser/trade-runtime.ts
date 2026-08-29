@@ -26,7 +26,12 @@ import { TradeCoordinator } from "../trade/coordinator.js";
 import { ZwapCoordinatorEffects } from "../trade/effects.js";
 import { deploymentFor } from "../trade/messages.js";
 import { FundsReservationRepository } from "../zenon/funds-reservations.js";
-import { sdkUnlockDecoder, type UnlockDecoder } from "../zenon/htlc.js";
+import {
+  sdkReclaimDecoder,
+  sdkUnlockDecoder,
+  type ReclaimDecoder,
+  type UnlockDecoder
+} from "../zenon/htlc.js";
 import { ZenonTradeClient } from "../zenon/trade-client.js";
 import { QSR_ZTS, ZNN_ZTS, type ZenonNodePort, type ZenonSigner } from "../zenon/types.js";
 import {
@@ -108,6 +113,8 @@ export interface CreateBrowserTradeRuntimeInput {
   generateSecretKey?: KeyGenerator;
   /** Reads `Unlock` preimages off chain blocks; the fake node needs its own. */
   decodeUnlock?: UnlockDecoder;
+  /** Reads `Reclaim` markers off chain blocks; the fake node needs its own. */
+  decodeReclaim?: ReclaimDecoder;
 }
 
 export interface BrowserTradeRuntime {
@@ -164,7 +171,10 @@ export async function createBrowserTradeRuntime(
     node: input.node,
     signer: input.signer,
     decodeUnlock: input.decodeUnlock ?? sdkUnlockDecoder,
-    now
+    decodeReclaim: input.decodeReclaim ?? sdkReclaimDecoder,
+    now,
+    scanPages: input.config.htlcScanPages,
+    pageSize: input.config.htlcPageSize
   });
   const effects = new ZwapCoordinatorEffects({
     orderApi: input.orderApi,

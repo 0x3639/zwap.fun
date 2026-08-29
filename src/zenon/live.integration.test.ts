@@ -17,7 +17,7 @@ import { SdkZenonNode } from "./sdk-node.js";
 import { KeystoreSigner } from "./keystore-signer.js";
 import { ZenonTradeClient } from "./trade-client.js";
 import { ZenonAccount } from "./account.js";
-import { sdkUnlockDecoder, type ExpectedZenonLock } from "./htlc.js";
+import { sdkReclaimDecoder, sdkUnlockDecoder, type ExpectedZenonLock } from "./htlc.js";
 import { createHtlcMaterial } from "./htlc-material.js";
 import { ZNN_ZTS, QSR_ZTS } from "./types.js";
 
@@ -92,8 +92,8 @@ describe.skipIf(!enabled)("live Zenon HTLC swap (small amounts)", () => {
         const maker = new KeystoreSigner(node.zenon, KeyStore.fromMnemonic(makerMnemonic).getKeyPair(0));
         const taker = new KeystoreSigner(node.zenon, KeyStore.fromMnemonic(takerMnemonic).getKeyPair(0));
         const now = () => Math.floor(Date.now() / 1000);
-        const makerClient = new ZenonTradeClient({ node, signer: maker, decodeUnlock: sdkUnlockDecoder, now });
-        const takerClient = new ZenonTradeClient({ node, signer: taker, decodeUnlock: sdkUnlockDecoder, now });
+        const makerClient = new ZenonTradeClient({ node, signer: maker, decodeUnlock: sdkUnlockDecoder, decodeReclaim: sdkReclaimDecoder, now });
+        const takerClient = new ZenonTradeClient({ node, signer: taker, decodeUnlock: sdkUnlockDecoder, decodeReclaim: sdkReclaimDecoder, now });
 
         // Pre-flight: fail fast with a clear message instead of a confusing
         // mid-swap error if either throwaway address is not actually funded.

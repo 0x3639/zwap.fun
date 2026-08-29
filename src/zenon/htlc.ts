@@ -1,5 +1,5 @@
 import { HtlcContract } from "znn-typescript-sdk";
-import { decodeFakeUnlockData } from "./fake-node.js";
+import { decodeFakeReclaimData, decodeFakeUnlockData } from "./fake-node.js";
 import { hexToBytes, sha256Hex, sha256Text } from "./hex.js";
 import { HTLC_ADDRESS, type AccountBlockView, type HtlcInfoView } from "./types.js";
 
@@ -65,6 +65,34 @@ export const sdkUnlockDecoder: UnlockDecoder = (block) => {
 
 export const fakeUnlockDecoder: UnlockDecoder = (block) =>
   block.toAddress === HTLC_ADDRESS ? decodeFakeUnlockData(block.data) : null;
+
+export type ReclaimDecoder = (block: AccountBlockView) => { id: string } | null;
+
+export const sdkReclaimDecoder: ReclaimDecoder = (block) => {
+  if (block.toAddress !== HTLC_ADDRESS || block.data.length < 8) return null;
+  try {
+    const call = HtlcContract.decodeCallData(`0x${block.data}`, true) as { name: string; args: Record<string, string> };
+    if (call.name !== "Reclaim") return null;
+    const id = call.args.id?.replace(/^0x/, "").toLowerCase();
+    return id ? { id } : null;
+  } catch {
+    return null;
+  }
+};
+
+export const fakeReclaimDecoder: ReclaimDecoder = (block) =>
+  block.toAddress === HTLC_ADDRESS ? decodeFakeReclaimData(block.data) : null;
+
+/** The block that reclaimed this HTLC, or null if none is in the scanned range. */
+export function findReclaim(
+  blocks: AccountBlockView[], htlcId: string, decode: ReclaimDecoder
+): { blockHash: string } | null {
+  for (const block of blocks) {
+    const call = decode(block);
+    if (call?.id === htlcId) return { blockHash: block.hash };
+  }
+  return null;
+}
 
 export async function findUnlockPreimage(
   blocks: AccountBlockView[], htlcId: string, hashLock: string, decode: UnlockDecoder

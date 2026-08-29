@@ -26,6 +26,21 @@ export function decodeFakeUnlockData(dataHex: string): { id: string; preimage: s
   }
 }
 
+export function encodeFakeReclaimData(id: string): string {
+  return bytesToHex(new TextEncoder().encode(`reclaim:${id}`));
+}
+
+/** The marker a reclaim leaves behind, so observers can prove one happened. */
+export function decodeFakeReclaimData(dataHex: string): { id: string } | null {
+  try {
+    const text = new TextDecoder().decode(hexToBytes(dataHex));
+    const m = /^reclaim:([0-9a-f]{64})$/.exec(text);
+    return m ? { id: m[1]! } : null;
+  } catch {
+    return null;
+  }
+}
+
 export class FakeZenonNode implements ZenonNodePort {
   now: () => number;
   private readonly chainId: number;
@@ -78,6 +93,12 @@ export class FakeZenonNode implements ZenonNodePort {
   fund(address: string, zts: string, amount: string): void {
     this.credit(address, zts, BigInt(amount));
   }
+
+  /**
+   * Drops an HTLC from the index without recording any spend, the way a node
+   * that has pruned it - or an id nobody ever created - answers a lookup.
+   */
+  forgetHtlc(id: string): void { this.htlcs.delete(id); }
 
   setPow(address: string, requiresPow: boolean): void { this.pow.set(address, requiresPow); }
   failNext(kind: ZenonTemplate["kind"], error: Error): void { this.failures.set(kind, error); }
@@ -200,7 +221,7 @@ export class FakeZenonNode implements ZenonNodePort {
         if (now < htlc.expirationTime) throw new Error("htlc not yet expired");
         if (htlc.timeLocked !== sender) throw new Error("only timeLocked may reclaim");
         this.htlcs.delete(template.id);
-        const block = await this.record(sender, HTLC_ADDRESS, htlc.tokenStandard, 0n, 2, bytesToHex(new TextEncoder().encode(`reclaim:${template.id}`)));
+        const block = await this.record(sender, HTLC_ADDRESS, htlc.tokenStandard, 0n, 2, encodeFakeReclaimData(template.id));
         await this.deliver(HTLC_ADDRESS, htlc.timeLocked, htlc.tokenStandard, BigInt(htlc.amount));
         return { blockHash: block.hash };
       }

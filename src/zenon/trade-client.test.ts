@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FakeZenonNode } from "./fake-node.js";
-import { fakeUnlockDecoder, type ExpectedZenonLock } from "./htlc.js";
+import { fakeReclaimDecoder, fakeUnlockDecoder, type ExpectedZenonLock } from "./htlc.js";
 import { createHtlcMaterial } from "./htlc-material.js";
 import { ZenonTradeClient } from "./trade-client.js";
 import { HTLC_ADDRESS, QSR_ZTS, ZNN_ZTS, type ZenonNodePort } from "./types.js";
@@ -13,8 +13,8 @@ function harness() {
   node.fund(maker, ZNN_ZTS, "1000000000");
   node.fund(taker, QSR_ZTS, "5000000000");
   const clock = () => now;
-  const makerClient = new ZenonTradeClient({ node, signer: node.signer(maker), decodeUnlock: fakeUnlockDecoder, now: clock });
-  const takerClient = new ZenonTradeClient({ node, signer: node.signer(taker), decodeUnlock: fakeUnlockDecoder, now: clock });
+  const makerClient = new ZenonTradeClient({ node, signer: node.signer(maker), decodeUnlock: fakeUnlockDecoder, decodeReclaim: fakeReclaimDecoder, now: clock });
+  const takerClient = new ZenonTradeClient({ node, signer: node.signer(taker), decodeUnlock: fakeUnlockDecoder, decodeReclaim: fakeReclaimDecoder, now: clock });
   const binding = { protocolVersion: "1" as const, network: "zenon-mainnet", orderId: "o", sessionId: "s", reservationId: "r", transcriptHash: "cd".repeat(32) };
   return { node, maker, taker, makerClient, takerClient, binding, tick: (s: number) => { now += s; }, now: clock };
 }
@@ -89,6 +89,48 @@ describe("ZenonTradeClient", () => {
     expect((await h.takerClient.observe(lock.htlcId, expected)).state).toBe("RECLAIMED");
   });
 
+  it("reports UNKNOWN for an expired HTLC with no reclaim block on chain", async () => {
+    // Regression: an expired HTLC that had simply fallen out of the scan window
+    // was reported as RECLAIMED, which is terminal evidence the chain never
+    // gave. Only a decoded `Reclaim` block may retire a leg.
+    const h = harness();
+    const m = await createHtlcMaterial();
+    const expected: ExpectedZenonLock = { leg: "base", chainId: "1", tokenStandard: ZNN_ZTS, amount: "1", hashLock: m.hash, hashType: 1, keyMaxSize: 32, hashLockedAddress: h.taker, timeLockedAddress: h.maker, expirationTime: h.now() + 100, binding: h.binding };
+    const lock = await h.makerClient.completeLock(await h.makerClient.prepareLock({ expected, now: h.now() }));
+
+    // The HTLC is gone from the node's index but nobody spent it in view.
+    h.node.forgetHtlc(lock.htlcId);
+    h.tick(161);
+
+    const observed = await h.takerClient.observe(lock.htlcId, expected);
+    expect(observed.state).toBe("UNKNOWN");
+    expect(observed.witnessCommitment).toBeNull();
+  });
+
+  it("reports RECLAIMED only from a decoded reclaim block on the time-locked chain", async () => {
+    const h = harness();
+    const m = await createHtlcMaterial();
+    const expected: ExpectedZenonLock = { leg: "base", chainId: "1", tokenStandard: ZNN_ZTS, amount: "1", hashLock: m.hash, hashType: 1, keyMaxSize: 32, hashLockedAddress: h.taker, timeLockedAddress: h.maker, expirationTime: h.now() + 100, binding: h.binding };
+    const lock = await h.makerClient.completeLock(await h.makerClient.prepareLock({ expected, now: h.now() }));
+    h.tick(161);
+    await h.makerClient.completeRefund(
+      await h.makerClient.prepareRefund({ htlcId: lock.htlcId, expected, now: h.now(), expiryGrace: 60 })
+    );
+
+    const observed = await h.takerClient.observe(lock.htlcId, expected);
+    expect(observed.state).toBe("RECLAIMED");
+    expect(observed.preimage).toBeNull();
+
+    // A reclaim of some *other* HTLC on the same chain proves nothing here.
+    const decoy = await h.makerClient.completeLock(await h.makerClient.prepareLock({
+      expected: { ...expected, hashLock: (await createHtlcMaterial()).hash, expirationTime: h.now() + 100 },
+      now: h.now()
+    }));
+    h.node.forgetHtlc(decoy.htlcId);
+    h.tick(161);
+    expect((await h.takerClient.observe(decoy.htlcId, expected)).state).toBe("UNKNOWN");
+  });
+
   it("rejects insufficient balance, wrong signer, late claims and mismatched incoming locks", async () => {
     const h = harness();
     const m = await createHtlcMaterial();
@@ -113,6 +155,7 @@ describe("ZenonTradeClient", () => {
       node: withFailingReadBack(h.node, 1),
       signer: h.node.signer(h.maker),
       decodeUnlock: fakeUnlockDecoder,
+      decodeReclaim: fakeReclaimDecoder,
       now: h.now
     });
     const artifact = await client.prepareLock({ expected, now: h.now() });

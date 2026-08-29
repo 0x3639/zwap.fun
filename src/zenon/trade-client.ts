@@ -1,5 +1,5 @@
 import { sha256Text } from "./hex.js";
-import { findUnlockPreimage, htlcValidationCommitment, validateHtlcInfo, type ExpectedZenonLock, type UnlockDecoder } from "./htlc.js";
+import { findReclaim, findUnlockPreimage, htlcValidationCommitment, validateHtlcInfo, type ExpectedZenonLock, type ReclaimDecoder, type UnlockDecoder } from "./htlc.js";
 import { HTLC_ADDRESS, type HtlcState, type ZenonNodePort, type ZenonSigner } from "./types.js";
 
 export interface PreparedChainOperation {
@@ -37,6 +37,7 @@ export interface ZenonTradeClientDependencies {
   node: ZenonNodePort;
   signer: ZenonSigner;
   decodeUnlock: UnlockDecoder;
+  decodeReclaim: ReclaimDecoder;
   now: () => number;
   scanPages?: number;
   pageSize?: number;
@@ -159,6 +160,15 @@ export class ZenonTradeClient {
     return { blockHash, htlcId: artifact.htlcId };
   }
 
+  /**
+   * Reads one leg's state from the chain alone.
+   *
+   * Both spends are proved by a decoded block, never inferred: an `Unlock` on
+   * the hash-locked account's chain, a `Reclaim` on the time-locked one. A
+   * missing HTLC with neither block in the scanned window is `UNKNOWN` - it may
+   * simply be older than `scanPages * pageSize` blocks - because `RECLAIMED` is
+   * terminal evidence the caller acts on, and an expired clock is not evidence.
+   */
   async observe(htlcId: string, expected: ExpectedZenonLock): Promise<HtlcObservation> {
     const observedAt = this.deps.now();
     const info = await this.deps.node.getHtlc(htlcId);
@@ -177,7 +187,13 @@ export class ZenonTradeClient {
       }
       if (blocks.length < this.pageSize) break;
     }
-    if (observedAt >= expected.expirationTime) return { state: "RECLAIMED", observedAt, preimage: null, witnessCommitment: null };
+    for (let page = 0; page < this.scanPages; page += 1) {
+      const blocks = await this.deps.node.listAccountBlocks(expected.timeLockedAddress, page, this.pageSize);
+      if (findReclaim(blocks, htlcId, this.deps.decodeReclaim)) {
+        return { state: "RECLAIMED", observedAt, preimage: null, witnessCommitment: null };
+      }
+      if (blocks.length < this.pageSize) break;
+    }
     return { state: "UNKNOWN", observedAt, preimage: null, witnessCommitment: null };
   }
 }

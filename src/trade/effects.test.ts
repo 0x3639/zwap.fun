@@ -20,6 +20,7 @@ import { FakeZenonNode } from "../zenon/fake-node.js";
 import { FundsReservationRepository } from "../zenon/funds-reservations.js";
 import { hexToBytes, sha256Hex } from "../zenon/hex.js";
 import {
+  fakeReclaimDecoder,
   fakeUnlockDecoder,
   HtlcValidationError,
   type ExpectedZenonLock
@@ -330,6 +331,7 @@ function harness(
       node: clientNode,
       signer: node.signer(address),
       decodeUnlock: fakeUnlockDecoder,
+      decodeReclaim: fakeReclaimDecoder,
       now: () => clock.now
     });
     const reservations = new FundsReservationRepository(new MemoryStorageDriver());

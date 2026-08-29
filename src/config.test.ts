@@ -32,6 +32,26 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ VITE_ZENON_NODE_WS: "https://x" })).toThrow(/ws/i);
   });
 
+  it("configures the bounded HTLC scan window", () => {
+    expect(loadConfig({}).htlcScanPages).toBe(3);
+    expect(loadConfig({}).htlcPageSize).toBe(100);
+    const config = loadConfig({ VITE_HTLC_SCAN_PAGES: "7", VITE_HTLC_PAGE_SIZE: "25" });
+    expect(config.htlcScanPages).toBe(7);
+    expect(config.htlcPageSize).toBe(25);
+    expect(() => loadConfig({ VITE_HTLC_SCAN_PAGES: "0" })).toThrow(/scan pages/i);
+  });
+
+  it("rejects a locktime profile the settlement plan could never build", () => {
+    expect(() => loadConfig({
+      VITE_SHORT_LOCK_SECONDS: "1800",
+      VITE_LONG_LOCK_SECONDS: "2100"
+    })).toThrow(/at least 600 seconds/);
+    expect(loadConfig({
+      VITE_SHORT_LOCK_SECONDS: "1800",
+      VITE_LONG_LOCK_SECONDS: "2400"
+    }).longLockSeconds).toBe(2400);
+  });
+
   it("names networks", () => {
     expect(networkName(1)).toBe("zenon-mainnet");
     expect(networkName(73404)).toBe("zenon-testnet-73404");

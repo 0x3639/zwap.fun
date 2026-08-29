@@ -21,7 +21,7 @@ import { TradeSessionRepository } from "../storage/trade-session.js";
 import { ZenonAccount } from "../zenon/account.js";
 import { FakeZenonNode } from "../zenon/fake-node.js";
 import { FundsReservationRepository } from "../zenon/funds-reservations.js";
-import { fakeUnlockDecoder } from "../zenon/htlc.js";
+import { fakeReclaimDecoder, fakeUnlockDecoder } from "../zenon/htlc.js";
 import { createHtlcMaterial } from "../zenon/htlc-material.js";
 import { ZenonTradeClient } from "../zenon/trade-client.js";
 import { QSR_ZTS, ZNN_ZTS } from "../zenon/types.js";
@@ -286,6 +286,7 @@ async function stack(side: "buy" | "sell" = "sell"): Promise<Stack> {
       node,
       signer: node.signer(address),
       decodeUnlock: fakeUnlockDecoder,
+      decodeReclaim: fakeReclaimDecoder,
       now: () => clock.now
     });
     const effects = new ZwapCoordinatorEffects({

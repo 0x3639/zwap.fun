@@ -52,10 +52,21 @@ staggered-deadline shape as ADR 0004, adapted to Zenon's primitives:
   was allowed to unlock) page by page — `listAccountBlocks(address, page,
   pageSize)` — decoding each block's `data` as an `Unlock` embedded-contract
   call and checking it names the expected HTLC id and hashlock. Defaults:
-  `scanPages = 3`, `pageSize = 100`, i.e. up to 300 most-recent blocks. This
-  bound is a tunable trade-off (an active address could in principle push the
-  Unlock block outside the window before it is observed); it is not a protocol
-  limit, and callers needing a deeper search can pass larger values.
+  `scanPages = 3`, `pageSize = 100`, i.e. up to 300 most-recent blocks, both
+  configurable per deployment (`VITE_HTLC_SCAN_PAGES`, `VITE_HTLC_PAGE_SIZE`).
+  This bound is a tunable trade-off (an active address could in principle push
+  the Unlock block outside the window before it is observed); it is not a
+  protocol limit, and callers needing a deeper search can raise it.
+- **`RECLAIMED` requires a decoded `Reclaim`, never an expired clock.** When
+  `getById` returns nothing and no `Unlock` is found, `observe` scans the
+  **time-locked** address's own chain over the same bounded window for a
+  `Reclaim(id)` call naming this HTLC (`sdkReclaimDecoder`, decoding
+  `HtlcContract.decodeCallData`). Only that block yields `RECLAIMED`;
+  everything else - including an HTLC that is missing and long past its
+  `expirationTime` - is `UNKNOWN`, because the bounded window means "not seen"
+  and "did not happen" are different answers. `RECLAIMED` is terminal evidence
+  the coordinator acts on (it makes a missing HTLC a non-retryable failure), so
+  it may only ever come from a block that was actually read.
 - **Taker claims the base leg**: `Unlock(baseId, preimage)`, using the exact
   preimage read from the chain, never from a DM.
 - **Refund = `Reclaim(id)`**, only after `now >= expirationTime + expiryGrace`
@@ -176,10 +187,35 @@ node).
   never at risk — a rejected retry means the first attempt already succeeded
   — but a caller has to re-observe the HTLC to find out.
 - **The observation window is bounded**, not exhaustive (`scanPages ×
-  pageSize`, default 300 blocks per address). An extremely active
-  `hashLocked` address could in principle push the relevant `Unlock` block
-  outside that window before it is observed.
+  pageSize`, default 300 blocks per address, `VITE_HTLC_SCAN_PAGES` /
+  `VITE_HTLC_PAGE_SIZE`). An extremely active `hashLocked` or `timeLocked`
+  address could in principle push the relevant `Unlock` or `Reclaim` block
+  outside that window before it is observed; the answer is then `UNKNOWN` and
+  the caller keeps polling, never a fabricated `RECLAIMED`.
 - **No cross-node corroboration.** See "Trust boundary" above.
+
+## Deviations from the design spec
+
+The design in `docs/superpowers/specs/2026-08-28-zwap-zenon-dex-design.md`
+describes the full granola message choreography. The implemented choreography
+is shorter, and this is deliberate:
+
+- `reserve_accept` advances straight to `awaiting_quote_lock`, and `quote_lock`
+  straight to `settling`. The acknowledgement and courtesy messages
+  `session_ack`, `base_lock_ack`, `quote_lock_ack`, `claim_notice`,
+  `fill_request` and `settlement_ack` are **currently unreachable**: they are
+  still validated and still advance the choreography if one ever arrives, but
+  no code path stages them. Their planner branches remain as dead-but-correct
+  code rather than being deleted, so re-enabling the fuller handshake is a
+  staging change, not a protocol change.
+- Nothing is lost by their absence because **the chain is authoritative**: each
+  side re-reads every HTLC with `getById` and learns every spend from a decoded
+  account block. An acknowledgement DM can only ever restate what the chain
+  already proves, and a missing one can never make a leg claimable or a refund
+  unavailable.
+- `RECLAIMED` likewise comes only from a decoded `Reclaim` block on the
+  time-locked address's chain (see the Decision above); nothing is inferred
+  from a clock or from a DM.
 
 ## Consequences
 
