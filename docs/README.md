@@ -6,7 +6,7 @@
 
 ## Testnet implementation
 
-- [Manual shared-page testnet swap](guides/manual-testnet-swap.md)
+- [Manual shared-page testnet swap](guides/manual-swap.md)
 - [Browser agent API](guides/agent-api.md)
 - [Testnet wallet notes](guides/testnet-wallet.md)
 

@@ -22,8 +22,6 @@ import {
 } from "./browser/trade-runtime.js";
 import { browserConfig } from "./config.js";
 import { fundingRequirement } from "./order/funding.js";
-import { humanPriceToPrice } from "./order/human-price.js";
-import { quoteAmountForSettlement } from "./order/model.js";
 import type { OrderRecord } from "./order/model.js";
 import { NostrOrderService } from "./order/service.js";
 import { MakerIdentity } from "./nostr/identity.js";
@@ -38,6 +36,10 @@ import { QSR_ZTS, ZNN_ZTS } from "./zenon/types.js";
 import { renderAccountActions } from "./ui/account-actions.js";
 import { renderDashboard, renderWalletSummary } from "./ui/dashboard.js";
 import { formatTokenAmount } from "./ui/format.js";
+import {
+  describeSettlement,
+  orderFormToPublishInput
+} from "./ui/order-form.js";
 import { renderOrderBook } from "./ui/orderbook.js";
 import { renderPendingPublications } from "./ui/order-outbox.js";
 import { showSeedDialog } from "./ui/seed-dialog.js";
@@ -460,10 +462,14 @@ async function assertOrderFunding(input: PublishOrderInput): Promise<void> {
   const state = await requireWallet().getState();
   const held = state.balances.find((balance) => balance.tokenStandard === token);
   if (held === undefined || BigInt(held.balance) < BigInt(requirement.amount)) {
-    const symbol = TOKEN_SYMBOLS[token] ?? token;
+    // Say it in the units the form speaks, not the integers underneath.
+    const info = tokens(token);
+    const symbol = held?.symbol ?? TOKEN_SYMBOLS[token] ?? info.symbol;
+    const decimals = held?.decimals ?? info.decimals;
     throw new Error(
-      `This order needs ${requirement.amount} ${symbol} minor units on chain; ` +
-      `this wallet holds ${held?.balance ?? "0"}`
+      `This order needs ${formatTokenAmount(requirement.amount, decimals, symbol)} ` +
+      `on chain; this wallet holds ` +
+      `${formatTokenAmount(held?.balance ?? "0", decimals, symbol)}`
     );
   }
 }
@@ -827,30 +833,13 @@ if (orderSubmitButton === null) throw new Error("Missing order submit button");
 
 const defaultOrderSettlementHint = orderSettlementHint.textContent ?? "";
 
-/**
- * ZNN and QSR are both 8-decimal, but the symbols and decimals come from the
- * chain read whenever one has landed — the market pair is configuration, not a
- * constant of the protocol.
- */
-const QUOTE_DECIMALS = 8;
-
 function updateOrderSettlementHint(): void {
   orderAmountInput.setCustomValidity("");
-  orderSettlementHint.textContent = defaultOrderSettlementHint;
-  const base = tokens(ZNN_ZTS);
-  const quoteToken = tokens(QSR_ZTS);
-  try {
-    const price = humanPriceToPrice(orderPriceInput.value, quoteToken.decimals);
-    const quote = quoteAmountForSettlement(orderAmountInput.value, price);
-    orderSettlementHint.textContent =
-      `At ${orderPriceInput.value} ${quoteToken.symbol} per ${base.symbol}, ` +
-      `${formatTokenAmount(orderAmountInput.value, base.decimals, base.symbol)} ` +
-      `settles for exactly ` +
-      `${formatTokenAmount(quote, quoteToken.decimals, quoteToken.symbol)} ` +
-      `across one HTLC pair.`;
-  } catch {
-    // Native input patterns and the submit handler provide the authoritative error.
-  }
+  // `null` while the form is mid-edit: the default copy is honest, a stale
+  // number would not be. Native patterns and the submit handler own the error.
+  orderSettlementHint.textContent =
+    describeSettlement(orderAmountInput.value.trim(), orderPriceInput.value.trim(), tokens) ??
+    defaultOrderSettlementHint;
 }
 
 orderAmountInput.addEventListener("input", () => updateOrderSettlementHint());
@@ -869,21 +858,19 @@ orderForm.addEventListener("submit", (event) => {
   updateOrderSettlementHint();
   const form = new FormData(event.currentTarget as HTMLFormElement);
   void withButtonFeedback(orderSubmitButton, "Posting…", async () => {
-    const side = String(form.get("side"));
-    const hours = Number(String(form.get("hours")));
-    if (side !== "buy" && side !== "sell") throw new Error("Unknown order side");
-    // Two hours is the floor: the settlement plan needs the full long locktime
-    // plus its recovery grace to fit inside the order's own lifetime.
-    if (!Number.isSafeInteger(hours) || hours < 2 || hours > 720) {
-      throw new Error("Order lifetime must be 2–720 hours");
-    }
-    const input: PublishOrderInput = {
-      side,
-      amount: String(form.get("amount")),
-      price: humanPriceToPrice(String(form.get("price")), QUOTE_DECIMALS),
-      expiresAt: Math.floor(Date.now() / 1000) + hours * 3_600,
-      execution: "all_or_none"
-    };
+    // One pure conversion from what was typed to what gets signed; the same
+    // token decimals drive it and the settlement hint above.
+    const input: PublishOrderInput = orderFormToPublishInput(
+      {
+        side: String(form.get("side")),
+        amount: String(form.get("amount")),
+        price: String(form.get("price")),
+        hours: String(form.get("hours"))
+      },
+      tokens,
+      Math.floor(Date.now() / 1000)
+    );
+    const side = input.side;
     const publication = await zwap.publishOrder(input);
     const acknowledgements = publication.receipts.filter((receipt) => receipt.ok).length;
     trace("Order", "Public order published", [

@@ -127,8 +127,31 @@ describe("order-book presentation", () => {
 
     expect(button?.textContent).toBe("Settling…");
     expect(button?.disabled).toBe(true);
-    expect(amount?.value).toBe("2000000000");
+    // The person reads and types ZNN; the callback receives minor units.
+    expect(amount?.value).toBe("20");
+    expect(amount?.inputMode).toBe("decimal");
     expect(take).toHaveBeenCalledWith(best, "2000000000", expect.any(HTMLButtonElement));
+  });
+
+  it("echoes the exact minor-unit figure the click will sign", async () => {
+    const best = record(askLow, "sell", "500000000", "2000000000");
+    const book = await buildOrderBook([best], market, 1_700_000_100);
+    const root = document.createElement("section");
+
+    renderOrderBook(root, { status: "ready", book }, { onTake: vi.fn() });
+    const row = root.querySelector<HTMLElement>(`[data-order-id="${askLow}"]`)!;
+    const amount = row.querySelector<HTMLInputElement>("[data-take-amount]")!;
+    const echo = row.querySelector<HTMLElement>("[data-take-echo]")!;
+
+    expect(echo.textContent).toBe("20 ZNN = 2,000,000,000 minor units");
+
+    amount.value = "1.5";
+    amount.dispatchEvent(new Event("input"));
+    expect(echo.textContent).toBe("1.5 ZNN = 150,000,000 minor units");
+
+    amount.value = "nonsense";
+    amount.dispatchEvent(new Event("input"));
+    expect(echo.textContent).toBe("—");
   });
 
   it("offers bid taking and exposes cancellation only for owned orders", async () => {
@@ -193,16 +216,16 @@ describe("order-book presentation", () => {
     expect(rows.map((row) => row.hidden)).toEqual([false, false, false, true, true]);
   });
 
-  it("validates exact all-or-none and partial-fill amounts before taking an order", async () => {
-    const allOrNone = record(askLow, "sell", "500000000", "20");
+  it("validates all-or-none and partial fills in minor units after converting", async () => {
+    const allOrNone = record(askLow, "sell", "500000000", "2000000000");
     const partial = record(
       "77777777-7777-4777-8777-777777777777",
       "sell",
       "500000000",
-      "100"
+      "10000000000"
     );
     partial.state.execution = "partial";
-    partial.state.minimum_fill_amount = "10";
+    partial.state.minimum_fill_amount = "1000000000";
     const book = await buildOrderBook([allOrNone, partial], market, 1_700_000_100);
     const root = document.createElement("section");
     const take = vi.fn();
@@ -219,14 +242,33 @@ describe("order-book presentation", () => {
       '[data-order-id="77777777-7777-4777-8777-777777777777"]'
     )!;
     const partialAmount = partialRow.querySelector<HTMLInputElement>("[data-take-amount]")!;
+    // The minimum is reported back in the units the field speaks.
     partialAmount.value = "9";
     partialRow.querySelector<HTMLButtonElement>("[data-take-order]")!.click();
     expect(take).not.toHaveBeenCalled();
-    expect(partialAmount.validationMessage).toMatch(/minimum/i);
+    expect(partialAmount.validationMessage).toMatch(/minimum partial fill is 10\./i);
 
     partialAmount.value = "25";
     partialRow.querySelector<HTMLButtonElement>("[data-take-order]")!.click();
-    expect(take).toHaveBeenCalledWith(partial, "25", expect.any(HTMLButtonElement));
+    expect(take).toHaveBeenCalledWith(partial, "2500000000", expect.any(HTMLButtonElement));
+  });
+
+  it("refuses a fill finer than the token rather than rounding it away", async () => {
+    const partial = record(askLow, "sell", "500000000", "10000000000");
+    partial.state.execution = "partial";
+    partial.state.minimum_fill_amount = "1";
+    const book = await buildOrderBook([partial], market, 1_700_000_100);
+    const root = document.createElement("section");
+    const take = vi.fn();
+    renderOrderBook(root, { status: "ready", book }, { onTake: take });
+
+    const row = root.querySelector<HTMLElement>(`[data-order-id="${askLow}"]`)!;
+    const amount = row.querySelector<HTMLInputElement>("[data-take-amount]")!;
+    amount.value = "1.123456789";
+    row.querySelector<HTMLButtonElement>("[data-take-order]")!.click();
+
+    expect(take).not.toHaveBeenCalled();
+    expect(amount.validationMessage).toMatch(/fractional digits/i);
   });
 
   it("preserves integer prices above Number.MAX_SAFE_INTEGER", async () => {

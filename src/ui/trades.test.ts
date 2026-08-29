@@ -122,7 +122,12 @@ describe("trade session presentation", () => {
     expect(root.querySelector("[data-trade-price]")?.textContent).toBe("0.35 QSR/ZNN");
     expect(root.querySelector("[data-advance-trade]")).toBeNull();
     expect(root.innerHTML).not.toContain("privateState");
-    expect(root.innerHTML).not.toContain("preimage");
+    // The privacy copy legitimately says "Preimages … are omitted", so scope
+    // the check to the leg evidence, case-insensitively.
+    for (const leg of root.querySelectorAll(".trade-leg")) {
+      expect(leg.innerHTML.toLowerCase()).not.toContain("preimage");
+      expect(leg.innerHTML.toLowerCase()).not.toContain("privatekey");
+    }
   });
 
   it("reads token symbols and decimals from observed chain balances", () => {

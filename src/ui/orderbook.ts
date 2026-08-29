@@ -3,6 +3,7 @@ import type {
   OrderBook,
   OrderRecord
 } from "../order/model.js";
+import { humanAmountToMinor, minorToHumanAmount } from "../order/human-price.js";
 import { beginButtonFeedback } from "./button-feedback.js";
 import {
   formatHumanPrice,
@@ -113,34 +114,58 @@ function orderInfo(
   return details;
 }
 
-function validateTakeAmount(amount: HTMLInputElement, order: OrderRecord): void {
+function groupInteger(value: string): string {
+  return value.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+/**
+ * The field takes human token amounts; everything downstream — the AON and
+ * minimum-fill rules, and the value handed to `onTake` — is minor units. This
+ * is the single conversion point, and it returns `null` when the typed value
+ * is not yet a valid amount.
+ */
+function takeAmountMinorUnits(
+  amount: HTMLInputElement,
+  order: OrderRecord,
+  decimals: number
+): string | null {
   amount.setCustomValidity("");
-  if (!/^[1-9]\d*$/.test(amount.value)) {
-    amount.setCustomValidity("Enter a positive whole-number amount.");
-    return;
+  let fill: bigint;
+  let minor: string;
+  try {
+    minor = humanAmountToMinor(amount.value.trim(), decimals);
+    fill = BigInt(minor);
+  } catch (error) {
+    amount.setCustomValidity(
+      error instanceof Error ? error.message : "Enter a positive amount."
+    );
+    return null;
   }
-  const fill = BigInt(amount.value);
   const remaining = BigInt(order.state.remaining_amount);
   const minimum = BigInt(order.state.minimum_fill_amount);
   if (fill > remaining) {
     amount.setCustomValidity("The fill cannot exceed the remaining amount.");
-  } else if (
-    order.state.execution === "all_or_none" &&
-    fill !== remaining
-  ) {
+    return null;
+  }
+  if (order.state.execution === "all_or_none" && fill !== remaining) {
     amount.setCustomValidity("This all-or-none order requires the full remaining amount.");
-  } else if (
-    order.state.execution === "partial" &&
-    fill < minimum
-  ) {
-    amount.setCustomValidity(`The minimum partial fill is ${minimum.toString()}.`);
-  } else if (
+    return null;
+  }
+  if (order.state.execution === "partial" && fill < minimum) {
+    amount.setCustomValidity(
+      `The minimum partial fill is ${minorToHumanAmount(minimum.toString(), decimals)}.`
+    );
+    return null;
+  }
+  if (
     order.state.execution === "partial" &&
     remaining - fill > 0n &&
     remaining - fill < minimum
   ) {
     amount.setCustomValidity("This fill would leave less than the order minimum.");
+    return null;
   }
+  return minor;
 }
 
 function orderRow(
@@ -176,15 +201,38 @@ function orderRow(
   amount.type = "text";
   amount.className = "nom-input";
   amount.dataset.numeric = "true";
-  amount.inputMode = "numeric";
-  amount.pattern = "[0-9]+";
-  amount.value = order.state.remaining_amount;
+  amount.inputMode = "decimal";
+  amount.pattern = base.decimals > 0
+    ? `(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,${base.decimals}})?`
+    : "[1-9][0-9]*";
+  amount.value = minorToHumanAmount(order.state.remaining_amount, base.decimals);
   amount.dataset.takeAmount = "true";
-  amount.title = `Base amount in ${base.symbol} minor units (10^${base.decimals} per ${base.symbol})`;
+  amount.title = `Amount to trade, in ${base.symbol}`;
   amount.setAttribute(
     "aria-label",
-    `Base amount to ${order.state.side === "sell" ? "buy" : "sell"} in ${base.symbol} minor units`
+    `Amount to ${order.state.side === "sell" ? "buy" : "sell"} in ${base.symbol}`
   );
+
+  // The signed figure, echoed live: a real-funds form should never leave the
+  // person guessing which integer their click actually commits to.
+  const echo = element("small");
+  echo.className = "order-action__echo font-mono tabular-nums";
+  echo.dataset.takeEcho = "true";
+  const paintEcho = (): void => {
+    let minor: string | null = null;
+    try {
+      minor = humanAmountToMinor(amount.value.trim(), base.decimals);
+    } catch {
+      minor = null;
+    }
+    echo.textContent = minor === null
+      ? "—"
+      : `${amount.value.trim()} ${base.symbol} = ${groupInteger(minor)} minor units`;
+    echo.title = echo.textContent;
+  };
+  amount.addEventListener("input", paintEcho);
+  paintEcho();
+
   const take = element(
     "button",
     order.state.side === "sell" ? "Buy" : "Sell"
@@ -198,10 +246,10 @@ function orderRow(
   );
   take.disabled = !order.verified || options.onTake === undefined;
   if (options.onTake) take.addEventListener("click", () => {
-    validateTakeAmount(amount, order);
-    if (!amount.reportValidity()) return;
+    const minor = takeAmountMinorUnits(amount, order, base.decimals);
+    if (!amount.reportValidity() || minor === null) return;
     beginButtonFeedback(take, "Settling…");
-    options.onTake?.(order, amount.value, take);
+    options.onTake?.(order, minor, take);
   });
   controls.append(amount, take);
   controls.append(orderInfo(
@@ -210,7 +258,7 @@ function orderRow(
       ? (cancel) => options.onCancel?.(order, cancel)
       : undefined
   ));
-  action.append(controls);
+  action.append(controls, echo);
   row.append(action);
   return row;
 }

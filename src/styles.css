@@ -5,9 +5,11 @@
    utilities (`.bg-plasma`, `.text-ledger`).
    ============================================================================ */
 
-html {
-  color-scheme: light dark;
-}
+/* The class on <html> is the single source of truth for the theme, so the UA
+   scheme has to follow it rather than the OS — otherwise form controls and
+   scrollbars disagree with the page whenever the two differ. */
+html { color-scheme: light; }
+html.dark { color-scheme: dark; }
 
 body {
   min-width: 320px;
@@ -309,6 +311,14 @@ table { width: 100%; border-collapse: collapse; }
   gap: var(--space-1);
 }
 .order-action__controls .nom-input { min-width: 0; height: 2rem; font-size: var(--text-xs); }
+.order-action__echo {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--muted-foreground);
+  font-size: var(--text-ledger);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .order-info { position: relative; }
 .order-info summary {

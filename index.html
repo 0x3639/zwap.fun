@@ -10,6 +10,9 @@
     <meta name="description" content="zwap is a peer-to-peer exchange that settles ZNN and QSR with hash time-locked contracts on Zenon." />
     <title>zwap / Peer-to-peer ZNN and QSR swaps on Zenon</title>
     <link rel="icon" href="./znn-logo.svg" type="image/svg+xml" />
+    <!-- Render-blocking on purpose: it stamps the theme class before the first
+         paint, so a dark-mode profile never flashes the light palette. -->
+    <script src="./boot.js"></script>
     <link rel="stylesheet" href="/src/styles/design-system/styles.css" />
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
@@ -73,8 +76,8 @@
                   <option value="buy">Buy ZNN</option>
                 </select>
               </label>
-              <label>Amount (ZNN minor units)
-                <input class="nom-input" data-numeric="true" name="amount" inputmode="numeric" pattern="[1-9][0-9]*" value="2000000000" required />
+              <label>Amount (ZNN)
+                <input class="nom-input" data-numeric="true" name="amount" inputmode="decimal" pattern="(?:0|[1-9][0-9]*)(?:\.[0-9]{1,8})?" value="20" required />
               </label>
             </div>
             <div class="field-pair">
@@ -87,7 +90,8 @@
             </div>
             <p id="order-settlement-hint" class="hint" aria-live="polite">
               An order is a public signed intention. Funds move only when both HTLCs exist on chain.
-              zwap converts the price to an exact integer ratio of QSR minor units per ZNN before signing.
+              zwap converts the amount and price to exact integers in minor units before signing, and
+              shows you both figures here.
             </p>
             <button class="nom-btn nom-btn--primary" type="submit">
               <span data-button-label="true">Sign and post order</span>
@@ -175,9 +179,9 @@
           zwap.runUntilSettled(sessionId) · zwap.listTrades() · zwap.revealMnemonic("REVEAL SEED")
         </p>
         <p>
-          <a href="docs/guides/manual-testnet-swap.md">Manual test tutorial</a>
+          <a href="https://github.com/0x3639/zwap.fun/blob/main/docs/guides/manual-swap.md" target="_blank" rel="noopener">Manual test tutorial</a>
           ·
-          <a href="docs/guides/agent-api.md">Read the API contract</a>
+          <a href="https://github.com/0x3639/zwap.fun/blob/main/docs/guides/agent-api.md" target="_blank" rel="noopener">Read the API contract</a>
         </p>
         <p class="agent-strip__credit">
           zwap is a fork of granola, ported from ecash to Zenon HTLC settlement.
@@ -346,7 +350,6 @@
     </main>
 
     <div id="status" role="status" aria-live="polite"></div>
-    <script src="./https-redirect.js"></script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

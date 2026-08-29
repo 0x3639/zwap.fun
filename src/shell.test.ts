@@ -8,6 +8,8 @@ import { renderOrderBook } from "./ui/orderbook.js";
 import { renderTrades } from "./ui/trades.js";
 import { applyTheme, mountThemeToggle } from "./ui/theme.js";
 import { buildOrderBook } from "./order/model.js";
+import { DEFAULT_ORDER_HOURS, orderFormToPublishInput } from "./ui/order-form.js";
+import { tokenDirectory } from "./ui/tokens.js";
 import { QSR_ZTS, ZNN_ZTS } from "./zenon/types.js";
 
 const state: ZwapState = {
@@ -64,6 +66,45 @@ describe("the deployed shell and the renderers agree", () => {
     const form = byId("order-form") as HTMLFormElement;
     expect(form.querySelector('[name="price"]')).not.toBeNull();
     expect(form.querySelector('[name="hours"]')?.getAttribute("min")).toBe("2");
-    expect(form.querySelector('[name="amount"]')).not.toBeNull();
+    // The amount field speaks whole ZNN, not minor units.
+    const amount = form.querySelector<HTMLInputElement>('[name="amount"]');
+    expect(amount?.value).toBe("20");
+    expect(amount?.getAttribute("inputmode")).toBe("decimal");
+    expect(form.querySelector("label")?.parentElement?.textContent)
+      .not.toContain("minor units");
+  });
+
+  it("maps the shipped form defaults to the integers that get signed", () => {
+    document.documentElement.innerHTML = html
+      .replace(/^[\s\S]*?<html[^>]*>/, "")
+      .replace(/<\/html>\s*$/, "");
+    const form = document.getElementById("order-form") as HTMLFormElement;
+    const value = (name: string): string =>
+      form.querySelector<HTMLInputElement | HTMLSelectElement>(`[name="${name}"]`)?.value ?? "";
+
+    const input = orderFormToPublishInput(
+      {
+        side: value("side"),
+        amount: value("amount"),
+        price: value("price"),
+        hours: value("hours")
+      },
+      tokenDirectory(),
+      1_700_000_000
+    );
+
+    expect(input).toEqual({
+      side: "sell",
+      amount: "2000000000",
+      price: "1050000000",
+      expiresAt: 1_700_000_000 + DEFAULT_ORDER_HOURS * 3600,
+      execution: "all_or_none"
+    });
+  });
+
+  it("boots the theme before the module bundle so dark mode never flashes", () => {
+    const head = html.slice(0, html.indexOf("</head>"));
+    expect(head).toContain('<script src="./boot.js"></script>');
+    expect(head.indexOf("boot.js")).toBeLessThan(html.indexOf("/src/main.ts"));
   });
 });
