@@ -14,6 +14,10 @@ import {
 } from "./browser/lock.js";
 import { composeKeystore } from "./browser/keystore-compose.js";
 import {
+  guardKeystoreActions,
+  type WalletSource
+} from "./browser/wallet-source-guard.js";
+import {
   profileFromLocation,
   resetProfileSequence,
   storageNameForProfile
@@ -659,10 +663,38 @@ async function teardownWallet(): Promise<void> {
   tracedTradeCheckpoints.clear();
 }
 
+/** Which wallet is signing right now, read fresh on every guarded call. */
+function walletSource(): WalletSource {
+  return injectedAccount === undefined ? "keystore" : "injected";
+}
+
+/**
+ * Hiding the reveal and the erase in the panel is not enough: `window.zwap` is
+ * a public surface, and an agent script must not read or destroy a seed that
+ * is not the wallet signing this session.
+ *
+ * `resetProfile` is deliberately left unguarded. It is not a keystore action —
+ * it erases the whole profile, including the trade journal and the Nostr
+ * identity the extension session is actively using — and it is the one escape
+ * hatch that must keep working when everything else is wedged.
+ */
+const keystoreOnly = guardKeystoreActions(walletSource, {
+  createWallet: () => locked(() => requireWallet().createWallet()),
+  importWallet: (mnemonic: string) => locked(() => requireWallet().importWallet(mnemonic)),
+  // Reading and erasing the seed touch the keystore only, so they keep working
+  // while the node is unreachable.
+  revealMnemonic: (confirmation: string) => keystore.revealMnemonic(confirmation),
+  clearWallet: async (confirmation: string) => {
+    await locked(() => walletApi === undefined
+      ? keystore.clear(confirmation)
+      : walletApi.clearWallet(confirmation));
+    await teardownWallet();
+  }
+});
+
 const zwap: ZwapBrowserFacade = {
   getState: () => walletState(),
-  createWallet: () => locked(() => requireWallet().createWallet()),
-  importWallet: (mnemonic) => locked(() => requireWallet().importWallet(mnemonic)),
+  ...keystoreOnly,
   receivePending: () => locked(async () => {
     const account = injectedAccount;
     if (account === undefined) return requireWallet().receivePending();
@@ -674,15 +706,6 @@ const zwap: ZwapBrowserFacade = {
     locked(() => injectedAccount === undefined
       ? requireWallet().send(toAddress, tokenStandard, amount)
       : injectedAccount.send(toAddress, tokenStandard, amount)),
-  // Reading and erasing the seed touch the keystore only, so they keep working
-  // while the node is unreachable.
-  revealMnemonic: (confirmation) => keystore.revealMnemonic(confirmation),
-  clearWallet: async (confirmation) => {
-    await locked(() => walletApi === undefined
-      ? keystore.clear(confirmation)
-      : walletApi.clearWallet(confirmation));
-    await teardownWallet();
-  },
   resetProfile: async (confirmation) => {
     if (confirmation !== "RESET ZWAP PROFILE") {
       throw new Error("Type RESET ZWAP PROFILE to erase this profile");
