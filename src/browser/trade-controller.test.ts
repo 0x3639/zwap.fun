@@ -303,6 +303,51 @@ describe("BrowserTradeController", () => {
     expect(subscriptions).toHaveLength(2);
   });
 
+  it("discards a maker subscription whose order key was retired mid-start", async () => {
+    // Stopping the live subscription is not enough: the start already in
+    // flight resolves afterwards and would install a listener on an order key
+    // that no longer exists.
+    const orderA = "11111111-1111-4111-8111-111111111111";
+    const orderB = "22222222-2222-4222-8222-222222222222";
+    const orderIds = [orderA];
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    const { controller, subscriptions, stops } = setup({
+      makerOrderIds: orderIds,
+      startGates: [gateA]
+    });
+
+    const first = controller.enableMaker();
+    await vi.waitFor(() => expect(subscriptions).toHaveLength(1));
+    orderIds.splice(0, 1, orderB);
+    await controller.enableMaker();
+    releaseA();
+    await first;
+
+    await vi.waitFor(() => expect(stops[0]).toHaveBeenCalledOnce());
+    controller.stop();
+    // Still once: it was never installed, so `stop()` had nothing to stop.
+    expect(stops[0]).toHaveBeenCalledOnce();
+    expect(stops[1]).toHaveBeenCalledOnce();
+  });
+
+  it("lets a re-listed order key subscribe again after being retired", async () => {
+    const orderA = "11111111-1111-4111-8111-111111111111";
+    const orderIds = [orderA];
+    const { controller, subscriptions } = setup({ makerOrderIds: orderIds });
+
+    await controller.enableMaker();
+    orderIds.splice(0, 1);
+    await controller.enableMaker();
+    orderIds.push(orderA);
+    await controller.enableMaker();
+
+    expect(subscriptions).toHaveLength(2);
+    expect(subscriptions[1]!.recipientPubkey).toBe(getPublicKey(makerKey));
+  });
+
   it("opens a proposal from the live maker inbox and persists its maker session", async () => {
     const { controller, api, subscriptions } = setup();
     await controller.enableMaker();

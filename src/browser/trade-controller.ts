@@ -150,6 +150,14 @@ export class BrowserTradeController {
   private readonly makerSettlementOrders = new Map<string, string>();
   private readonly subscriptionReconnects = new Map<string, Promise<void>>();
   private makerSubscriptionKeys = new Set<string>();
+  /**
+   * Maker keys that `enableMaker` has dropped since a start was queued.
+   *
+   * Stopping the live subscription is not enough: a start already in flight
+   * resolves later and would install a subscription for an order key that no
+   * longer exists, listening on a destroyed identity until the next reset.
+   */
+  private readonly retiredSubscriptionKeys = new Set<string>();
   private readonly subscriptionStarts = new Map<string, Promise<void>>();
   private subscriptionGeneration = 0;
 
@@ -392,9 +400,12 @@ export class BrowserTradeController {
     );
     for (const key of this.makerSubscriptionKeys) {
       if (makerSubscriptionKeys.has(key)) continue;
+      this.retiredSubscriptionKeys.add(key);
       this.subscriptions.get(key)?.stop();
       this.subscriptions.delete(key);
     }
+    // Anything on this list is live again, whatever it was before.
+    for (const key of makerSubscriptionKeys) this.retiredSubscriptionKeys.delete(key);
     this.makerSubscriptionKeys = makerSubscriptionKeys;
     const makerPubkeys: string[] = [];
     await Promise.all(orderIds.map(async (orderId) => {
@@ -465,6 +476,7 @@ export class BrowserTradeController {
     }
     this.subscriptions.clear();
     this.makerSubscriptionKeys.clear();
+    this.retiredSubscriptionKeys.clear();
   }
 
   private async ensureSessionSubscription(sessionId: string): Promise<void> {
@@ -561,6 +573,7 @@ export class BrowserTradeController {
       if (subscription === undefined) return;
       if (
         this.subscriptionGeneration !== generation ||
+        this.retiredSubscriptionKeys.has(key) ||
         this.subscriptions.has(key)
       ) {
         subscription.stop();
@@ -607,7 +620,10 @@ export class BrowserTradeController {
       this.subscriptions.get(key)?.stop();
       this.subscriptions.delete(key);
       let attempts = 0;
-      while (this.subscriptionGeneration === generation) {
+      while (
+        this.subscriptionGeneration === generation &&
+        !this.retiredSubscriptionKeys.has(key)
+      ) {
         if (attempts > 0) {
           await this.wait(Math.min(10_000, 250 * (2 ** Math.min(attempts, 5))));
           if (this.subscriptionGeneration !== generation) return;

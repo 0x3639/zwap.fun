@@ -8,6 +8,7 @@ import {
   type OrderRecord
 } from "../order/model.js";
 import { QSR_ZTS, ZNN_ZTS } from "../zenon/types.js";
+import { withButtonFeedback } from "./button-feedback.js";
 import { renderOrderBook } from "./orderbook.js";
 
 const market: ExactMarket = {
@@ -116,7 +117,15 @@ describe("order-book presentation", () => {
     const best = record(askLow, "sell", "500000000", "2000000000");
     const book = await buildOrderBook([best], market, 1_700_000_100);
     const root = document.createElement("section");
-    const take = vi.fn();
+    // The real handler wraps the take in `withButtonFeedback`; mirror that so
+    // this covers the actual busy-state contract rather than a stand-in.
+    const take = vi.fn((
+      _order: OrderRecord,
+      _minor: string,
+      button: HTMLButtonElement
+    ) => {
+      void withButtonFeedback(button, "Settling…", () => new Promise<void>(() => {}));
+    });
 
     renderOrderBook(root, { status: "ready", book }, { onTake: take });
     const button = root.querySelector<HTMLButtonElement>(`[data-order-id="${askLow}"] [data-take-order]`);

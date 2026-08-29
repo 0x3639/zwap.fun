@@ -4,7 +4,6 @@ import type {
   OrderRecord
 } from "../order/model.js";
 import { humanAmountToMinor, minorToHumanAmount } from "../order/human-price.js";
-import { beginButtonFeedback } from "./button-feedback.js";
 import {
   formatHumanPrice,
   formatPriceDelta,
@@ -248,7 +247,10 @@ function orderRow(
   if (options.onTake) take.addEventListener("click", () => {
     const minor = takeAmountMinorUnits(amount, order, base.decimals);
     if (!amount.reportValidity() || minor === null) return;
-    beginButtonFeedback(take, "Settling…");
+    // The handler owns the busy label through `withButtonFeedback`, which
+    // refuses a button that is already running. Decline the duplicate click
+    // here so that refusal never has to surface as an error toast.
+    if (take.dataset.busy === "true") return;
     options.onTake?.(order, minor, take);
   });
   controls.append(amount, take);
