@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accountBlockToView, htlcInfoToView } from "./sdk-node.js";
+import { accountBlockToView, htlcInfoToView, isNotFound } from "./sdk-node.js";
 import { HtlcInfo, AccountBlock } from "znn-typescript-sdk";
 
 describe("sdk-node views", () => {
@@ -24,5 +24,20 @@ describe("sdk-node views", () => {
       confirmationDetail: { numConfirmations: 4, momentumHeight: 9, momentumHash: "00".repeat(32), momentumTimestamp: 123 }, pairedAccountBlock: null, token: null
     });
     expect(accountBlockToView(block)).toMatchObject({ hash: "ab".repeat(32), height: 3, blockType: 2, amount: "7", data: "0102", confirmations: 4, momentumTimestamp: 123 });
+  });
+
+  it("treats only a real not-found answer as an absent HTLC", () => {
+    expect(isNotFound(new Error("data not found"))).toBe(true);
+    expect(isNotFound(new Error("No HTLC with that id"))).toBe(true);
+    expect(isNotFound(new Error("account block does not exist"))).toBe(true);
+    expect(isNotFound({ code: -32000, message: "whatever" })).toBe(true);
+
+    // Regression: a local bug must propagate, not read as "no such HTLC" and
+    // silently turn a live lock into an absent one.
+    expect(isNotFound(new TypeError("Cannot read properties of null (reading 'id')")))
+      .toBe(false);
+    expect(isNotFound(new Error("null"))).toBe(false);
+    expect(isNotFound(new Error("connection reset"))).toBe(false);
+    expect(isNotFound({ code: -32601, message: "method not supported" })).toBe(false);
   });
 });

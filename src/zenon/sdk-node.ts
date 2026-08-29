@@ -93,7 +93,22 @@ export class SdkZenonNode implements ZenonNodePort {
   }
 }
 
-function isNotFound(error: unknown): boolean {
+const NOT_FOUND_MESSAGE = /not found|no htlc|data not found|does not exist/i;
+
+/**
+ * True only when the node itself answered "there is nothing here".
+ *
+ * The match is deliberately tight. Anything looser - the old rule also matched
+ * any message containing "null" - swallows local bugs such as
+ * `TypeError: Cannot read properties of null` and reports a live HTLC as
+ * absent, which the coordinator reads as a leg that was never funded.
+ */
+export function isNotFound(error: unknown): boolean {
+  if (
+    typeof error === "object" && error !== null && "code" in error &&
+    (error as { code: unknown }).code === -32000
+  ) return true;
+  if (error instanceof TypeError) return false;
   const message = error instanceof Error ? error.message : String(error);
-  return /not found|no htlc|null/i.test(message) || (typeof error === "object" && error !== null && "code" in error && (error as { code: unknown }).code === -32000);
+  return NOT_FOUND_MESSAGE.test(message);
 }

@@ -13,7 +13,11 @@ import {
   withOrderOutboxLock
 } from "./browser/lock.js";
 import { composeKeystore } from "./browser/keystore-compose.js";
-import { profileFromLocation, storageNameForProfile } from "./browser/profile.js";
+import {
+  profileFromLocation,
+  resetProfileSequence,
+  storageNameForProfile
+} from "./browser/profile.js";
 import { BrowserTradeController } from "./browser/trade-controller.js";
 import { startInboxListeners } from "./browser/startup.js";
 import {
@@ -612,7 +616,12 @@ const zwap: ZwapBrowserFacade = {
     if (confirmation !== "RESET ZWAP PROFILE") {
       throw new Error("Type RESET ZWAP PROFILE to erase this profile");
     }
-    await driver.resetDatabase();
+    await resetProfileSequence({
+      runLocked: locked,
+      forgetWallet: () => walletApi?.forgetWallet(),
+      resetDatabase: () => driver.resetDatabase(),
+      teardown: teardownWallet
+    });
   },
   getMakerPublicKeys: orderApi.getMakerPublicKeys.bind(orderApi),
   getOrderBook: orderApi.getOrderBook.bind(orderApi),

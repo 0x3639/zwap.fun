@@ -161,6 +161,15 @@ export class ZwapApi implements ZenonPort {
     this.invalidate();
   }
 
+  /**
+   * Drops the in-memory wallet without touching storage, for when the seed is
+   * erased by other means - a whole-profile reset deletes the database under
+   * this object, and the key pair it derived must not outlive it.
+   */
+  forgetWallet(): void {
+    this.invalidate();
+  }
+
   private invalidate(): void {
     this.generation += 1;
     this.unlocking = undefined;
