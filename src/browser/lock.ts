@@ -98,6 +98,43 @@ export async function withKeystoreWriteLock<T>(
   );
 }
 
+/**
+ * Guards the encrypted `zwap.maker-identity` namespace, where the per-order
+ * Nostr secret keys live. Its own name for the same reason the keystore has
+ * one: `EncryptedStorageDriver` re-acquires this runner on every `get`/`set`,
+ * and callers above already hold the account lock.
+ */
+export async function withMakerIdentityLock<T>(
+  profile: string,
+  action: () => Promise<T>,
+  locks: LockPort | undefined = hasNativeWebLocks() ? navigator.locks : undefined
+): Promise<T> {
+  return requestLock(
+    `zwap-maker-identity-${profile}`,
+    action,
+    locks
+  );
+}
+
+/**
+ * Serializes `MakerIdentity`'s read-then-write of the whole order-key record.
+ *
+ * A third name again: `withMakerIdentityLock` is re-acquired by the encrypted
+ * driver inside every `get`/`set`, and the account lock may already be held by
+ * the facade above - either one would deadlock here.
+ */
+export async function withMakerIdentityWriteLock<T>(
+  profile: string,
+  action: () => Promise<T>,
+  locks: LockPort | undefined = hasNativeWebLocks() ? navigator.locks : undefined
+): Promise<T> {
+  return requestLock(
+    `zwap-maker-identity-${profile}-write`,
+    action,
+    locks
+  );
+}
+
 export async function withOrderOutboxLock<T>(
   profile: string,
   action: () => Promise<T>,

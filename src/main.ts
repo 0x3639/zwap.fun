@@ -13,6 +13,7 @@ import {
   withOrderOutboxLock
 } from "./browser/lock.js";
 import { composeKeystore } from "./browser/keystore-compose.js";
+import { composeMakerIdentity } from "./browser/maker-identity-compose.js";
 import {
   profileFromLocation,
   resetProfileSequence,
@@ -28,7 +29,6 @@ import { browserConfig } from "./config.js";
 import { fundingRequirement } from "./order/funding.js";
 import type { OrderRecord } from "./order/model.js";
 import { NostrOrderService } from "./order/service.js";
-import { MakerIdentity } from "./nostr/identity.js";
 import { RelayClient } from "./nostr/relay.js";
 import { OrderOutboxRepository } from "./storage/order-outbox.js";
 import { IndexedDbStorageDriver } from "./storage/driver.js";
@@ -193,7 +193,9 @@ const outboxLocked = <T>(action: () => Promise<T>): Promise<T> =>
 // on every read and write, and the facade already holds the account lock when
 // it calls in. See `composeKeystore`.
 const keystore = composeKeystore(driver, profile);
-const makerIdentity = new MakerIdentity(driver, locked);
+// Order signing keys are encrypted at rest under their own lock, for the same
+// reason the keystore is. See `composeMakerIdentity`.
+const makerIdentity = composeMakerIdentity(driver, profile);
 const relayClient = new RelayClient();
 const orderService = new NostrOrderService(makerIdentity, relayClient);
 const orderOutbox = new OrderOutboxRepository(driver, outboxLocked);

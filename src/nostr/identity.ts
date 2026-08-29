@@ -48,6 +48,12 @@ function parseStored(value: unknown): StoredOrderKeys {
   return { version: 1, keys: { ...stored.keys } };
 }
 
+/**
+ * Per-order Nostr signing keys.
+ *
+ * `driver` must be an encrypted driver: these are the keys that speak for an
+ * order, and a raw IndexedDB dump must not be one. See `composeMakerIdentity`.
+ */
 export class MakerIdentity {
   constructor(
     private readonly driver: StorageDriver,
@@ -159,13 +165,8 @@ export class MakerIdentity {
     if (!UUID_V4.test(orderId)) throw new Error("Order ID must be a UUID v4");
     await this.withStoredKeys(async (stored) => {
       if (!Object.hasOwn(stored.keys, orderId)) return;
-      const secretKey = stored.keys[orderId];
       delete stored.keys[orderId];
       await this.driver.set(ORDER_KEYS_KEY, stored);
-      if (secretKey) {
-        const bytes = hexToBytes(secretKey);
-        bytes.fill(0);
-      }
     });
   }
 }
