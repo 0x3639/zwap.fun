@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   advanceTrade,
+  canAdvanceTrade,
   createSettlementPlan,
   settlementAmounts,
+  PERSISTED_PHASE_STEPS,
   type TradePhase
 } from "./model.js";
 
@@ -98,12 +100,36 @@ describe("Zwap settlement model", () => {
 
   it("enters explicit recovery without releasing locked value", () => {
     expect(advanceTrade("reserved", "abort_confirmed")).toBe("released");
-    expect(advanceTrade("base_locked", "settlement_cutoff_reached")).toBe("waiting_base_refund");
-    expect(advanceTrade("quote_locked", "settlement_cutoff_reached")).toBe("waiting_quote_refund");
-    expect(advanceTrade("waiting_quote_refund", "quote_refund_confirmed")).toBe("waiting_base_refund");
+    expect(advanceTrade("base_locked", "base_refund_pending")).toBe("waiting_base_refund");
+    expect(advanceTrade("quote_locked", "quote_refund_pending")).toBe("waiting_quote_refund");
+    expect(advanceTrade("waiting_quote_refund", "quote_refund_confirmed")).toBe("released");
     expect(advanceTrade("waiting_base_refund", "base_refund_confirmed")).toBe("released");
-    expect(advanceTrade("quote_claimed", "settlement_cutoff_reached")).toBe("waiting_base_claim");
-    expect(advanceTrade("waiting_base_claim", "base_spent")).toBe("base_claimed");
+    expect(advanceTrade("waiting_base_refund", "release_confirmed")).toBe("released");
     expect(advanceTrade("quote_locked", "contradiction_detected")).toBe("frozen");
+  });
+
+  it("keeps the refund ladder reachable from every phase recovery can start in", () => {
+    // Regression: `enter_recovery` used to emit rungs the durable validator
+    // rejected, so an abandoned maker holding a live base HTLC could never
+    // reclaim it.
+    for (const phase of [
+      "negotiating", "reserved", "base_locked", "quote_locked",
+      "quote_claimed", "base_claimed", "frozen"
+    ] as TradePhase[]) {
+      expect(advanceTrade(phase, "base_refund_pending")).toBe("waiting_base_refund");
+      expect(PERSISTED_PHASE_STEPS.has(`${phase}:waiting_base_refund`)).toBe(true);
+    }
+    for (const phase of [
+      "base_locked", "quote_locked", "quote_claimed", "base_claimed", "frozen"
+    ] as TradePhase[]) {
+      expect(advanceTrade(phase, "quote_refund_pending")).toBe("waiting_quote_refund");
+      expect(PERSISTED_PHASE_STEPS.has(`${phase}:waiting_quote_refund`)).toBe(true);
+    }
+    for (const phase of ["waiting_base_refund", "frozen"] as TradePhase[]) {
+      expect(PERSISTED_PHASE_STEPS.has(`${phase}:released`)).toBe(true);
+    }
+    expect(PERSISTED_PHASE_STEPS.has("waiting_quote_refund:released")).toBe(true);
+    expect(canAdvanceTrade("filled", "base_refund_pending")).toBe(false);
+    expect(canAdvanceTrade("released", "base_refund_pending")).toBe(false);
   });
 });

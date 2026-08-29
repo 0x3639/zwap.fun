@@ -15,7 +15,11 @@ import type {
   TradeTranscriptJournal
 } from "../trade/session.js";
 import { deploymentFor, TRADE_MESSAGE_TYPES } from "../trade/messages.js";
-import { CLAIM_CUTOFF_MARGIN, RESERVATION_GRACE_SECONDS } from "../trade/model.js";
+import {
+  CLAIM_CUTOFF_MARGIN,
+  PERSISTED_PHASE_STEPS,
+  RESERVATION_GRACE_SECONDS
+} from "../trade/model.js";
 import { EncryptedStorageDriver } from "./encrypted-storage.js";
 import type { StorageDriver } from "./driver.js";
 
@@ -33,7 +37,7 @@ const ZENON_NETWORK = /^zenon-[a-z0-9-]+$/;
 const TRADE_PHASES = new Set([
   "negotiating", "reserved", "base_locked", "quote_locked", "quote_claimed",
   "base_claimed", "filled", "waiting_quote_refund", "waiting_base_refund",
-  "waiting_base_claim", "released", "frozen"
+  "released", "frozen"
 ]);
 const CHOREOGRAPHY_PHASES = new Set([
   "awaiting_reserve_propose", "awaiting_reserve_accept", "awaiting_session_ack",
@@ -1621,23 +1625,12 @@ const ORDER_STATUS_RANK: Record<
   committed: 2
 };
 
-const HAPPY_PATH_PHASES = new Set([
-  "negotiating:reserved",
-  "negotiating:base_locked",
-  "reserved:base_locked",
-  "base_locked:quote_locked",
-  "quote_locked:quote_claimed",
-  "quote_claimed:base_claimed",
-  "base_claimed:filled",
-  "quote_locked:filled",
-  "reserved:released",
-  "base_locked:waiting_base_refund",
-  "quote_locked:waiting_quote_refund",
-  "quote_claimed:waiting_base_claim",
-  "waiting_quote_refund:waiting_base_refund",
-  "waiting_base_refund:released",
-  "waiting_base_claim:base_claimed"
-]);
+/**
+ * The persisted checkpoint rule is the state machine, not a copy of it: every
+ * pair here is derived from `transitions` in `trade/model.ts`, so an effect can
+ * never produce a phase step the durable validator would reject.
+ */
+const HAPPY_PATH_PHASES = PERSISTED_PHASE_STEPS;
 
 function isPrefix(previous: unknown[], next: unknown[]): boolean {
   return previous.every((value, index) =>

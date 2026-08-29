@@ -591,4 +591,114 @@ describe("two-party Zenon atomic swap", () => {
       reservation: null
     });
   }, 60_000);
+
+  /** Drives both sides until each one has locked its own leg. */
+  async function bothLegsLocked(): Promise<Stack> {
+    const value = await stack("sell");
+    await startTaker(value);
+    await drive(value, [value.taker], {
+      stopWhen: (_party, current) =>
+        current.privateState.transcript.choreography.phase === "awaiting_reserve_accept"
+    });
+    await startMaker(value);
+    await drive(value, [value.maker, value.taker], {
+      stopWhen: (_party, current) =>
+        current.privateState.transcript.choreography.phase === "settling"
+    });
+    return value;
+  }
+
+  it("reclaims the maker's base leg after both legs lock and both tabs sleep", async () => {
+    const value = await bothLegsLocked();
+    const stalled = await session(value.maker);
+    expect(stalled.phase).toBe("quote_locked");
+    expect(stalled.privateState.transcript.choreography.phase).toBe("settling");
+    expect(stalled.privateState.legs.base.htlcId).not.toBeNull();
+    expect(stalled.privateState.legs.quote.htlcId).not.toBeNull();
+
+    // One jump over `makerClaimCutoff`, the long locktime and the refund guard:
+    // the maker never evaluated a per-phase cutoff while it slept.
+    value.clock.now = stalled.plan.reservationExpiresAt;
+
+    const trace = await drive(value, [value.maker]);
+    expect(trace[0]).toBe("maker:enter_recovery");
+    expect(trace).toContain("maker:prepare_base_refund");
+
+    const maker = await session(value.maker);
+    expect(maker.phase).toBe("released");
+    expect(nextCoordinatorAction(maker, value.clock.now)).toEqual({ kind: "none" });
+    await expect(value.node.getHtlc(stalled.privateState.legs.base.htlcId!))
+      .resolves.toBeNull();
+    await expect(value.maker.account.receiveAll()).resolves.toBe(1);
+    expect(await balance(value.node, value.maker.address, ZNN_ZTS)).toBe(BASE_AMOUNT);
+    expect((await value.maker.reservations.load()).reservations).toEqual([]);
+
+    const published = await value.orderService.loadLatestPublishedProjection(
+      maker.orderAddress
+    );
+    expect(published.record.state).toMatchObject({
+      status: "open",
+      reserved_amount: "0",
+      reservation: null
+    });
+  }, 60_000);
+
+  it("refunds the taker's quote leg when the maker never claims it", async () => {
+    const value = await bothLegsLocked();
+    const stalled = await session(value.taker);
+    expect(stalled.phase).toBe("quote_locked");
+    expect(stalled.privateState.legs.quote.htlcId).not.toBeNull();
+
+    value.clock.now = stalled.plan.shortLocktime + REFUND_GUARD_SECONDS + 1;
+
+    const trace = await drive(value, [value.taker]);
+    expect(trace[0]).toBe("taker:enter_recovery");
+    expect(trace).toContain("taker:prepare_quote_refund");
+
+    const taker = await session(value.taker);
+    expect(taker.phase).toBe("released");
+    expect(nextCoordinatorAction(taker, value.clock.now)).toEqual({ kind: "none" });
+    await expect(value.node.getHtlc(stalled.privateState.legs.quote.htlcId!))
+      .resolves.toBeNull();
+    await expect(value.taker.account.receiveAll()).resolves.toBe(1);
+    expect(await balance(value.node, value.taker.address, QSR_ZTS)).toBe(QUOTE_AMOUNT);
+    expect((await value.taker.reservations.load()).reservations).toEqual([]);
+  }, 60_000);
+
+  it("reclaims a frozen session's live lock and releases the order", async () => {
+    const value = await stack("sell");
+    await startTaker(value);
+    await drive(value, [value.taker], {
+      stopWhen: (_party, current) =>
+        current.privateState.transcript.choreography.phase === "awaiting_reserve_accept"
+    });
+    await startMaker(value);
+    await drive(value, [value.maker, value.taker], {
+      stopWhen: (party, current) =>
+        party.role === "taker" &&
+        current.privateState.transcript.choreography.phase === "awaiting_quote_lock"
+    });
+    const stalled = await session(value.maker);
+    expect(stalled.phase).toBe("base_locked");
+
+    // A contradiction froze the session while its base leg was still on chain.
+    const frozen = structuredClone(stalled);
+    frozen.revision += 1;
+    frozen.updatedAt = value.clock.now;
+    frozen.phase = "frozen";
+    frozen.privateState.transcript.choreography.phase = "failed";
+    frozen.evidence.chainStates.push("terms_mismatch:quote:htlc-amount");
+    await value.maker.sessions.save(frozen, stalled.revision);
+
+    value.clock.now = stalled.plan.reservationExpiresAt;
+    const trace = await drive(value, [value.maker]);
+    expect(trace[0]).toBe("maker:enter_recovery");
+    expect(trace).toContain("maker:prepare_base_refund");
+
+    const maker = await session(value.maker);
+    expect(maker.phase).toBe("released");
+    expect(nextCoordinatorAction(maker, value.clock.now)).toEqual({ kind: "none" });
+    await expect(value.maker.account.receiveAll()).resolves.toBe(1);
+    expect(await balance(value.node, value.maker.address, ZNN_ZTS)).toBe(BASE_AMOUNT);
+  }, 60_000);
 });

@@ -141,7 +141,6 @@ export const ATOMIC_SWAP_ERROR_PHASES = [
   "filled",
   "waiting_quote_refund",
   "waiting_base_refund",
-  "waiting_base_claim",
   "released",
   "frozen"
 ] as const;

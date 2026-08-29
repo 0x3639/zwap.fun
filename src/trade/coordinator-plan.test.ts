@@ -392,6 +392,12 @@ describe("atomic swap coordinator action planning", () => {
       .toBe("enter_recovery");
     expect(nextCoordinatorAction(maker, maker.plan.longLocktime + 59).kind)
       .toBe("enter_recovery");
+    // The rung comes first: only a session already on the ladder may touch the
+    // chain, so the reclaim planning below starts from `waiting_base_refund`.
+    expect(nextCoordinatorAction(maker, maker.plan.longLocktime + 60).kind)
+      .toBe("enter_recovery");
+    maker.phase = "waiting_base_refund";
+    maker.privateState.transcript.choreography.phase = "refunding";
     expect(nextCoordinatorAction(maker, maker.plan.longLocktime + 60).kind)
       .toBe("observe_base");
     markPostExpiryLocked(maker, "base", maker.plan.longLocktime + 61);
@@ -406,6 +412,10 @@ describe("atomic swap coordinator action planning", () => {
       .toBe("enter_recovery");
     taker.privateState.legs.quote.observations = [];
     taker.evidence.legs.quote.htlcState = "UNKNOWN";
+    expect(nextCoordinatorAction(taker, taker.plan.shortLocktime + 60).kind)
+      .toBe("enter_recovery");
+    taker.phase = "waiting_quote_refund";
+    taker.privateState.transcript.choreography.phase = "refunding";
     expect(nextCoordinatorAction(taker, taker.plan.shortLocktime + 60).kind)
       .toBe("observe_quote");
     markPostExpiryLocked(taker, "quote", taker.plan.shortLocktime + 61);
@@ -526,6 +536,7 @@ describe("atomic swap coordinator action planning", () => {
 
   it("releases after a completed and account-reconciled refund without claim witness evidence", () => {
     const current = session("maker", "refunding");
+    current.phase = "waiting_base_refund";
     setCommittedPublication(current, "reserve", "88".repeat(32));
     markLockReady(current, "base");
     const eligible = current.plan.longLocktime + current.plan.refundGuardSeconds;
@@ -586,5 +597,28 @@ describe("atomic swap coordinator action planning", () => {
     current.evidence.fillProjectionId = "dd".repeat(32);
     expect(nextCoordinatorAction(current, NOW + 2).kind)
       .toBe("enter_recovery");
+  });
+  it("idles instead of re-entering recovery between the cutoff and the refund window", () => {
+    // Regression: `enter_recovery` used to be re-planned on every step for any
+    // session whose choreography is `refunding`, so a maker waiting for its
+    // long locktime burned one revision per step and exhausted the browser's
+    // bounded drive loop without making any progress.
+    const maker = session("maker", "refunding");
+    maker.phase = "waiting_base_refund";
+    maker.privateState.legs.base.htlcId = BASE_HTLC_ID;
+    maker.privateState.legs.quote.htlcId = QUOTE_HTLC_ID;
+
+    const window = maker.plan.longLocktime + maker.plan.refundGuardSeconds;
+    for (const now of [maker.plan.makerClaimCutoff, maker.plan.longLocktime, window - 1]) {
+      expect(nextCoordinatorAction(maker, now)).toEqual({ kind: "none" });
+    }
+    expect(nextCoordinatorAction(maker, window).kind).toBe("observe_base");
+
+    const taker = session("taker", "refunding");
+    taker.phase = "waiting_quote_refund";
+    taker.privateState.legs.quote.htlcId = QUOTE_HTLC_ID;
+    const quoteWindow = taker.plan.shortLocktime + taker.plan.refundGuardSeconds;
+    expect(nextCoordinatorAction(taker, quoteWindow - 1)).toEqual({ kind: "none" });
+    expect(nextCoordinatorAction(taker, quoteWindow).kind).toBe("observe_quote");
   });
 });

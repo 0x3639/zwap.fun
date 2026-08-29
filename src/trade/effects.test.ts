@@ -27,7 +27,10 @@ import {
 import { ZenonTradeClient, ZenonTradeError } from "../zenon/trade-client.js";
 import { HTLC_ADDRESS, QSR_ZTS, ZNN_ZTS, type ZenonNodePort } from "../zenon/types.js";
 import type { AtomicSwapBody, AtomicSwapChoreography } from "./atomic-messages.js";
-import type { CoordinatorAction } from "./coordinator-plan.js";
+import {
+  nextCoordinatorAction,
+  type CoordinatorAction
+} from "./coordinator-plan.js";
 import {
   classifyChainError,
   ZwapChainEffectError,
@@ -1304,6 +1307,25 @@ describe("ZwapCoordinatorEffects", () => {
 
       expect(recovering.phase).toBe("waiting_quote_refund");
       expect(recovering.privateState.transcript.choreography.phase).toBe("refunding");
+    });
+
+    it("refuses a recovery step that would not move the session", async () => {
+      // Regression: re-entering the same rung bumped the revision on every
+      // step, so a session waiting for its refund window spun without progress.
+      const { context, takerSession } = await lockedQuote();
+      const recovering = await context.taker.effects.applyLocal({
+        action: { kind: "enter_recovery" },
+        session: takerSession,
+        now: NOW
+      });
+
+      expect(nextCoordinatorAction(recovering, NOW)).toEqual({ kind: "none" });
+      await expect(context.taker.effects.applyLocal({
+        action: { kind: "enter_recovery" },
+        session: recovering,
+        now: NOW + 1
+      })).rejects.toThrow("Recovery would not move the trade session");
+      expect(recovering.revision).toBe(takerSession.revision + 1);
     });
 
     it("reclaims after the expiry guard, and the counterparty then observes RECLAIMED", async () => {

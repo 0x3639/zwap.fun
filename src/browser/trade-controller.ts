@@ -110,7 +110,6 @@ const MAKER_PHASE_PROGRESS: Record<PublicTradeView["phase"], number> = {
   base_claimed: 50,
   waiting_quote_refund: 60,
   waiting_base_refund: 60,
-  waiting_base_claim: 60,
   released: 70,
   filled: 70,
   frozen: 70

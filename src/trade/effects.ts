@@ -40,8 +40,10 @@ import {
   type AtomicSwapErrorCode,
   type AtomicSwapMessageType
 } from "./atomic-messages.js";
-import type {
-  CoordinatorAction
+import {
+  recoveryIsIdle,
+  recoveryStep,
+  type CoordinatorAction
 } from "./coordinator-plan.js";
 import type {
   CoordinatorEffectPort,
@@ -61,7 +63,7 @@ import {
   type ZwapTradeMessage,
   type ZwapTradeTerms
 } from "./messages.js";
-import { advanceTrade } from "./model.js";
+import { advanceTrade, canAdvanceTrade } from "./model.js";
 import type {
   ChainOperationResult,
   PersistedHtlcState,
@@ -370,6 +372,11 @@ function slotLeg(session: TradeSession, slot: ProtocolSlot): "base" | "quote" {
   return makerOffersBase(session) ? "quote" : "base";
 }
 
+/** The inverse of `slotLeg`: which protocol slot funded this market leg. */
+function legSlot(session: TradeSession, leg: "base" | "quote"): ProtocolSlot {
+  return slotLeg(session, "base") === leg ? "base" : "quote";
+}
+
 /**
  * Builds the exact HTLC terms both sides must agree on for one protocol slot.
  *
@@ -621,24 +628,33 @@ export class ZwapCoordinatorEffects implements CoordinatorEffectPort {
         }
         const next = bump(session, now);
         next.privateState.chainOperation = null;
+        // Each side holds exactly one leg, so applying its own refund ends its
+        // ladder. The maker normally reaches `released` through the release
+        // projection instead; this covers the taker, which never publishes one.
+        if (operation.kind === "refund" && operation.result !== null) {
+          const event = legSlot(session, operation.leg) === "base"
+            ? "base_refund_confirmed"
+            : "quote_refund_confirmed";
+          if (canAdvanceTrade(session.phase, event)) {
+            next.phase = advanceTrade(session.phase, event);
+          }
+        }
         return next;
       }
       case "enter_recovery": {
+        // The planner owns the decision; this effect only records it. A
+        // recovery that would change nothing is a livelock, not a checkpoint.
+        if (recoveryIsIdle(session)) {
+          throw new Error("Recovery would not move the trade session");
+        }
+        const step = recoveryStep(session);
         const next = bump(session, now);
-        next.privateState.transcript.choreography.phase = "refunding";
-        if (
-          session.role === "maker" &&
-          session.privateState.legs[slotLeg(session, "base")].htlcId !== null
-        ) {
-          next.phase = "waiting_base_refund";
-        } else if (
-          session.role === "taker" &&
-          session.privateState.legs[slotLeg(session, "quote")].htlcId !== null
-        ) {
-          next.phase = "waiting_quote_refund";
-        } else {
-          next.phase = "frozen";
-          next.privateState.transcript.choreography.phase = "failed";
+        next.phase = step.phase;
+        next.privateState.transcript.choreography.phase = step.choreography;
+        // A message that failed validation is discarded by recovery; keeping it
+        // would block every later action behind a checkpoint nothing can clear.
+        if (next.privateState.pendingIncoming?.validation.status === "rejected") {
+          next.privateState.pendingIncoming = null;
         }
         return next;
       }

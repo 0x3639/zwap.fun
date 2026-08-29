@@ -1,4 +1,5 @@
 import { isHex32 } from "../zenon/validate.js";
+import type { TradePhase } from "./model.js";
 import type { TradeSession } from "./session.js";
 
 export type CoordinatorAction =
@@ -115,7 +116,14 @@ function terminal(session: TradeSession): boolean {
       : exactVerifiedTakerFill(session);
     return bothLegsSpent(session) && authoritativeFill;
   }
-  if (session.phase === "released") return exactCommittedRelease(session);
+  if (session.phase === "released") {
+    // Only the maker owes a release projection; once it is committed - or was
+    // never owed, which is every taker and any maker that never reserved - a
+    // released session has nothing left to do.
+    return session.role !== "maker" ||
+      session.reserveProjectionId === null ||
+      exactCommittedRelease(session);
+  }
   if (session.phase === "frozen") {
     return session.reserveProjectionId === null &&
       session.privateState.legs.base.htlcId === null &&
@@ -221,23 +229,61 @@ function unsafeStagedDelivery(session: TradeSession, now: number): boolean {
 }
 
 /**
- * True when this side still has to step onto the refund ladder before it may
- * touch the chain.
+ * The single description of what `enter_recovery` does, shared by the planner
+ * and the effect so the two can never disagree.
  *
- * `enter_recovery` is the only effect that moves a session to a `waiting_*`
- * phase, and the durable validator accepts a refund only along
- * `base_locked -> waiting_base_refund -> released` (and the taker's
- * `quote_locked -> waiting_quote_refund`). A session that reclaims first and
- * changes phase later - a maker whose tab was closed from before
- * `makerClaimCutoff` until after `longLocktime + refundGuardSeconds`, which
- * skips every per-phase cutoff check in one jump - would get its funds back on
- * chain and then wedge forever retrying the release commit, leaving the order
- * reserved on the relay. Taking the rung first keeps the ladder walked.
+ * A side that still holds its own live HTLC steps onto its rung of the refund
+ * ladder; a side with nothing left on chain fails the session outright. The
+ * rung matters because the durable validator only accepts a release along the
+ * ladder: a session that reclaims first and changes phase later would get its
+ * funds back on chain and then wedge forever retrying the release commit,
+ * leaving the order reserved on the relay.
+ *
+ * `filled` and `released` are value-terminal: there is nothing left to reclaim,
+ * so recovery leaves them exactly as they are and the planner idles.
  */
+export interface RecoveryStep {
+  phase: TradePhase;
+  choreography: "refunding" | "failed";
+}
+
+export function recoveryStep(session: TradeSession): RecoveryStep {
+  const choreography = session.privateState.transcript.choreography.phase;
+  if (session.phase === "filled" || session.phase === "released") {
+    return {
+      phase: session.phase,
+      choreography: choreography === "refunding" ? "refunding" : "failed"
+    };
+  }
+  const leg = slotLeg(session, session.role === "maker" ? "base" : "quote");
+  const holdsLiveLock =
+    session.privateState.legs[leg].htlcId !== null &&
+    session.evidence.legs[leg].htlcState !== "UNLOCKED";
+  if (!holdsLiveLock) return { phase: "frozen", choreography: "failed" };
+  return {
+    phase: session.role === "maker" ? "waiting_base_refund" : "waiting_quote_refund",
+    choreography: "refunding"
+  };
+}
+
+/**
+ * True when `enter_recovery` would change nothing. Bumping a revision without
+ * moving the session is a livelock: between `makerClaimCutoff` and the refund
+ * window there is no recovery work to do, and the browser's bounded drive loop
+ * would spend its whole action budget re-entering the same rung.
+ */
+export function recoveryIsIdle(session: TradeSession): boolean {
+  if (session.privateState.pendingIncoming?.validation.status === "rejected") {
+    return false;
+  }
+  const step = recoveryStep(session);
+  return session.phase === step.phase &&
+    session.privateState.transcript.choreography.phase === step.choreography;
+}
+
+/** True when this side still has to step onto the refund ladder. */
 function owesRefundLadderEntry(session: TradeSession): boolean {
-  return session.role === "maker"
-    ? session.phase === "base_locked"
-    : session.phase === "quote_locked";
+  return !recoveryIsIdle(session);
 }
 
 function recoveryAction(session: TradeSession, now: number): CoordinatorAction | undefined {
@@ -282,8 +328,22 @@ function recoveryAction(session: TradeSession, now: number): CoordinatorAction |
 /**
  * Chooses at most one durable or external effect. The executor must persist the
  * corresponding journal transition before asking for another action.
+ *
+ * Recovery is filtered here rather than at each of its call sites: an
+ * `enter_recovery` that would not change the session is no progress at all, so
+ * the planner idles instead of spinning revisions.
  */
 export function nextCoordinatorAction(
+  session: TradeSession,
+  currentTime: number
+): CoordinatorAction {
+  const action = planCoordinatorAction(session, currentTime);
+  return action.kind === "enter_recovery" && recoveryIsIdle(session)
+    ? { kind: "none" }
+    : action;
+}
+
+function planCoordinatorAction(
   session: TradeSession,
   currentTime: number
 ): CoordinatorAction {

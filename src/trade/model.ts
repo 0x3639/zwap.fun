@@ -105,7 +105,6 @@ export type TradePhase =
   | "filled"
   | "waiting_quote_refund"
   | "waiting_base_refund"
-  | "waiting_base_claim"
   | "released"
   | "frozen";
 
@@ -117,27 +116,82 @@ export type TradeEvent =
   | "base_spent"
   | "fill_confirmed"
   | "abort_confirmed"
-  | "settlement_cutoff_reached"
+  /** This side owes the base rung of the refund ladder. */
+  | "base_refund_pending"
+  /** This side owes the quote rung of the refund ladder. */
+  | "quote_refund_pending"
   | "quote_refund_confirmed"
   | "base_refund_confirmed"
   | "release_confirmed"
   | "contradiction_detected";
 
+/**
+ * Phases a side can be sitting in when it discovers it has to reclaim its own
+ * leg. `enter_recovery` is the only effect that steps onto a rung, and it can
+ * fire from any phase the choreography reached before the deadline passed -
+ * including `frozen`, because a contradiction freezes a session whose HTLC is
+ * still on chain and that value still has to come back.
+ */
+const BASE_RUNG_SOURCES: readonly TradePhase[] = [
+  "negotiating",
+  "reserved",
+  "base_locked",
+  "quote_locked",
+  "quote_claimed",
+  "base_claimed",
+  "waiting_quote_refund",
+  "frozen"
+];
+
+const QUOTE_RUNG_SOURCES: readonly TradePhase[] = [
+  "base_locked",
+  "quote_locked",
+  "quote_claimed",
+  "base_claimed",
+  "frozen"
+];
+
 const transitions = new Map<string, TradePhase>([
   ["negotiating:reserve_confirmed", "reserved"],
   ["reserved:base_lock_validated", "base_locked"],
+  // The maker publishes its base lock inside `reserve_accept`, so a maker can
+  // jump straight from negotiating to a locked base leg.
+  ["negotiating:base_lock_validated", "base_locked"],
   ["base_locked:quote_lock_validated", "quote_locked"],
   ["quote_locked:quote_spent_with_preimage", "quote_claimed"],
   ["quote_claimed:base_spent", "base_claimed"],
-  ["waiting_base_claim:base_spent", "base_claimed"],
   ["base_claimed:fill_confirmed", "filled"],
+  // `settling` covers both claims without a message in between, so the fill is
+  // committed straight out of a locked quote leg.
+  ["quote_locked:fill_confirmed", "filled"],
   ["reserved:abort_confirmed", "released"],
-  ["base_locked:settlement_cutoff_reached", "waiting_base_refund"],
-  ["quote_locked:settlement_cutoff_reached", "waiting_quote_refund"],
-  ["quote_claimed:settlement_cutoff_reached", "waiting_base_claim"],
-  ["waiting_quote_refund:quote_refund_confirmed", "waiting_base_refund"],
-  ["waiting_base_refund:base_refund_confirmed", "released"]
+  ...BASE_RUNG_SOURCES.map((phase): [string, TradePhase] =>
+    [`${phase}:base_refund_pending`, "waiting_base_refund"]),
+  ...QUOTE_RUNG_SOURCES.map((phase): [string, TradePhase] =>
+    [`${phase}:quote_refund_pending`, "waiting_quote_refund"]),
+  // Each side holds exactly one leg, so its own refund ends its ladder.
+  ["waiting_quote_refund:quote_refund_confirmed", "released"],
+  ["waiting_base_refund:base_refund_confirmed", "released"],
+  ["frozen:quote_refund_confirmed", "released"],
+  ["frozen:base_refund_confirmed", "released"],
+  // The maker's release projection is the last durable step of its ladder.
+  ["waiting_base_refund:release_confirmed", "released"],
+  ["frozen:release_confirmed", "released"]
 ]);
+
+/**
+ * Every `from:to` phase pair the effects layer may persist. The durable
+ * validator reads this so the state machine and the storage checkpoint rule can
+ * never drift apart; `frozen` is reachable from anywhere and is checked
+ * separately.
+ */
+export const PERSISTED_PHASE_STEPS: ReadonlySet<string> = new Set(
+  [...transitions].map(([key, to]) => `${key.slice(0, key.indexOf(":"))}:${to}`)
+);
+
+export function canAdvanceTrade(phase: TradePhase, event: TradeEvent): boolean {
+  return transitions.has(`${phase}:${event}`);
+}
 
 export function advanceTrade(phase: TradePhase, event: TradeEvent): TradePhase {
   if (event === "contradiction_detected" && phase !== "filled" && phase !== "released") {
