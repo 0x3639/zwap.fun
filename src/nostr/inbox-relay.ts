@@ -73,14 +73,33 @@ export class NostrToolsInboxRelayPort implements InboxRelayPort {
     }
   }
 
+  /**
+   * Reads the relay's NIP-11 document.
+   *
+   * The abort signal is what bounds `open()`: publish, query and subscribe all
+   * wait on this first, and none of their own timeouts has started yet. It has
+   * to cover `json()` as well as the response headers - a relay that answers
+   * 200 and then dribbles the body would otherwise hang just the same.
+   */
   async info(relay: string): Promise<InboxRelayCapabilities> {
     const cached = this.infoCache.get(relay);
     if (cached) return structuredClone(cached);
-    const response = await this.fetchInfo(nip11Url(relay), {
-      headers: { Accept: "application/nostr+json" }
-    });
-    if (!response.ok) throw new Error(`Inbox relay NIP-11 request failed with ${response.status}`);
-    const value: unknown = await response.json();
+    const controller = new AbortController();
+    const expired = setTimeout(
+      () => controller.abort(new Error("Inbox relay NIP-11 request timed out")),
+      this.queryTimeoutMs
+    );
+    let value: unknown;
+    try {
+      const response = await this.fetchInfo(nip11Url(relay), {
+        headers: { Accept: "application/nostr+json" },
+        signal: controller.signal
+      });
+      if (!response.ok) throw new Error(`Inbox relay NIP-11 request failed with ${response.status}`);
+      value = await response.json();
+    } finally {
+      clearTimeout(expired);
+    }
     if (!value || typeof value !== "object") throw new Error("Inbox relay NIP-11 document is invalid");
     const document = value as {
       supported_nips?: unknown;

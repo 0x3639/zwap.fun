@@ -281,4 +281,92 @@ describe("nostr-tools inbox relay port", () => {
     expect(connection.closed).toBe(true);
     expect(closed).toEqual(["relay unavailable"]);
   });
+  /** A fetch that never settles on its own; only the abort signal ends it. */
+  function stalledFetch(stage: "headers" | "body") {
+    return vi.fn(async (
+      _input: RequestInfo | URL,
+      init?: RequestInit
+    ): Promise<Response> => {
+      const signal = init?.signal;
+      const aborted = new Promise<never>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason));
+      });
+      if (stage === "headers") return aborted;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => aborted
+      } as unknown as Response;
+    });
+  }
+
+  it.each(["headers", "body"] as const)(
+    "aborts a NIP-11 request stalled at the %s at the query timeout",
+    async (stage) => {
+      vi.useFakeTimers();
+      try {
+        const fetcher = stalledFetch(stage);
+        const port = new NostrToolsInboxRelayPort(
+          async () => new FakeConnection(),
+          fetcher,
+          8_000
+        );
+
+        const pending = port.info(relayUrl);
+        const settled = vi.fn();
+        void pending.then(settled, settled);
+
+        await vi.advanceTimersByTimeAsync(7_999);
+        expect(settled).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(pending).rejects.toThrow(/NIP-11 request timed out/);
+        expect(fetcher.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  );
+
+  it("bounds publish on a relay whose NIP-11 document never arrives", async () => {
+    // Without this, `open()` blocks before any publish/query/subscribe timeout
+    // has started, so the caller waits forever.
+    vi.useFakeTimers();
+    try {
+      const port = new NostrToolsInboxRelayPort(
+        async () => new FakeConnection(),
+        stalledFetch("headers"),
+        8_000
+      );
+      const auth = async (challenge: string) =>
+        createNip42AuthEvent(relayUrl, challenge, protocolKey, now);
+
+      const pending = port.publish(relayUrl, event(), auth);
+      void pending.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(8_000);
+
+      await expect(pending).rejects.toThrow(/NIP-11 request timed out/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not leave the timeout armed after a successful NIP-11 read", async () => {
+    vi.useFakeTimers();
+    try {
+      const port = new NostrToolsInboxRelayPort(
+        async () => new FakeConnection(),
+        async () => new Response(JSON.stringify({ supported_nips: [17] }), { status: 200 }),
+        8_000
+      );
+
+      await expect(port.info(relayUrl)).resolves.toEqual({
+        supportedNips: [17],
+        authRequired: false
+      });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
