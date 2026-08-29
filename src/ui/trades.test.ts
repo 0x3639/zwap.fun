@@ -267,4 +267,33 @@ describe("trade session presentation", () => {
 
     expect(root.textContent ?? "").not.toMatch(/\p{Extended_Pictographic}/u);
   });
+  it("renders the rest of the panel when a counterparty key is malformed", () => {
+    // `nip19.npubEncode` throws on anything but a 32-byte hex key, and a
+    // counterparty controls what lands in this field.
+    const root = document.createElement("section");
+    const malformed: PublicTradeView = {
+      ...trade,
+      protocol: {
+        ...trade.protocol,
+        localNostrPubkey: "not-a-key",
+        counterpartyNostrPubkey: "aa".repeat(31)
+      }
+    };
+
+    expect(() => renderTrades(root, [malformed])).not.toThrow();
+    expect(root.textContent).toContain("Unavailable");
+    expect(root.textContent).toContain("Quote locked");
+    expect(root.querySelector('[data-trade-leg="base"]')?.textContent)
+      .toContain("20.00000000");
+  });
+
+  it("still encodes a well-formed counterparty key as an npub", () => {
+    const root = document.createElement("section");
+    renderTrades(root, [{
+      ...trade,
+      protocol: { ...trade.protocol, localNostrPubkey: "cc".repeat(32) }
+    }]);
+
+    expect(root.innerHTML).toContain(nip19.npubEncode("cc".repeat(32)));
+  });
 });

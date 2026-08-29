@@ -335,4 +335,50 @@ describe("Zwap order model", () => {
     expect(() => cancelOrder(reserved)).toThrow(/released/i);
     expect(() => expireOrder(reserved, 1_700_001_000)).toThrow(/released/i);
   });
+  it("hides an order whose reservation has lapsed but was never released", async () => {
+    // `reserveOrder` refuses any order that still carries a reservation, expiry
+    // or not. Advertising it as available only produces a take that throws.
+    const orderId = "12345678-1234-4234-8234-123456789abc";
+    const open = createOrderState({
+      orderId,
+      createdAt: 1_700_000_000,
+      expiresAt: 1_800_000_000,
+      side: "sell",
+      chainId,
+      baseToken: ZNN_ZTS,
+      quoteToken: QSR_ZTS,
+      amount: "20",
+      price: "500000000"
+    });
+    const reserved = reserveOrder(open, {
+      reservationId: "99999999-9999-4999-8999-999999999999",
+      amount: "20",
+      acceptedAt: 1_700_000_100,
+      expiresAt: 1_700_001_900,
+      proposalEventId: "a".repeat(64),
+      takerCommitment: "b".repeat(64)
+    });
+    const record: OrderRecord = {
+      address: `30078:maker:${orderId}`,
+      eventId: `${orderId}-head`,
+      makerPubkey: `maker-${orderId}`,
+      verified: true,
+      state: reserved
+    };
+    const market = { chainId, baseToken: ZNN_ZTS, quoteToken: QSR_ZTS };
+
+    const afterExpiry = await buildOrderBook([record], market, 1_700_002_000);
+    const beforeExpiry = await buildOrderBook([record], market, 1_700_000_200);
+
+    expect(afterExpiry.asks).toEqual([]);
+    expect(beforeExpiry.asks).toEqual([]);
+    expect(() => reserveOrder(reserved, {
+      reservationId: "88888888-8888-4888-8888-888888888888",
+      amount: "20",
+      acceptedAt: 1_700_002_000,
+      expiresAt: 1_700_003_800,
+      proposalEventId: "c".repeat(64),
+      takerCommitment: "d".repeat(64)
+    })).toThrow("live reservation");
+  });
 });

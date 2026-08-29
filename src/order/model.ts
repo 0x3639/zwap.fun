@@ -397,11 +397,16 @@ export async function eligibleMarketIds(state: OrderState): Promise<string[]> {
   })];
 }
 
-function effectiveAvailable(state: OrderState, now: number): bigint {
+/**
+ * How much of this order a taker could actually reserve right now.
+ *
+ * A lapsed reservation still counts as live here: `reserveOrder` refuses any
+ * order carrying one until it has been explicitly released, so surfacing the
+ * remaining amount would only advertise a take that is certain to throw.
+ */
+function effectiveAvailable(state: OrderState): bigint {
   const remaining = integer(state.remaining_amount, "Remaining amount", true);
-  if (state.reservation && now < state.reservation.expires_at) {
-    return remaining - integer(state.reserved_amount, "Reserved amount", true);
-  }
+  if (state.reservation !== null) return 0n;
   return remaining;
 }
 
@@ -422,7 +427,7 @@ export async function buildOrderBook(
     if (!record.verified) continue;
     if (["filled", "canceled", "expired"].includes(record.state.status)) continue;
     if (now >= record.state.expires_at) continue;
-    if (effectiveAvailable(record.state, now) <= 0n) continue;
+    if (effectiveAvailable(record.state) <= 0n) continue;
     if (!(await eligibleMarketIds(record.state)).includes(selectedMarketId)) continue;
     eligible.push(record);
   }

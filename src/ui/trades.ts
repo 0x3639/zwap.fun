@@ -8,6 +8,9 @@ import type {
 import { formatPrice, renderTokenAmount, truncateAddress, truncateHash } from "./format.js";
 import { defaultTokens, type TokenLookup } from "./tokens.js";
 
+/** A Nostr public key: exactly what `nip19.npubEncode` accepts. */
+const HEX_32 = /^[0-9a-f]{64}$/;
+
 export interface TradeRenderOptions {
   /** Symbols and decimals observed on chain; falls back to ZNN/QSR. */
   tokens?: TokenLookup;
@@ -117,6 +120,12 @@ function identity(label: string, value: string | null): HTMLElement {
     item.append(element("strong", "Waiting for authenticated session"));
     return item;
   }
+  // `npubEncode` throws on anything that is not a 32-byte hex key, which would
+  // take the whole trade panel down with it. Same guard as `fullNpub`.
+  if (!HEX_32.test(value)) {
+    item.append(element("strong", "Unavailable"));
+    return item;
+  }
   const npub = nip19.npubEncode(value);
   const rendered = element("strong", truncateAddress(npub));
   rendered.className = "font-mono";
@@ -193,7 +202,7 @@ const MESSAGE_COPY: Record<TradeMessageType, {
 };
 
 function fullNpub(value: string | undefined): string {
-  if (value === undefined || !/^[0-9a-f]{64}$/.test(value)) {
+  if (value === undefined || !HEX_32.test(value)) {
     return "Unavailable";
   }
   return nip19.npubEncode(value);

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { getPublicKey, verifyEvent } from "nostr-tools";
+import { finalizeEvent, getPublicKey, verifyEvent } from "nostr-tools";
 
 import type { NostrEvent } from "../order/events.js";
 import {
@@ -20,15 +20,24 @@ const recipientKey = key(1);
 const recipientPubkey = getPublicKey(recipientKey);
 const since = 1_800_000_000;
 
-function wrapper(id: string, createdAt = since): NostrEvent {
-  return {
-    id,
-    pubkey: "22".repeat(32),
-    sig: "33".repeat(64),
+const senderKey = key(2);
+
+/** A gift wrap the port would actually accept: signed, tagged and unexpired. */
+function wrapper(seed: string, createdAt = since): NostrEvent {
+  return finalizeEvent({
     kind: 1059,
     created_at: createdAt,
-    tags: [["p", recipientPubkey]],
-    content: "ciphertext"
+    tags: [["p", recipientPubkey], ["expiration", String(since + 3_600)]],
+    content: `ciphertext:${seed}`
+  }, senderKey) as NostrEvent;
+}
+
+/** Same shape, but nothing signed it. */
+function forged(overrides: Partial<NostrEvent> = {}): NostrEvent {
+  return {
+    ...wrapper("forged"),
+    sig: "33".repeat(64),
+    ...overrides
   };
 }
 
@@ -241,5 +250,67 @@ describe("live trade inbox subscription", () => {
       close.mock.calls.length === 1
     )).toBe(true);
     expect(keyCopies[0]).toEqual(new Uint8Array(32));
+  });
+  it("rejects an unsigned gift wrap before it can enter the dedup set", async () => {
+    // Validation has to come first: a forged event carrying the id of a real
+    // one would otherwise claim that id in `seen` and suppress the real
+    // delivery when it arrives.
+    const port = new FakeRelayPort();
+    const genuine = wrapper("99".repeat(32));
+    const delivered: string[] = [];
+    const errors: TradeSubscriptionError[] = [];
+    const subscription = await startTradeSubscription({
+      ...input(port),
+      onEvent: async (event) => {
+        delivered.push(event.id);
+      },
+      onError: (error) => errors.push(error)
+    });
+
+    port.subscriptions[0]!.callbacks.onevent(forged({ id: genuine.id }));
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    port.subscriptions[0]!.callbacks.onevent(genuine);
+    await vi.waitFor(() => expect(delivered).toEqual([genuine.id]));
+
+    expect(errors.map(({ kind }) => kind)).toEqual(["event_rejected"]);
+    expect(errors[0]!.relay).toBe("wss://a.example");
+    subscription.stop();
+  });
+
+  it("rejects a gift wrap addressed elsewhere, of the wrong kind, or expired", async () => {
+    const port = new FakeRelayPort();
+    const onEvent = vi.fn();
+    const errors: TradeSubscriptionError[] = [];
+    const subscription = await startTradeSubscription({
+      ...input(port),
+      onEvent,
+      onError: (error) => errors.push(error)
+    });
+
+    for (const bad of [
+      finalizeEvent({
+        kind: 1059,
+        created_at: since,
+        tags: [["p", "44".repeat(32)], ["expiration", String(since + 3_600)]],
+        content: "elsewhere"
+      }, senderKey) as NostrEvent,
+      finalizeEvent({
+        kind: 1,
+        created_at: since,
+        tags: [["p", recipientPubkey], ["expiration", String(since + 3_600)]],
+        content: "wrong kind"
+      }, senderKey) as NostrEvent,
+      finalizeEvent({
+        kind: 1059,
+        created_at: since,
+        tags: [["p", recipientPubkey], ["expiration", String(since + 5)]],
+        content: "already expired"
+      }, senderKey) as NostrEvent
+    ]) port.subscriptions[0]!.callbacks.onevent(bad);
+
+    await vi.waitFor(() => expect(errors).toHaveLength(3));
+    expect(errors.every(({ kind }) => kind === "event_rejected")).toBe(true);
+    expect(onEvent).not.toHaveBeenCalled();
+    subscription.stop();
   });
 });

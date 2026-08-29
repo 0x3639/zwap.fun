@@ -4,6 +4,7 @@ import type { NostrEvent } from "../order/events.js";
 import {
   createNip42AuthEvent,
   normalizeInboxListRelays,
+  validateGiftWrap,
   type AuthHandler
 } from "./inbox.js";
 import type { PersistentInboxSubscription } from "./inbox-relay.js";
@@ -24,7 +25,12 @@ export interface TradeSubscriptionRelayPort {
 
 export interface TradeSubscriptionError {
   relay: string;
-  kind: "relay_start" | "relay_closed" | "event_callback" | "subscription_stop";
+  kind:
+    | "relay_start"
+    | "relay_closed"
+    | "event_callback"
+    | "event_rejected"
+    | "subscription_stop";
   message: string;
 }
 
@@ -136,7 +142,25 @@ export async function startTradeSubscription(
           ),
           {
             onevent: (event) => {
-              if (stopped || seen.has(event.id)) return;
+              if (stopped) return;
+              // Validate before the dedup set, not after: an unsigned event
+              // carrying a genuine event's id would otherwise claim that id
+              // and silently suppress the real delivery.
+              try {
+                validateGiftWrap(
+                  event,
+                  input.recipientPubkey,
+                  timestamp(input.now(), "Trade subscription event time")
+                );
+              } catch {
+                reportSafely(input.onError, {
+                  relay,
+                  kind: "event_rejected",
+                  message: "Inbox relay delivered an invalid gift wrap"
+                });
+                return;
+              }
+              if (seen.has(event.id)) return;
               seen.add(event.id);
               const snapshot = structuredClone(event);
               eventQueue = eventQueue

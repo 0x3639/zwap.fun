@@ -355,7 +355,11 @@ export async function publishInboxList(
   }
 }
 
-function validateGiftWrap(event: NostrEvent, expectedRecipient: string, now: number): void {
+/**
+ * Everything a gift wrap must satisfy before anything downstream may act on
+ * it - or even remember having seen it.
+ */
+export function validateGiftWrap(event: NostrEvent, expectedRecipient: string, now: number): void {
   assertEventShape(event, "Gift wrap");
   if (event.kind !== 1059 || !verifyFresh(event)) throw new Error("Gift-wrap signature or kind is invalid");
   if (event.tags.length !== 2 || event.tags[0]?.length !== 2 || event.tags[0]?.[0] !== "p" || event.tags[0]?.[1] !== expectedRecipient) {
