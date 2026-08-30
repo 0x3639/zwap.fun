@@ -165,7 +165,7 @@ None of these require a replacement trade.
 2. Do not disconnect either wallet.
 3. Keep or reopen the same browser profile and tab.
 4. If the maker tab reloaded, wait for the automatic maker listener startup.
-5. Keep both workspaces open and let the automatic executor retry after a
+5. Keep both tabs open and let the automatic executor retry after a
    short pause — a "waiting for the counterparty" status is not a failure.
 
 zwap reuses the persisted signed Nostr projection and prepared HTLC

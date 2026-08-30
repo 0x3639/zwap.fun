@@ -11,9 +11,10 @@ material.
 
 The deployed site is one shared page. Maker and taker are ephemeral roles
 tied to individual orders and sessions; the same connected wallet can
-publish orders and take other orders concurrently. There is no per-workspace
-query parameter any more — local trade data is namespaced per browser
-origin, and the wallet itself lives in the browser extension, not in zwap.
+publish orders and take other orders concurrently. There is no query
+parameter that selects a local storage namespace any more — local trade
+data is namespaced per browser origin, and the wallet itself lives in the
+browser extension, not in zwap.
 
 ## Wallet methods
 
