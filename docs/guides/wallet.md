@@ -54,6 +54,10 @@ session, and half-migrating an in-flight trade is worse than restarting.
 
 **Erase local data and restart**, in the danger zone (confirmed by typing
 `RESET ZWAP DATA`), erases this browser's trade-session journal,
+  and finished (`filled` or `released`) swap sessions are pruned
+  automatically 30 days after their last update - their per-session keys
+  and preimages are destroyed with them, while frozen or unfinished
+  sessions are always kept. The reset button erases the journal,
 order-key store, and publication outbox. The button stays disabled until the
 phrase is typed exactly, and the phrase is re-checked by `resetLocalData`
 itself, so an agent calling it has to pass the same gate. It never touches the

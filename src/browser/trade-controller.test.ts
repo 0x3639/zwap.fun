@@ -186,6 +186,7 @@ function setup(options: {
   controller: BrowserTradeController;
   api: {
     listTrades: ReturnType<typeof vi.fn>;
+    pruneTerminalSessions: ReturnType<typeof vi.fn>;
     getTrade: ReturnType<typeof vi.fn>;
     takeOrder: ReturnType<typeof vi.fn>;
     acceptReserveProposal: ReturnType<typeof vi.fn>;
@@ -197,6 +198,7 @@ function setup(options: {
   const publicView = view();
   const api = {
     listTrades: vi.fn(async () => options.trades ?? [publicView]),
+    pruneTerminalSessions: vi.fn(async () => []),
     getTrade: vi.fn(async () => publicView),
     takeOrder: vi.fn(async (_input: TakeOrderInput) => publicView),
     acceptReserveProposal: vi.fn(async (_proposal: VerifiedInitialReserveProposal) => publicView),

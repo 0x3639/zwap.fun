@@ -201,6 +201,7 @@ class BookPort {
 }
 
 class SessionRepository {
+  async prune(): Promise<string[]> { return []; }
   readonly values = new Map<string, TradeSession>();
   readonly takerStarts = new Map<string, {
     intent: TakerStartIntent;

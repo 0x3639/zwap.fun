@@ -856,6 +856,43 @@ describe("zwap trade session repository", () => {
       .toBe(laterProjection.id);
   });
 
+  it("prunes filled and released sessions past retention, with their start bindings", async () => {
+    const repository = new TradeSessionRepository(new MemoryStorageDriver());
+    const filled = structuredClone(session);
+    filled.phase = "filled";
+    await repository.save(filled, null);
+
+    // A month later the terminal session and its binding are reclaimable;
+    // the encrypted session key and preimage go with the record.
+    const removed = await repository.prune(filled.updatedAt + 30 * 86_400);
+    expect(removed).toEqual([filled.sessionId]);
+    expect(await repository.get(filled.sessionId)).toBeUndefined();
+    expect(await repository.list()).toEqual([]);
+  });
+
+  it("keeps recent terminal sessions, active sessions, and frozen sessions", async () => {
+    const repository = new TradeSessionRepository(new MemoryStorageDriver());
+    const recentFilled = structuredClone(session);
+    recentFilled.phase = "filled";
+    await repository.save(recentFilled, null);
+    expect(await repository.prune(recentFilled.updatedAt + 86_400)).toEqual([]);
+    expect(await repository.get(recentFilled.sessionId)).toBeDefined();
+
+    const active = new TradeSessionRepository(new MemoryStorageDriver());
+    const reserved = structuredClone(session);
+    await active.save(reserved, null);
+    expect(await active.prune(reserved.updatedAt + 365 * 86_400)).toEqual([]);
+    expect(await active.get(reserved.sessionId)).toBeDefined();
+
+    const frozenRepo = new TradeSessionRepository(new MemoryStorageDriver());
+    const frozen = structuredClone(session);
+    frozen.phase = "frozen";
+    await frozenRepo.save(frozen, null);
+    // Frozen is a contradiction record, not a finished trade: never pruned.
+    expect(await frozenRepo.prune(frozen.updatedAt + 365 * 86_400)).toEqual([]);
+    expect(await frozenRepo.get(frozen.sessionId)).toBeDefined();
+  });
+
   it("allows only the maker order key to sign the reserve acceptance handoff", async () => {
     const reserveAccept = structuredClone(session);
     reserveAccept.privateState.transcript.choreography.participants.takerSessionPubkey =

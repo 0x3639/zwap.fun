@@ -48,6 +48,7 @@ export interface TradeChainPort {
 export type { TakerStartIntent } from "../storage/trade-session.js";
 
 export interface TradeStartRepository {
+  prune(now: number): Promise<string[]>;
   list(): Promise<TradeSession[]>;
   get(sessionId: string): Promise<TradeSession | undefined>;
   save(session: TradeSession, expectedRevision: number | null): Promise<void>;
@@ -156,6 +157,11 @@ export class TradeApi {
     this.sessionFactory = options.sessionFactory ?? defaultSessionFactory;
     this.shortLockSeconds = options.shortLockSeconds;
     this.longLockSeconds = options.longLockSeconds;
+  }
+
+  /** Reclaims finished sessions past their retention window. Best-effort. */
+  async pruneTerminalSessions(): Promise<string[]> {
+    return this.sessions.prune(this.now());
   }
 
   async listTrades(): Promise<PublicTradeView[]> {

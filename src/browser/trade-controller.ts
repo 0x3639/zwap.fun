@@ -60,6 +60,7 @@ export interface BrowserTradeControllerOptions {
   api: Pick<
     TradeApi,
     | "listTrades"
+    | "pruneTerminalSessions"
     | "getTrade"
     | "takeOrder"
     | "acceptReserveProposal"
@@ -208,6 +209,9 @@ export class BrowserTradeController {
   }
 
   async resume(): Promise<PublicTradeView[]> {
+    // Best-effort housekeeping: a failed prune must never block resuming
+    // live sessions, and there is nothing useful to tell the user about it.
+    await this.api.pruneTerminalSessions().catch(() => undefined);
     const trades = await this.api.listTrades();
     const makerWinners = this.makerSettlementWinners(trades);
     await Promise.all(trades.map(async (trade) => {

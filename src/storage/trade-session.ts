@@ -24,6 +24,15 @@ import { EncryptedStorageDriver } from "./encrypted-storage.js";
 import type { StorageDriver } from "./driver.js";
 
 const TRADE_SESSIONS_KEY = "zwap.trade-sessions.v2";
+
+/**
+ * Phases with nothing left to sign, observe, or refund. `frozen` is excluded
+ * deliberately: it records a detected contradiction and may be the user's
+ * only evidence.
+ */
+const TERMINAL_TRADE_PHASES = new Set(["filled", "released"]);
+/** How long a finished session (and its keys and preimage) is retained. */
+export const TERMINAL_SESSION_RETENTION_SECONDS = 30 * 86_400;
 const HEX_32 = /^[0-9a-f]{64}$/;
 const HEX_64 = /^[0-9a-f]{128}$/;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -1961,6 +1970,33 @@ export class TradeSessionRepository {
       await assertTradeSessionStore(store);
       await this.driver.set(TRADE_SESSIONS_KEY, store);
       return clone(session);
+    });
+  }
+
+  /**
+   * Deletes finished sessions - and with them their encrypted session keys
+   * and unrevealed preimages - once they are safely past every locktime and
+   * a generous audit window. Bindings die with their sessions: the store
+   * validator refuses an orphaned taker-start binding.
+   */
+  async prune(
+    now: number,
+    retentionSeconds: number = TERMINAL_SESSION_RETENTION_SECONDS
+  ): Promise<string[]> {
+    return this.runExclusive(async () => {
+      const store = await this.loadStore();
+      const removed = store.sessions
+        .filter((session) =>
+          TERMINAL_TRADE_PHASES.has(session.phase) &&
+          now - session.updatedAt >= retentionSeconds)
+        .map((session) => session.sessionId);
+      if (removed.length === 0) return [];
+      const gone = new Set(removed);
+      store.sessions = store.sessions.filter((session) => !gone.has(session.sessionId));
+      store.takerStarts = store.takerStarts.filter((binding) => !gone.has(binding.sessionId));
+      await assertTradeSessionStore(store);
+      await this.driver.set(TRADE_SESSIONS_KEY, store);
+      return removed;
     });
   }
 
