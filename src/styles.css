@@ -75,13 +75,25 @@ code {
 }
 
 .masthead__badge { margin: 0; font-family: var(--font-mono); letter-spacing: var(--ledger-tracking); }
-.masthead__profile {
-  margin: 0 0 0 auto;
-  color: var(--muted-foreground);
+.masthead__wallet { margin: 0 0 0 auto; position: relative; flex: none; }
+.wallet-control { position: relative; display: flex; align-items: center; }
+.wallet-control__pill { max-width: 220px; }
+.wallet-control__menu {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  z-index: 30;
+}
+.wallet-control__address {
+  margin: 0;
   font-size: var(--text-xs);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  word-break: break-all;
+  color: var(--muted-foreground);
 }
 .masthead__theme { flex: none; }
 
@@ -755,7 +767,7 @@ select.nom-input { appearance: auto; }
 
 @media (max-width: 700px) {
   .masthead { flex-wrap: wrap; gap: var(--space-2); }
-  .masthead__profile { margin-left: 0; order: 3; width: 100%; }
+  .masthead__wallet { margin-left: auto; }
   .section-heading { flex-direction: column; }
   .order-entry__heading { flex-direction: column; align-items: start; }
   .order-entry__heading .hint { text-align: left; }
