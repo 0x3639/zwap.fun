@@ -1,4 +1,5 @@
 import { getPublicKey } from "nostr-tools";
+import { generateSecretKey } from "nostr-tools/pure";
 
 import type { NostrEvent } from "../order/events.js";
 import {
@@ -154,11 +155,15 @@ export class NostrTradeTransport {
 
   async send(
     wrapper: NostrEvent,
-    recipientInboxRelays: readonly string[],
-    senderSecretKey: Uint8Array
+    recipientInboxRelays: readonly string[]
   ): Promise<InboxReceipt[]> {
     const wrapperSnapshot = snapshotNostrEvent(wrapper);
-    const keySnapshot = Uint8Array.from(senderSecretKey);
+    // NIP-42 AUTH identifies the publisher to the relay. Authenticating with
+    // the session or maker key would hand the relay exactly the
+    // sender-to-recipient link the ephemerally-signed wrap exists to hide, so
+    // every publish authenticates as a fresh throwaway identity instead. The
+    // relay still gets its required AUTH; it just learns nothing from it.
+    const keySnapshot = generateSecretKey();
     try {
       const now = this.now();
       const recipientRelays = this.assertFreshProbeEvidence(recipientInboxRelays, now);

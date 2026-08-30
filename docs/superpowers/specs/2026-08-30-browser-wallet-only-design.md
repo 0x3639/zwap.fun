@@ -126,10 +126,11 @@ control, theme toggle).
 | ----------- | -------------------------------------------------------------------------- |
 | `absent`    | outline button "Install NoM Wallet" → opens the extension's install URL in a new tab (`INSTALL_URL` constant in `wallet-control.ts`, updated when the store listing exists) |
 | `detected`  | primary button "Connect wallet"; busy label "Connecting…" via `withButtonFeedback` |
-| `connected` | pill button: shield icon + `truncateAddress(address)`, `aria-haspopup="menu"` |
+| `connected` | pill button: shield icon + the address truncated to its first six and last six characters (`truncateAddress(address, 6)`), `aria-haspopup="menu"` |
 
 The connected pill toggles a popover (`role="menu"`) anchored under it:
-the full address in mono, **Copy address**, **Disconnect**. Escape or an
+the same truncated address in mono (full address in its `title`),
+**Copy address** (copies the full address), **Disconnect**. Escape or an
 outside click closes it. Copy uses `navigator.clipboard.writeText` and
 reports "Address copied" in the activity log. Disconnect calls
 `ZwapApi.disconnect()`.

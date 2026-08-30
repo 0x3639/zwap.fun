@@ -182,7 +182,7 @@ class MemoryTradeTransport {
     };
   }
 
-  async send(wrapper: NostrEvent, _relays: readonly string[], _key: Uint8Array) {
+  async send(wrapper: NostrEvent, _relays: readonly string[]) {
     const recipient = wrapper.tags.find((tag) => tag[0] === "p")?.[1];
     if (!recipient) throw new Error("Gift wrap has no recipient");
     const current = this.wrappers.get(recipient) ?? [];

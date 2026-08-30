@@ -976,7 +976,7 @@ resetLocalDataButton.addEventListener("click", () => {
   void withButtonFeedback(
     resetLocalDataButton,
     "Erasing…",
-    () => zwap.resetLocalData(resetLocalDataConfirmation.value)
+    () => zwap.resetLocalData(resetLocalDataConfirmation.value.trim())
   )
     .then(() => window.location.reload())
     .catch((error: unknown) => {

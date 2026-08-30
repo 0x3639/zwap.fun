@@ -1583,15 +1583,7 @@ describe("ZwapCoordinatorEffects", () => {
         ok: true,
         message: "stored"
       }];
-      const sentKeys: Uint8Array[] = [];
-      maker.nostr.send.mockImplementation(async (
-        _wrapper: NostrEvent,
-        _relays: string[],
-        secretKey: Uint8Array
-      ) => {
-        sentKeys.push(Uint8Array.from(secretKey));
-        return receipts;
-      });
+      maker.nostr.send.mockImplementation(async () => receipts);
 
       const first = await maker.effects.performExternal(
         externalInput({ kind: "deliver_outbox" }, session)
@@ -1605,10 +1597,6 @@ describe("ZwapCoordinatorEffects", () => {
         expect(wrapper).toEqual(session.privateState.outbox!.wrapper);
         expect(relays).toEqual(session.privateState.outbox!.recipientRelays);
       }
-      expect(sentKeys).toEqual([
-        new Uint8Array(32).fill(1),
-        new Uint8Array(32).fill(1)
-      ]);
       expect(first.privateState.outbox).toEqual({
         ...session.privateState.outbox,
         receipts,

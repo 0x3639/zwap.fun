@@ -175,10 +175,12 @@ describe("Nostr trade transport", () => {
     const gift = finalizeGift(recipient);
 
     await expect(transport.discover(recipient, key(4))).rejects.toThrow("clock failed");
-    await expect(transport.send(gift, inboxes, key(4))).rejects.toThrow("clock failed");
+    await expect(transport.send(gift, inboxes)).rejects.toThrow("clock failed");
     await expect(transport.read(recipient, recipientKey, now - 60)).rejects.toThrow("clock failed");
 
-    expect(copies).toHaveLength(3);
+    // Two, not three: send no longer copies a caller-supplied key - its AUTH
+    // identity is a throwaway generated (and zeroed) inside the transport.
+    expect(copies).toHaveLength(2);
     expect(copies.every((copy) => copy.every((byte) => byte === 0))).toBe(true);
     from.mockRestore();
   });
@@ -441,8 +443,8 @@ describe("Nostr trade transport", () => {
       wrapperNonce: new Uint8Array(32).fill(7)
     });
 
-    const receipts = await transport.send(wrapped.wrapper, inboxes, takerKey);
-    await transport.send(wrapped.wrapper, inboxes, takerKey);
+    const receipts = await transport.send(wrapped.wrapper, inboxes);
+    await transport.send(wrapped.wrapper, inboxes);
     const received = await transport.read(maker, makerKey, now - 60);
 
     expect(receipts.filter((receipt) => receipt.ok)).toHaveLength(1);
@@ -462,19 +464,18 @@ describe("Nostr trade transport", () => {
       () => now,
       probeEvidence()
     );
-    const mutableSender = key(4);
-    const expectedSender = getPublicKey(mutableSender);
+    const senderSessionPubkey = getPublicKey(key(4));
     const gift = finalizeGift(getPublicKey(key(3)));
     const persistedGift = structuredClone(gift);
-    const sending = sendTransport.send(gift, inboxes, mutableSender);
+    const sending = sendTransport.send(gift, inboxes);
     gift.content = "mutated-after-invocation";
-    mutableSender.fill(0);
     releaseSend();
     await expect(sending).resolves.toHaveLength(1);
-    expect(sendPort.publications[0]).toMatchObject({
-      event: persistedGift,
-      authPubkey: expectedSender
-    });
+    expect(sendPort.publications[0]).toMatchObject({ event: persistedGift });
+    // The relay AUTH identity is a fresh throwaway, never a protocol key: the
+    // relay must not learn which session published the wrap.
+    expect(sendPort.publications[0]!.authPubkey).toMatch(/^[0-9a-f]{64}$/);
+    expect(sendPort.publications[0]!.authPubkey).not.toBe(senderSessionPubkey);
 
     const discoverPort = new MemoryInboxPort();
     let releaseDiscovery!: () => void;

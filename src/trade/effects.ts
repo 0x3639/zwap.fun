@@ -61,7 +61,8 @@ import {
   type OpenedTradeMessage,
   type WrappedTradeRumor,
   type ZwapTradeMessage,
-  type ZwapTradeTerms
+  type ZwapTradeTerms,
+  randomOuterExpiration
 } from "./messages.js";
 import { advanceTrade, canAdvanceTrade, SHORT_LOCK_SECONDS } from "./model.js";
 import type {
@@ -305,7 +306,7 @@ const defaultEntropy: CoordinatorEffectsEntropy = {
   nonce: () => crypto.getRandomValues(new Uint8Array(32)),
   randomizedTimestamp: (now) => now -
     Math.floor(crypto.getRandomValues(new Uint32Array(1))[0]! % 172_801),
-  outerExpiration: (expiration) => expiration + 3_600
+  outerExpiration: (expiration) => randomOuterExpiration(expiration)
 };
 
 function bump(session: TradeSession, now: number): TradeSession {
@@ -1254,14 +1255,11 @@ export class ZwapCoordinatorEffects implements CoordinatorEffectPort {
     if (!outbox || outbox.status !== "staged") {
       throw new Error("Outgoing envelope is not staged");
     }
-    const keyHex = outbox.message.type === "reserve_accept"
-      ? null
-      : session.privateState.nostrPrivateKey;
-    const send = async (key: Uint8Array) =>
-      this.nostr.send(outbox.wrapper, outbox.recipientRelays, key);
-    const receipts = keyHex === null
-      ? await this.withMakerOrderKey(session, send)
-      : await this.withSessionKey(session, send);
+    // Delivery needs no signing identity of its own: the wrap is already
+    // sealed and signed, and the transport authenticates to the relay with a
+    // throwaway key precisely so the session and maker keys stay out of the
+    // relay's view.
+    const receipts = await this.nostr.send(outbox.wrapper, outbox.recipientRelays);
     const next = bump(session, now);
     next.privateState.outbox = {
       ...clone(outbox),

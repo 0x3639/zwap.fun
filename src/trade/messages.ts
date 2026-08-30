@@ -467,6 +467,19 @@ function assertRandomizedTimestamp(value: number, rumorTime: number, label: stri
   }
 }
 
+/**
+ * A deterministic `expires_at + 3600` outer tag re-reveals the send time the
+ * randomized `created_at` hides. Jitter it by a whole number of hours in the
+ * 1-24 range the unwrap policy accepts, so the tag only brackets the send
+ * time to within a day.
+ */
+export function randomOuterExpiration(
+  messageExpiresAt: number,
+  random: () => number = Math.random
+): number {
+  return messageExpiresAt + 3_600 * (1 + Math.floor(random() * 24));
+}
+
 export function wrapTradeRumor(
   rumor: UnsignedRumor,
   authorSecretKey: Uint8Array,
@@ -629,6 +642,8 @@ async function unwrapTradeMessageInternal(
   assertRandomizedTimestamp(seal.created_at, rumor.created_at, "Seal");
   assertRandomizedTimestamp(outer.created_at, rumor.created_at, "Wrapper");
   const expiryJitter = outerExpiration - message.expires_at;
+  // Producer counterpart: `randomOuterExpiration` below emits exactly this
+  // range, so honest senders and this check can never drift apart.
   if (expiryJitter < 3600 || expiryJitter > 86_400 || expiryJitter % 3600 !== 0) {
     throw new Error("Outer expiration jitter is outside Zwap policy");
   }
