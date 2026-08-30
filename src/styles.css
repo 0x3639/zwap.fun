@@ -82,17 +82,21 @@ code {
   position: absolute;
   top: calc(100% + var(--space-2));
   right: 0;
-  min-width: 280px;
+  min-width: 340px;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3);
   z-index: 30;
 }
+/* The display: flex above would otherwise defeat the UA [hidden] rule, so restate it explicitly. */
+.wallet-control__menu[hidden] { display: none; }
 .wallet-control__address {
   margin: 0;
   font-size: var(--text-xs);
-  word-break: break-all;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--muted-foreground);
 }
 .masthead__theme { flex: none; }

@@ -102,6 +102,23 @@ describe("renderWalletControl", () => {
     expect(root.querySelector("[role=menu]")).toBeNull();
   });
 
+  it("drives visibility from the hidden attribute, not a class, when opened and closed", () => {
+    renderWalletControl(root, state({ wallet: "connected", address: ADDRESS }), handlers());
+    const pill = root.querySelector<HTMLButtonElement>("button[data-wallet-pill]")!;
+    const menu = root.querySelector<HTMLElement>("[role=menu]")!;
+
+    expect(menu.hidden).toBe(true);
+    expect(menu.hasAttribute("hidden")).toBe(true);
+
+    pill.click();
+    expect(menu.hidden).toBe(false);
+    expect(menu.hasAttribute("hidden")).toBe(false);
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(menu.hidden).toBe(true);
+    expect(menu.hasAttribute("hidden")).toBe(true);
+  });
+
   it("does not share open state between two roots with the same address", () => {
     const rootB = document.createElement("div");
     document.body.append(rootB);

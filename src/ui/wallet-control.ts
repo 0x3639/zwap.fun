@@ -124,6 +124,7 @@ function renderConnected(root: HTMLElement, address: string, handlers: WalletCon
 
   const full = element("p", address);
   full.className = "wallet-control__address font-mono";
+  full.title = address;
 
   const copy = element("button");
   copy.type = "button";
