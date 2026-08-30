@@ -1,5 +1,11 @@
 # ADR 0006: Zenon HTLC embedded contract as the settlement layer
 
+> **2026-08-30:** the in-page keystore was removed; settlement blocks are
+> signed by a browser-extension wallet through
+> `src/zenon/injected-signer.ts` (see
+> [`docs/proposals/zenon-injected-provider.md`](../proposals/zenon-injected-provider.md)).
+> Nostr signing is unchanged.
+
 - Status: accepted
 - Date: 2026-08-28
 - Supersedes: [ADR 0004](0004-cashu-htlc-settlement.md)

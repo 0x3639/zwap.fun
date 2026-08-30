@@ -58,21 +58,19 @@ npm run dev
 
 Open `http://localhost:5173/`. One page supports both sides of the exchange:
 publishing an order creates an ephemeral maker role for that order, while
-taking an order creates an ephemeral taker session. The same browser wallet
-can hold both roles concurrently without a reload. The optional
-`?wallet=<name>` query is only a local storage namespace for isolated test
-fixtures; it does not select a maker or taker role.
+taking an order creates an ephemeral taker session. The same connected
+wallet can hold both roles concurrently without a reload. zwap holds no
+key itself — see [Wallet](#wallet) below.
 
 By default the wallet targets **Zenon mainnet** — `.env.example` documents
 the mainnet configuration. The public testnet (chain `73404`) has no faucet
-or plasma bot yet; run against it with `npx vite --mode testnet`, which loads
+yet; run against it with `npx vite --mode testnet`, which loads
 `.env.testnet` over the defaults.
 
 Follow the [manual swap walkthrough](docs/guides/manual-swap.md) to reproduce
 a demonstrated swap end to end, including a refund drill. The
 [agent API](docs/guides/agent-api.md) documents `window.zwap`'s exact
-methods, amounts, and the one method that can return bearer material
-(`revealMnemonic`).
+methods and amounts.
 
 `npm test` runs 58+ files of unit and fake-node integration tests; it never
 touches a real node. A separate, real-funds
@@ -80,22 +78,20 @@ touches a real node. A separate, real-funds
 (`src/zenon/live.integration.test.ts`) is skipped unless `ZENON_INTEGRATION=1`
 is set — see that guide for how to fund two throwaway seeds and run it.
 
-### Browser-extension wallets
+### Wallet
 
-zwap's own wallet is a hot wallet: the seed lives in this browser profile and
-the page signs every block. There is no Zenon extension that a dapp can sign
-through today, so
-[`docs/proposals/zenon-injected-provider.md`](docs/proposals/zenon-injected-provider.md)
-specifies one — EIP-6963-style discovery, an
+zwap signs every Zenon account block through a browser-extension wallet —
+it holds no key of its own. Discovery and signing follow
+[`docs/proposals/zenon-injected-provider.md`](docs/proposals/zenon-injected-provider.md):
+EIP-6963-style discovery, an
 [EIP-1193](https://eips.ethereum.org/EIPS/eip-1193)-style `request()`, and a
 single `zenon_sendBlock` method that takes zwap's own `ZenonTemplate` union as
-its wire schema — to be filed against
-[nom-webwallet](https://github.com/digitalSloth/nom-webwallet) Phase 2. The
-page half is already implemented in `src/zenon/injected-signer.ts` and ships
-behind `VITE_INJECTED_WALLET=1`: with the flag on and a conforming extension
-present, the account panel offers **Connect wallet**, and from then on that
-extension signs the settlement blocks and the local keystore is left alone.
-With the flag off, or with no extension detected, nothing changes.
+its wire schema, implemented on the page side in
+`src/zenon/injected-signer.ts`. With a conforming extension present (for
+example [NoM Wallet](https://github.com/0x3639/nom-wallet)), the masthead
+offers **Connect wallet**; with none detected, it offers to install one. See
+[the wallet guide](docs/guides/wallet.md) for the connect/disconnect flow and
+its known browser-keying limitation.
 
 Production builds use `npm run build` and write the static site to `dist/`.
 

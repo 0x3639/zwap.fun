@@ -1,40 +1,31 @@
 # Browser agent API
 
-The static app exposes the same wallet used by the human interface as
-`window.zwap`. It is intentionally small. Read methods return public or
-redacted summaries; **only `revealMnemonic` returns bearer material** — every
-other method returns addresses, amounts, phases, and public identifiers that
-are safe to log or display.
+The static app exposes the same wallet-backed surface used by the human
+interface as `window.zwap`. It is intentionally small. zwap holds no key —
+a browser-extension wallet signs every account block — so every method
+returns addresses, amounts, phases, and public identifiers that are safe to
+log or display; there is nothing on `window.zwap` that can leak bearer
+material.
 
-## One shared page and optional local workspaces
+## One shared page, one connected wallet
 
 The deployed site is one shared page. Maker and taker are ephemeral roles
-tied to individual orders and sessions; the same browser wallet can publish
-orders and take other orders concurrently.
-
-For isolated local fixtures only, choose a storage workspace with the URL
-query parameter:
-
-```text
-https://zwap.fun/?wallet=maker
-https://zwap.fun/?wallet=taker
-```
-
-Workspace names are 1–32 lowercase letters, numbers, or hyphens. Each
-workspace gets a separate IndexedDB database and Web Locks namespace. A
-workspace is not a protocol role.
+tied to individual orders and sessions; the same connected wallet can
+publish orders and take other orders concurrently. There is no per-workspace
+query parameter any more — local trade data is namespaced per browser
+origin, and the wallet itself lives in the browser extension, not in zwap.
 
 ## Wallet methods
 
 ```ts
 const state = await window.zwap.getState();
-// { address, network, chainId, balances, unreceived, plasma, powRequired, plasmaBotAvailable }
+// { wallet: "absent" | "detected" | "connected", providerName, address,
+//   network, chainId, balances, unreceived, plasma }
 
-const created = await window.zwap.createWallet();
-const imported = await window.zwap.importWallet("<your 24 words>");
+const connected = await window.zwap.connectWallet(); // opens the extension's connect window
+await window.zwap.disconnectWallet();
 
 const afterReceive = await window.zwap.receivePending();
-const fusion = await window.zwap.fusePlasma("low"); // "low" | "medium" | "high"
 
 const receipt = await window.zwap.send(
   "z1qz...recipient",
@@ -42,31 +33,34 @@ const receipt = await window.zwap.send(
   "100000000" // 1 ZNN, in minor units
 );
 
-// The one call that returns spendable secret material. Gate every UI path to
-// it behind an explicit human confirmation; never call it from an automated
-// script that logs its return value.
-const mnemonic = await window.zwap.revealMnemonic("REVEAL SEED");
-
-await window.zwap.clearWallet("DELETE WALLET"); // erases the seed from this profile
-await window.zwap.resetProfile("RESET ZWAP PROFILE"); // erases this profile entirely
+// Erases this browser's trade-session journal, order-key store, and
+// publication outbox. It never touches the wallet — the extension holds
+// the seed, not zwap.
+await window.zwap.resetLocalData("RESET ZWAP DATA");
 ```
 
-`getState()` reports the address (`null` if no wallet exists yet in this
-profile), the configured network name and chain id, balances by ZTS token
-standard (symbol, decimals, exact integer minor-unit balance), the count of
-unreceived pending blocks, plasma (`currentPlasma`, `maxPlasma`, `qsrFused`)
-or `null` if unknown, whether the address currently needs proof-of-work to
-send (`powRequired`), and whether a plasma bot is configured for this network
-(`plasmaBotAvailable`). It never returns the mnemonic, the private key, or an
-unreleased preimage.
+`getState()` reports the three-state wallet machine (`absent` — no
+extension announced itself; `detected` — an extension announced but no
+account is granted; `connected` — `zenon_requestAccounts` returned an
+address), the announced extension's name once detected, the address
+(`null` unless connected), the configured network name and chain id,
+balances by ZTS token standard (symbol, decimals, exact integer minor-unit
+balance), the count of unreceived pending blocks, and plasma
+(`currentPlasma`, `maxPlasma`, `qsrFused`) or `null` if unknown. It never
+returns a private key or an unreleased preimage.
+
+`connectWallet()` throws with "Wallet connection refused" on a rejected
+extension prompt, or "Wallet is on chain N; zwap needs chain M" on a chain
+mismatch. `receivePending()` and `send()` throw "Connect your wallet before
+trading" when called while not connected.
 
 `send()` is a plain transfer — for moving funds outside a trade. Settlement
 transfers happen automatically inside the trade coordinator and are never
 exposed as a raw send.
 
-`revealMnemonic` and `clearWallet` require an exact literal confirmation
-string (case-sensitive) so a stray call cannot accidentally expose or erase a
-wallet.
+`resetLocalData` requires the exact literal confirmation string
+`"RESET ZWAP DATA"` (case-sensitive) so a stray call cannot accidentally
+erase local trade data.
 
 ## Order book methods
 
@@ -110,7 +104,7 @@ order ID, maker public key, projection ID, revision, and per-relay receipts —
 never key material.
 
 Before making a relay request, the browser persists the already-signed
-projection in a private-profile outbox. If publication receives no
+projection in a private, origin-scoped outbox. If publication receives no
 acknowledgement, `publishOrder()` rejects with an error whose `publication`
 field contains the public order ID, projection ID, revision, and receipts.
 Call `getPendingOrderPublications()` to inspect the outbox and
@@ -167,8 +161,8 @@ expose publicly.
 `listTrades()` and `getTrade()` return only public views: phase, role, exact
 amounts, token standards, HTLC ids and validated terms, public projection IDs
 and revisions, and a redacted protocol/message trace. They never return
-private keys, preimages before they are on-chain, mnemonics, or raw NIP-17
-message bodies.
+private keys, preimages before they are on-chain, or raw NIP-17 message
+bodies.
 
 Browser automation running in an isolated script world can set
 `document.documentElement.dataset.zwapRunSession`, dispatch
@@ -183,7 +177,7 @@ exposes the same status/result attributes.
 
 The public app has a fixed network allowlist matching its Content Security
 Policy (`index.html`): the configured Zenon node WebSocket
-(`VITE_ZENON_NODE_WS`), the plasma bot (`VITE_PLASMA_BOT_URL`, mainnet only),
-and the configured Nostr relays (`VITE_NOSTR_RELAYS`,
+(`VITE_ZENON_NODE_WS`) and the configured Nostr relays (`VITE_NOSTR_RELAYS`,
 `VITE_NOSTR_INBOX_RELAY`). Any other origin is unreachable from the page
-regardless of what an agent asks for.
+regardless of what an agent asks for — the wallet extension talks to the
+Zenon node on its own, outside the page's CSP.

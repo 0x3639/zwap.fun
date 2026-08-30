@@ -93,11 +93,12 @@ live happy path exposes a funds-loss blocker.
 
 ## Browser runtime
 
-Each `?wallet=` profile constructs one isolated IndexedDB wallet, encrypted
-trade-session journal, order outbox, and Web Lock namespace. Before
-advertising the private inbox, the page performs a disposable
-recipient-only live probe against `wss://auth.nostr1.com`; all probe keys are
-zeroized afterward.
+Each browser origin gets one IndexedDB namespace — the trade-session
+journal, order-key store, and outbox — and one Web Lock namespace; the
+connected wallet address itself lives in the browser-extension wallet, not
+in this storage. Before advertising the private inbox, the page performs a
+disposable recipient-only live probe against `wss://auth.nostr1.com`; all
+probe keys are zeroized afterward.
 
 The shared page automatically enables and reconnects each active order-key
 inbox. A valid `reserve_propose` opens a maker session through the same

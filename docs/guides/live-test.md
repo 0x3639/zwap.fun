@@ -47,29 +47,28 @@ action) before running the test — the test's own `assertFunded` pre-flight
 check fails fast with a clear message if either balance is short, but it
 does not receive pending blocks for you.
 
-## 3. Fuse plasma, or let the test compute proof-of-work
+## 3. Fuse plasma on both addresses
 
 Every account block (including `htlc.Create`, `htlc.Unlock`, and `receive`)
-needs plasma or proof-of-work. Two options:
+needs plasma or proof-of-work. This test signs through
+[`test/helpers/sdk-signer.ts`](../../test/helpers/sdk-signer.ts)'s
+`SdkSigner` — the SDK-signing core the app's own in-page signer used before
+it was removed in favor of a browser-extension wallet (see [ADR
+0006](../adr/0006-zenon-htlc-settlement.md)). Its comment is explicit: it
+installs no PoW provider, so **the addresses this test runs against must
+hold fused plasma**. Fuse ≥ 10 QSR on each address — either through
+nom-webwallet/go-syrius directly, or the community bot at
+`https://plazma.bot` — and wait a few minutes for it to become spendable.
 
-- **Fuse plasma** (faster, recommended): fuse ≥ 10 QSR on each address —
-  either through nom-webwallet/go-syrius directly, or the same
-  `https://plazma.bot` community bot zwap's UI uses
-  (`zenon/plasma-bot.ts`). Fusion takes a few minutes to become spendable.
-- **Accept in-test PoW**: if you skip fusing, `znn-typescript-sdk` computes
-  proof-of-work itself. In the browser this normally needs
-  `KeystoreSigner.installPowWorker()` (a Web Worker plus `pow.js`/`pow.wasm`
-  served from the page), but this test runs under plain Node and never calls
-  `installPowWorker`. We read the SDK's source
-  (`node_modules/znn-typescript-sdk/dist/utilities/block.js` and
-  `dist/pow/pow.js`) to confirm what happens with no PoW provider installed:
-  `block.js` calls `Zenon.getPowProvider()` and, when it is unset, falls back
-  to the SDK's own `generatePoW`, whose `init()` detects `isNode()` and loads
-  `pow.wasm`/`pow.js` straight from the SDK's own `lib/` directory via `fs`
-  and a dynamic `import()` — no browser, no worker, no extra wiring needed.
-  The trade-off is time: PoW at default difficulty can take tens of seconds
-  per block, across up to five signed blocks (two locks, two claims, up to
-  two receives), which is why the test's timeout is 600 s.
+If plasma is not fused, `znn-typescript-sdk` itself still falls back to
+computing proof-of-work under Node (`generatePoW`'s `init()` detects
+`isNode()` and loads `pow.wasm`/`pow.js` straight from the SDK's own `lib/`
+directory via `fs` and a dynamic `import()` — no browser, no worker, no
+extra wiring needed), which is why the test's timeout is a generous 600 s.
+`SdkSigner` neither relies on nor blocks this fallback, but it can add tens
+of seconds per block across up to five signed blocks (two locks, two
+claims, up to two receives), so fusing plasma first is faster and the
+scenario this doc verifies.
 
 ## 4. Run the test
 
@@ -85,8 +84,9 @@ npx vitest run src/zenon/live.integration.test.ts
 `ZENON_NODE_WS` and `ZENON_CHAIN_ID` default to zwap's mainnet configuration
 (`.env.example`'s values) if omitted, but pass them explicitly if you are
 targeting a different node — for example the public testnet, chain `73404`,
-which has no plasma bot yet, so budget for PoW there. An alternative public
-node is available at `wss://node.zenon.network:35998`.
+which has no community plasma-fusion service yet, so budget for the
+in-test proof-of-work fallback there instead. An alternative public node is
+available at `wss://node.zenon.network:35998`.
 
 What the run does, in order: connects to the node; checks both addresses'
 balances (fails fast if either is short); generates one preimage/hash pair;
@@ -113,10 +113,11 @@ or may not have revealed) or reclaims back to the sender after expiry plus a
 60 s grace period. The test's own failure output gives you the exact HTLC id
 and expiration time to act on; to reclaim:
 
-- **Using the zwap UI**: open the wallet with the seed that created the lock
-  (the sender, i.e. `timeLockedAddress`), wait until the printed expiration
-  time has passed, and use the custody/reclaim panel's **Reclaim** action for
-  that HTLC id.
+- **Using the zwap UI**: connect the browser-extension wallet holding the
+  account that created the lock (the sender, i.e. `timeLockedAddress`) —
+  import that seed into the extension if it is not there already — wait
+  until the printed expiration time has passed, and use the custody/reclaim
+  panel's **Reclaim** action for that HTLC id.
 - **Using go-syrius or nom-webwallet directly**: call the HTLC embedded
   contract's `Reclaim(id)` method with the id printed by the failed run, from
   the address that created that lock, once `now >= expirationTime + 60s`.

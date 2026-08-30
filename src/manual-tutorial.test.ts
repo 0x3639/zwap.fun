@@ -5,10 +5,13 @@ import html from "../index.html?raw";
 
 describe("manual swap tutorial", () => {
   it("keeps the complete shared-page happy-path recipe", () => {
-    expect(tutorial).toContain("?wallet=maker");
-    expect(tutorial).toContain("?wallet=taker");
-    expect(tutorial).toContain("Create wallet");
-    expect(tutorial).toContain("Fuse plasma");
+    expect(tutorial).toContain("Connect a funded extension account");
+    expect(tutorial).toContain("two separate browser profiles");
+    expect(tutorial).toContain("Connect wallet");
+    expect(tutorial).toContain("proof-of-work");
+    expect(tutorial).not.toContain("?wallet=");
+    expect(tutorial).not.toContain("Create wallet");
+    expect(tutorial).not.toContain("Fuse plasma");
     expect(tutorial).toContain("Receive pending");
     expect(tutorial).toContain("automatically");
     expect(tutorial).not.toContain("Sync maker listener");

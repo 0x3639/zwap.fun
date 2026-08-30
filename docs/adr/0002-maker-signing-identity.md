@@ -7,7 +7,7 @@
 > Nostr key rotation it describes is unchanged, but its references to "Cashu
 > wallet and refund keys" describe granola's original ecash settlement keys,
 > which no longer exist — settlement now signs Zenon account blocks through
-> `zenon/keystore-signer.ts`. See
+> the browser-extension wallet (`zenon/injected-signer.ts`). See
 > [ADR 0006](0006-zenon-htlc-settlement.md) for the current settlement layer.
 
 ## Context

@@ -155,9 +155,10 @@ unchanged.
   line — "Connect your wallet to see balances and trade" — and nothing else.
   The extension badge, Create/Import wallet, seed reveal, erase wallet, and
   Fuse plasma controls are gone.
-- "Sign and post order", "Take", "Cancel", "Retry publication", and
-  "Receive pending" are disabled (with `title="Connect your wallet first"`)
-  while not `connected`. The order book and trade list remain readable.
+- "Sign and post order", "Take", and "Retry publication" are disabled (with
+  `title="Connect your wallet first"`) while not `connected`; "Cancel" and
+  "Receive pending" are simply not rendered until a wallet is connected. The
+  order book and trade list remain readable.
 - The "Reset profile" danger action becomes "Reset local data" and still
   requires typing `RESET ZWAP DATA`; it erases the trade journal, outbox,
   and order keys. It is the only destructive local action left.
