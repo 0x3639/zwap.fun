@@ -359,8 +359,18 @@ export async function publishInboxList(
  * Everything a gift wrap must satisfy before anything downstream may act on
  * it - or even remember having seen it.
  */
+/**
+ * The whole-wrap ceiling, applied at the door: an authenticated flood of
+ * oversized wraps must be rejected before anything is cloned, remembered, or
+ * queued. `unwrapTradeMessageInternal` re-checks it before decrypting.
+ */
+export const MAX_WRAP_CONTENT_BYTES = 32 * 1024;
+
 export function validateGiftWrap(event: NostrEvent, expectedRecipient: string, now: number): void {
   assertEventShape(event, "Gift wrap");
+  if (new TextEncoder().encode(event.content).length > MAX_WRAP_CONTENT_BYTES) {
+    throw new Error("Gift-wrap content exceeds the 32 KiB zwap limit");
+  }
   if (event.kind !== 1059 || !verifyFresh(event)) throw new Error("Gift-wrap signature or kind is invalid");
   if (event.tags.length !== 2 || event.tags[0]?.length !== 2 || event.tags[0]?.[0] !== "p" || event.tags[0]?.[1] !== expectedRecipient) {
     throw new Error("Gift-wrap recipient tag is invalid");

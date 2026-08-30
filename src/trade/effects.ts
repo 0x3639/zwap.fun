@@ -1718,7 +1718,12 @@ export class ZwapCoordinatorEffects implements CoordinatorEffectPort {
     const next = bump(session, now);
     let result: ChainOperationResult;
     if (operation.kind === "lock") {
-      const completed = await onChain(() => this.chain.completeLock(artifact));
+      // The send itself must sit inside the cross-tab account lock: every tab
+      // has its own signer queue, so preparation being serialized is not
+      // enough - two tabs would otherwise build blocks from the same account
+      // frontier concurrently.
+      const completed = await this.withAccountLock(() =>
+        onChain(() => this.chain.completeLock(artifact)));
       next.privateState.legs[leg].htlcId = completed.htlcId;
       next.privateState.legs[leg].observations.push({
         observedAt: now,
@@ -1739,13 +1744,14 @@ export class ZwapCoordinatorEffects implements CoordinatorEffectPort {
         amount: artifact.amount
       };
     } else {
-      const completed = operation.kind === "claim"
-        ? await onChain(() => {
+      // Same cross-tab serialization as the lock branch above.
+      const completed = await this.withAccountLock(() => operation.kind === "claim"
+        ? onChain(() => {
             const preimage = session.privateState.preimage;
             if (!preimage) throw new Error("Chain claim lacks its preimage");
             return this.chain.completeClaim(artifact, preimage);
           })
-        : await onChain(() => this.chain.completeRefund(artifact));
+        : onChain(() => this.chain.completeRefund(artifact)));
       result = {
         blockHash: completed.blockHash,
         htlcId: completed.htlcId,

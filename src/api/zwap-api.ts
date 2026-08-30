@@ -61,6 +61,8 @@ export class ZwapApi {
   private readonly connectSigner: (provider: ZenonProvider, chainId: number) => Promise<ConnectedSigner>;
   private readonly accountHandlers: Array<(accounts: string[]) => void> = [];
   private current: ZenonAccount | null = null;
+  /** Bumped by `disconnect()`; a connect that started earlier must not land. */
+  private generation = 0;
   private connecting: Promise<ZwapState> | undefined;
   /**
    * Deliberately never reset. `InjectedZenonSigner.onAccountsChanged`
@@ -119,11 +121,18 @@ export class ZwapApi {
     const detected = this.provider;
     if (detected === null) throw new Error("No browser wallet is available");
     if (this.current !== null) return this.getState();
+    const generation = this.generation;
     let signer: ConnectedSigner;
     try {
       signer = await this.connectSigner(detected.provider, this.config.chainId);
     } catch (error) {
       throw describeConnectError(error, this.config.chainId);
+    }
+    if (generation !== this.generation) {
+      // `disconnect()` ran while the extension prompt was open: the user has
+      // already stepped away, so installing the signer now would silently
+      // resurrect a connection nobody asked for.
+      throw new Error("Wallet connection was cancelled");
     }
     this.current = new ZenonAccount({ node: this.node, signer });
     if (!this.listening) {
@@ -149,6 +158,7 @@ export class ZwapApi {
   }
 
   disconnect(): void {
+    this.generation += 1;
     this.current = null;
   }
 

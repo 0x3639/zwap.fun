@@ -64,6 +64,7 @@ function walletProvider(overrides: Partial<Record<string, unknown>> = {}): FakeP
     switch (method) {
       case "zenon_chainId": return 1;
       case "zenon_requestAccounts": return [ADDRESS];
+      case "zenon_accounts": return [ADDRESS];
       case "zenon_sendBlock": return { hash: HASH };
       default: throw new Error(`unexpected method ${method}`);
     }
@@ -208,6 +209,54 @@ describe("InjectedZenonSigner.connect", () => {
 });
 
 describe("InjectedZenonSigner.send", () => {
+  it("rechecks the wallet chain inside the serialized send and refuses a switched network", async () => {
+    let chain: unknown = 1;
+    const provider = walletProvider({});
+    const originalRequest = provider.request.bind(provider);
+    provider.request = async (args) => {
+      if (args.method === "zenon_chainId") {
+        provider.calls.push({ method: args.method });
+        return chain;
+      }
+      return originalRequest(args);
+    };
+    const signer = await InjectedZenonSigner.connect(provider, 1);
+    chain = 3;
+
+    const error = await signer
+      .send({ kind: "receive", fromBlockHash: "aa".repeat(32) })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(InjectedProviderError);
+    expect((error as InjectedProviderError).code).toBe(4901);
+    expect(provider.calls.filter(({ method }) => method === "zenon_sendBlock")).toHaveLength(0);
+  });
+
+  it("rechecks the active account inside the serialized send and refuses a switched account", async () => {
+    const provider = walletProvider({ zenon_accounts: [OTHER] });
+    const signer = await InjectedZenonSigner.connect(provider, 1);
+
+    const error = await signer
+      .send({ kind: "receive", fromBlockHash: "aa".repeat(32) })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(InjectedProviderError);
+    expect((error as InjectedProviderError).code).toBe(4100);
+    expect(provider.calls.filter(({ method }) => method === "zenon_sendBlock")).toHaveLength(0);
+  });
+
+  it("verifies chain and account before every zenon_sendBlock", async () => {
+    const provider = walletProvider();
+    const signer = await InjectedZenonSigner.connect(provider, 1);
+
+    await signer.send({ kind: "receive", fromBlockHash: "aa".repeat(32) });
+
+    const methods = provider.calls.map(({ method }) => method);
+    const sendIndex = methods.lastIndexOf("zenon_sendBlock");
+    expect(methods.slice(0, sendIndex)).toContain("zenon_accounts");
+    expect(methods.slice(2, sendIndex)).toContain("zenon_chainId");
+  });
+
   it("hands the template to zenon_sendBlock and returns the published hash", async () => {
     const provider = walletProvider();
     const signer = await InjectedZenonSigner.connect(provider, 1);
@@ -233,6 +282,7 @@ describe("InjectedZenonSigner.send", () => {
     const provider = fakeProvider((method) => {
       if (method === "zenon_chainId") return 1;
       if (method === "zenon_requestAccounts") return [ADDRESS];
+      if (method === "zenon_accounts") return [ADDRESS];
       throw { code: 4001, message: "User rejected the block", data: { rpcCode: -32000 } };
     });
     const signer = await InjectedZenonSigner.connect(provider, 1);
@@ -263,6 +313,7 @@ describe("InjectedZenonSigner.send", () => {
     const provider = fakeProvider(async (method) => {
       if (method === "zenon_chainId") return 1;
       if (method === "zenon_requestAccounts") return [ADDRESS];
+      if (method === "zenon_accounts") return [ADDRESS];
       const id = counter++;
       order.push(id);
       await new Promise((resolve) => setTimeout(resolve, id === 0 ? 20 : 0));
@@ -285,6 +336,7 @@ describe("InjectedZenonSigner.send", () => {
     const provider = fakeProvider((method) => {
       if (method === "zenon_chainId") return 1;
       if (method === "zenon_requestAccounts") return [ADDRESS];
+      if (method === "zenon_accounts") return [ADDRESS];
       attempt += 1;
       if (attempt === 1) throw { code: 4001, message: "rejected" };
       return { hash: HASH };

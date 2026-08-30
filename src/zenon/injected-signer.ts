@@ -177,7 +177,8 @@ export class InjectedZenonSigner implements ZenonSigner {
 
   private constructor(
     private readonly provider: ZenonProvider,
-    private readonly account: string
+    private readonly account: string,
+    private readonly expectedChainId: number
   ) {}
 
   static async connect(
@@ -199,7 +200,7 @@ export class InjectedZenonSigner implements ZenonSigner {
         "The extension wallet authorized no Zenon address for this site"
       );
     }
-    return new InjectedZenonSigner(provider, address);
+    return new InjectedZenonSigner(provider, address, expectedChainId);
   }
 
   address(): string {
@@ -208,6 +209,25 @@ export class InjectedZenonSigner implements ZenonSigner {
 
   send(template: ZenonTemplate): Promise<SendReceipt> {
     const run = this.queue.then(async () => {
+      // The user can switch the wallet's network or account at any moment,
+      // and `zenon_sendBlock` carries no chain or account binding of its
+      // own. Re-verify both inside the serialized send, immediately before
+      // the signature request; a mismatch fails the send rather than
+      // signing for the wrong chain or address.
+      const chainId = await call(this.provider, "zenon_chainId");
+      if (chainId !== this.expectedChainId) {
+        throw new InjectedProviderError(
+          PROVIDER_ERROR.chainMismatch,
+          `The extension wallet switched to chain ${String(chainId)}; zwap needs chain ${this.expectedChainId}`
+        );
+      }
+      const active = addressList(await call(this.provider, "zenon_accounts"));
+      if (active[0] !== this.account) {
+        throw new InjectedProviderError(
+          PROVIDER_ERROR.unauthorized,
+          "The extension wallet is no longer signing with the connected account"
+        );
+      }
       const published = await call(this.provider, "zenon_sendBlock", [{ template }]);
       const hash = typeof published === "object" && published !== null
         ? (published as { hash?: unknown }).hash

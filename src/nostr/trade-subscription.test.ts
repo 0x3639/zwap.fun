@@ -277,6 +277,82 @@ describe("live trade inbox subscription", () => {
     subscription.stop();
   });
 
+  it("rejects an oversized gift wrap before it is remembered or queued", async () => {
+    const port = new FakeRelayPort();
+    const delivered: string[] = [];
+    const errors: TradeSubscriptionError[] = [];
+    const subscription = await startTradeSubscription({
+      ...input(port),
+      onEvent: async (event) => { delivered.push(event.id); },
+      onError: (error) => errors.push(error)
+    });
+
+    const oversized = finalizeEvent({
+      kind: 1059,
+      created_at: since,
+      tags: [["p", recipientPubkey], ["expiration", String(since + 3_600)]],
+      content: "x".repeat(32 * 1024 + 1)
+    }, senderKey) as NostrEvent;
+    port.subscriptions[0]!.callbacks.onevent(oversized);
+
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    expect(errors[0]!.kind).toBe("event_rejected");
+    expect(delivered).toEqual([]);
+    subscription.stop();
+  });
+
+  it("bounds the dedup cache instead of remembering every id forever", async () => {
+    const port = new FakeRelayPort();
+    const delivered: string[] = [];
+    const subscription = await startTradeSubscription({
+      ...input(port),
+      limits: { dedup: 2 },
+      onEvent: async (event) => { delivered.push(event.id); }
+    });
+    const [first, second, third] = [wrapper("a"), wrapper("b"), wrapper("c")];
+
+    port.subscriptions[0]!.callbacks.onevent(first);
+    port.subscriptions[0]!.callbacks.onevent(first);
+    port.subscriptions[0]!.callbacks.onevent(second);
+    port.subscriptions[0]!.callbacks.onevent(third);
+    // `first` was evicted by the two newer ids, so a replay delivers again -
+    // bounded memory is the property; the transcript layer discards replays.
+    port.subscriptions[0]!.callbacks.onevent(first);
+
+    await vi.waitFor(() => expect(delivered).toEqual(
+      [first.id, second.id, third.id, first.id]
+    ));
+    subscription.stop();
+  });
+
+  it("drops events beyond the queue bound instead of queueing without limit", async () => {
+    const port = new FakeRelayPort();
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const delivered: string[] = [];
+    const errors: TradeSubscriptionError[] = [];
+    const subscription = await startTradeSubscription({
+      ...input(port),
+      limits: { queue: 1 },
+      onEvent: async (event) => {
+        delivered.push(event.id);
+        if (delivered.length === 1) await firstGate;
+      },
+      onError: (error) => errors.push(error)
+    });
+    const [first, second, third] = [wrapper("d"), wrapper("e"), wrapper("f")];
+
+    port.subscriptions[0]!.callbacks.onevent(first);
+    port.subscriptions[0]!.callbacks.onevent(second);
+    port.subscriptions[0]!.callbacks.onevent(third);
+
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    expect(errors[0]!.kind).toBe("event_dropped");
+    releaseFirst();
+    await vi.waitFor(() => expect(delivered).toEqual([first.id, second.id]));
+    subscription.stop();
+  });
+
   it("rejects a gift wrap addressed elsewhere, of the wrong kind, or expired", async () => {
     const port = new FakeRelayPort();
     const onEvent = vi.fn();

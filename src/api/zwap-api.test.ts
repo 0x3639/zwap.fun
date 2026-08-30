@@ -39,6 +39,7 @@ function fakeProvider(node: FakeZenonNode, address: string, chainId = 1): FakePr
       switch (method) {
         case "zenon_chainId": return chainId;
         case "zenon_requestAccounts": return [address];
+        case "zenon_accounts": return [address];
         case "zenon_sendBlock": {
           const [{ template }] = params as [{ template: Parameters<typeof signer.send>[0] }];
           const receipt = await signer.send(template);
@@ -143,6 +144,32 @@ describe("ZwapApi", () => {
     const { api, funder } = harness();
     await expect(api.receivePending()).rejects.toThrow("Connect your wallet before trading");
     await expect(api.send(funder, ZNN_ZTS, "1")).rejects.toThrow("Connect your wallet before trading");
+  });
+
+  it("does not resurrect a connection that was disconnected mid-connect", async () => {
+    const node = new FakeZenonNode({ chainId: 1, now: () => NOW });
+    const address = node.createAddress("wallet");
+    const provider = fakeProvider(node, address);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const api = new ZwapApi({
+      node,
+      config: config(),
+      provider: detected(provider),
+      connectSigner: async (raw, chainId) => {
+        await gate;
+        const { InjectedZenonSigner } = await import("../zenon/injected-signer.js");
+        return InjectedZenonSigner.connect(raw, chainId);
+      }
+    });
+
+    const connecting = api.connect();
+    api.disconnect();
+    release();
+
+    await expect(connecting).rejects.toThrow(/cancelled/i);
+    expect(api.status()).toBe("detected");
+    expect(api.account()).toBeNull();
   });
 
   it("disconnects back to detected and drops the account", async () => {

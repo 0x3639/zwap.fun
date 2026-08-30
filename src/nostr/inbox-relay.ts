@@ -170,6 +170,12 @@ export class NostrToolsInboxRelayPort implements InboxRelayPort {
     const connection = await this.open(relay, auth);
     return await new Promise<NostrEvent[]>((resolve, reject) => {
       const events: NostrEvent[] = [];
+      // A relay that ignores the filter's `limit` must not be able to grow
+      // this buffer without bound before EOSE.
+      const rawLimit = (filter as { limit?: unknown }).limit;
+      const cap = typeof rawLimit === "number" && Number.isSafeInteger(rawLimit) && rawLimit > 0
+        ? rawLimit
+        : 512;
       let settled = false;
       let subscription: { close(reason?: string): void } | undefined;
       const finish = (result: () => void): void => {
@@ -182,7 +188,9 @@ export class NostrToolsInboxRelayPort implements InboxRelayPort {
       };
       const timeout = setTimeout(() => finish(() => reject(new Error("Inbox relay query timed out"))), this.queryTimeoutMs);
       subscription = connection.subscribe([filter], {
-        onevent: (event) => events.push(event),
+        onevent: (event) => {
+          if (events.length < cap) events.push(event);
+        },
         oneose: () => finish(() => resolve(events)),
         onclose: (reason) => finish(() => reject(new Error(`Inbox relay closed query: ${reason}`)))
       });

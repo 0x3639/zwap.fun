@@ -129,6 +129,10 @@ export class ZenonTradeClient {
   async validateIncomingLock(htlcId: string, expected: ExpectedZenonLock): Promise<LockSummary> {
     const info = await this.deps.node.getHtlc(htlcId);
     if (!info) throw new ZenonTradeError("htlc-missing");
+    // The node must return the object it was asked for. An adapter answering
+    // with a DIFFERENT HTLC - even one matching every expected term - must
+    // never have its identity adopted into a checkpoint.
+    if (info.id !== htlcId) throw new ZenonTradeError("htlc-identity");
     validateHtlcInfo(info, expected);
     return { htlcId, validationCommitment: await htlcValidationCommitment(info), observedAt: this.deps.now() };
   }

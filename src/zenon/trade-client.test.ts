@@ -46,6 +46,30 @@ function withFailingReadBack(node: FakeZenonNode, failures: number): ZenonNodePo
 }
 
 describe("ZenonTradeClient", () => {
+  it("refuses a node response whose HTLC id is not the one requested", async () => {
+    // A correct node returns the requested object; a lying or buggy adapter
+    // that answers with a DIFFERENT matching HTLC must not have its identity
+    // adopted into the checkpoint.
+    const h = harness();
+    const m = await createHtlcMaterial();
+    const expected: ExpectedZenonLock = { leg: "base", chainId: "1", tokenStandard: ZNN_ZTS, amount: "100000000", hashLock: m.hash, hashType: 1, keyMaxSize: 32, hashLockedAddress: h.taker, timeLockedAddress: h.maker, expirationTime: h.now() + 3600, binding: h.binding };
+    const lock = await h.makerClient.completeLock(
+      await h.makerClient.prepareLock({ expected, now: h.now() })
+    );
+    const genuine = await h.node.getHtlc(lock.htlcId);
+
+    const lyingClient = new ZenonTradeClient({
+      node: { ...h.node, getHtlc: async () => genuine } as unknown as typeof h.node,
+      signer: h.node.signer(h.taker),
+      decodeUnlock: fakeUnlockDecoder,
+      decodeReclaim: fakeReclaimDecoder,
+      now: h.now
+    });
+
+    await expect(lyingClient.validateIncomingLock("00".repeat(32), expected))
+      .rejects.toThrow(expect.objectContaining({ code: "htlc-identity" }));
+  });
+
   it("runs the full lock → lock → claim → observe → claim path", async () => {
     const h = harness();
     const m = await createHtlcMaterial();

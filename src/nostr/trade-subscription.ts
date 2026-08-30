@@ -30,6 +30,7 @@ export interface TradeSubscriptionError {
     | "relay_closed"
     | "event_callback"
     | "event_rejected"
+    | "event_dropped"
     | "subscription_stop";
   message: string;
 }
@@ -58,6 +59,13 @@ export interface StartTradeSubscriptionInput {
   recipientSecretKey: Uint8Array;
   inboxRelays: readonly string[];
   cursor: TradeSubscriptionCursor;
+  /**
+   * Memory bounds for a hostile-but-authenticated inbox: how many event ids
+   * the replay-dedup cache retains, and how many events may wait behind the
+   * in-flight callback before new ones are dropped (and reported). Defaults
+   * sit far above any honest volume.
+   */
+  limits?: { dedup?: number; queue?: number };
   port: TradeSubscriptionRelayPort;
   now(): number;
   onEvent(event: NostrEvent, relay: string): void | Promise<void>;
@@ -108,6 +116,9 @@ export async function startTradeSubscription(
     const since = timestamp(input.cursor.since, "Trade subscription cursor");
     const relays = normalizeInboxListRelays(input.inboxRelays);
     const seen = new Set<string>();
+    const dedupLimit = input.limits?.dedup ?? 4096;
+    const queueLimit = input.limits?.queue ?? 256;
+    let queued = 0;
     let eventQueue = Promise.resolve();
 
     const stop = (): void => {
@@ -162,10 +173,32 @@ export async function startTradeSubscription(
               }
               if (seen.has(event.id)) return;
               seen.add(event.id);
+              // Bounded replay memory: evict the oldest id once over the cap.
+              // A very old replay may then deliver again - the transcript
+              // layer discards it; unbounded growth would not be discarded.
+              if (seen.size > dedupLimit) {
+                const oldest = seen.values().next().value;
+                if (oldest !== undefined) seen.delete(oldest);
+              }
+              // Backpressure: beyond one in-flight callback plus the queue
+              // bound, drop and report rather than queue without limit.
+              if (queued > queueLimit) {
+                reportSafely(input.onError, {
+                  relay,
+                  kind: "event_dropped",
+                  message: "Trade inbox event dropped: processing queue is full"
+                });
+                return;
+              }
+              queued += 1;
               const snapshot = structuredClone(event);
               eventQueue = eventQueue
                 .then(async () => {
-                  if (!stopped) await input.onEvent(snapshot, relay);
+                  try {
+                    if (!stopped) await input.onEvent(snapshot, relay);
+                  } finally {
+                    queued -= 1;
+                  }
                 })
                 .catch(() => {
                   reportSafely(input.onError, {

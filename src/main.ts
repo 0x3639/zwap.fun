@@ -187,7 +187,9 @@ const outboxLocked = <T>(action: () => Promise<T>): Promise<T> =>
 // driver re-acquires it on every read and write while the facade may already
 // hold the account lock. See `composeMakerIdentity`.
 const makerIdentity = composeMakerIdentity(driver);
-const relayClient = new RelayClient();
+// The configured discovery relays, not the library defaults - VITE_NOSTR_RELAYS
+// must actually steer the public order book.
+const relayClient = new RelayClient({ relays: config.discoveryRelays });
 const orderService = new NostrOrderService(makerIdentity, relayClient);
 const orderOutbox = new OrderOutboxRepository(driver, outboxLocked);
 const orderApi = new OrderApi(

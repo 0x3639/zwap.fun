@@ -107,6 +107,31 @@ describe("nostr-tools inbox relay port", () => {
     expect(connection.authPubkeys).toEqual([protocolPubkey, protocolPubkey]);
   });
 
+  it("bounds query accumulation when a relay ignores the filter limit", async () => {
+    class FloodingConnection extends FakeConnection {
+      override subscribe(
+        _filters: Record<string, unknown>[],
+        callbacks: { onevent: (value: NostrEvent) => void; oneose: () => void; onclose: (reason: string) => void }
+      ): { close(reason?: string): void } {
+        queueMicrotask(() => {
+          for (let index = 0; index < 5; index += 1) callbacks.onevent(event());
+          callbacks.oneose();
+        });
+        return { close: vi.fn() };
+      }
+    }
+    const connection = new FloodingConnection();
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({
+      supported_nips: [17, 40, 42],
+      limitation: { auth_required: true }
+    }), { status: 200 }));
+    const port = new NostrToolsInboxRelayPort(async () => connection, fetcher, 1_000);
+    const auth = async (challenge: string) =>
+      createNip42AuthEvent(relayUrl, challenge, protocolKey, now);
+
+    await expect(port.query(relayUrl, { kinds: [1059], limit: 2 }, auth)).resolves.toHaveLength(2);
+  });
+
   it("rejects an AUTH template without an exact challenge", async () => {
     class MissingChallengeConnection extends FakeConnection {
       override async auth(signer: (template: EventTemplate) => Promise<NostrEvent>): Promise<string> {

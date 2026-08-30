@@ -245,6 +245,7 @@ interface Participant {
   reservations: FundsReservationRepository;
   address: string;
   accountLocks: () => number;
+  lockDepth: () => number;
   orderApi: {
     ensureReserveStaged: ReturnType<typeof vi.fn>;
     ensureFillStaged: ReturnType<typeof vi.fn>;
@@ -360,6 +361,7 @@ function harness(
       read: vi.fn()
     };
     let accountLocks = 0;
+    let lockDepth = 0;
     const effects = new ZwapCoordinatorEffects({
       orderApi: orderApi as unknown as OrderApi,
       orderOutbox: orderOutbox as unknown as OrderOutboxPort,
@@ -375,7 +377,12 @@ function harness(
       discoveryRelays: DISCOVERY_RELAYS,
       withAccountLock: async <T>(action: () => Promise<T>): Promise<T> => {
         accountLocks += 1;
-        return action();
+        lockDepth += 1;
+        try {
+          return await action();
+        } finally {
+          lockDepth -= 1;
+        }
       },
       network: NETWORK,
       ...(options.shortLockSeconds === undefined
@@ -397,6 +404,7 @@ function harness(
       reservations,
       address,
       accountLocks: () => accountLocks,
+      lockDepth: () => lockDepth,
       orderApi,
       orderOutbox,
       orderReader,
@@ -764,6 +772,33 @@ describe("ZwapCoordinatorEffects", () => {
       expect(executed.privateState.legs.base.htlcId).toBe(created[0]!.hash);
       expect(await node.getHtlc(created[0]!.hash)).not.toBeNull();
       expect(await node.getBalances(addresses.maker)).toEqual([]);
+    });
+
+    it("holds the cross-tab account lock across the actual chain send", async () => {
+      // Preparation and reservation were already serialized, but the send
+      // itself races other tabs' signer queues on the same account frontier
+      // unless it runs under the same cross-tab lock.
+      const { maker, addresses } = harness();
+      const session = boundSession("maker", addresses);
+      const prepared = await maker.effects.performExternal(
+        externalInput({ kind: "prepare_base_lock" }, session)
+      );
+      const reserved = await maker.effects.performExternal(
+        externalInput({ kind: "reserve_funds" }, prepared)
+      );
+
+      const depths: number[] = [];
+      const original = maker.chain.completeLock.bind(maker.chain);
+      vi.spyOn(maker.chain, "completeLock").mockImplementation(async (artifact) => {
+        depths.push(maker.lockDepth());
+        return original(artifact);
+      });
+
+      await maker.effects.performExternal(
+        externalInput({ kind: "execute_chain_operation" }, reserved)
+      );
+
+      expect(depths).toEqual([1]);
     });
 
     it("refuses to execute before the funds are reserved", async () => {
