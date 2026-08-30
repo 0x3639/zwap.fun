@@ -178,13 +178,13 @@ const config = browserConfig();
 const STORAGE_NAME = "zwap-wallet-default";
 const driver = new IndexedDbStorageDriver(STORAGE_NAME);
 const locked = <T>(action: () => Promise<T>): Promise<T> =>
-  withAccountLock("default", action);
+  withAccountLock(action);
 const outboxLocked = <T>(action: () => Promise<T>): Promise<T> =>
-  withOrderOutboxLock("default", action);
+  withOrderOutboxLock(action);
 // Order signing keys are encrypted at rest under their own lock: the encrypted
 // driver re-acquires it on every read and write while the facade may already
 // hold the account lock. See `composeMakerIdentity`.
-const makerIdentity = composeMakerIdentity(driver, "default");
+const makerIdentity = composeMakerIdentity(driver);
 const relayClient = new RelayClient();
 const orderService = new NostrOrderService(makerIdentity, relayClient);
 const orderOutbox = new OrderOutboxRepository(driver, outboxLocked);
@@ -229,7 +229,6 @@ try {
     const account = api.account();
     if (account === null) throw new Error("Connect your wallet before trading");
     runtimePromise ??= createBrowserTradeRuntime({
-      profile: "default",
       driver,
       node,
       signer: account.signer,

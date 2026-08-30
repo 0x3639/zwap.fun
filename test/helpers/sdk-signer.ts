@@ -1,9 +1,9 @@
 import { Buffer } from "buffer";
 import {
-  AccountBlockTemplate, Address, Hash, TokenStandard, Zenon, isPowWorkerSupported,
+  AccountBlockTemplate, Address, Hash, TokenStandard, Zenon,
   type KeyPair
 } from "znn-typescript-sdk";
-import type { SendReceipt, ZenonSigner, ZenonTemplate } from "./types.js";
+import type { SendReceipt, ZenonSigner, ZenonTemplate } from "../../src/zenon/types.js";
 
 export function toSdkTemplate(template: ZenonTemplate, zenon: Pick<Zenon, "embedded">): AccountBlockTemplate {
   switch (template.kind) {
@@ -23,25 +23,18 @@ export function toSdkTemplate(template: ZenonTemplate, zenon: Pick<Zenon, "embed
   }
 }
 
-export interface PowHooks { onPowStart?: () => void; onPowEnd?: () => void; }
-
-export class KeystoreSigner implements ZenonSigner {
+/**
+ * Test-only: signs with an SDK key pair from a mnemonic, for the live
+ * integration test and scripts. No PoW provider is installed — the addresses
+ * these run against must hold fused plasma. App code never imports this.
+ */
+export class SdkSigner implements ZenonSigner {
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly zenon: Pick<Zenon, "send" | "embedded">,
     private readonly keyPair: KeyPair
   ) {}
-
-  static installPowWorker(hooks: PowHooks = {}): void {
-    Zenon.setPowBasePath("/");
-    if (!isPowWorkerSupported()) return;
-    const worker = Zenon.usePowWorker();
-    Zenon.setPowProvider(async (hashHex, difficulty) => {
-      hooks.onPowStart?.();
-      try { return await worker.generate(hashHex, difficulty); } finally { hooks.onPowEnd?.(); }
-    });
-  }
 
   address(): string { return this.keyPair.address.toString(); }
 

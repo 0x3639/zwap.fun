@@ -14,7 +14,7 @@
 import { describe, expect, it } from "vitest";
 import { KeyStore } from "znn-typescript-sdk";
 import { SdkZenonNode } from "./sdk-node.js";
-import { KeystoreSigner } from "./keystore-signer.js";
+import { SdkSigner } from "../../test/helpers/sdk-signer.js";
 import { ZenonTradeClient } from "./trade-client.js";
 import { ZenonAccount } from "./account.js";
 import { sdkReclaimDecoder, sdkUnlockDecoder, type ExpectedZenonLock } from "./htlc.js";
@@ -89,8 +89,8 @@ describe.skipIf(!enabled)("live Zenon HTLC swap (small amounts)", () => {
       const node = await SdkZenonNode.connect({ nodeUrl, chainId });
       const recoverableLegs: RecoverableLeg[] = [];
       try {
-        const maker = new KeystoreSigner(node.zenon, KeyStore.fromMnemonic(makerMnemonic).getKeyPair(0));
-        const taker = new KeystoreSigner(node.zenon, KeyStore.fromMnemonic(takerMnemonic).getKeyPair(0));
+        const maker = new SdkSigner(node.zenon, KeyStore.fromMnemonic(makerMnemonic).getKeyPair(0));
+        const taker = new SdkSigner(node.zenon, KeyStore.fromMnemonic(takerMnemonic).getKeyPair(0));
         const now = () => Math.floor(Date.now() / 1000);
         const makerClient = new ZenonTradeClient({ node, signer: maker, decodeUnlock: sdkUnlockDecoder, decodeReclaim: sdkReclaimDecoder, now });
         const takerClient = new ZenonTradeClient({ node, signer: taker, decodeUnlock: sdkUnlockDecoder, decodeReclaim: sdkReclaimDecoder, now });

@@ -111,7 +111,7 @@ describe("browser trade runtime", () => {
     expect(generated.every((value) => value.every((byte) => byte === 0))).toBe(true);
   });
 
-  it("constructs one durable redacted coordinator for an isolated profile", async () => {
+  it("constructs one durable redacted coordinator", async () => {
     const driver = new MemoryStorageDriver();
     const node = new FakeZenonNode({ chainId: 1, now: () => now });
     const signer = node.signer(node.createAddress("local"));
@@ -127,7 +127,6 @@ describe("browser trade runtime", () => {
     );
 
     const runtime = await createBrowserTradeRuntime({
-      profile: "maker",
       driver,
       node,
       signer,

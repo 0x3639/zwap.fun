@@ -7,7 +7,7 @@ import { withMakerIdentityLock, withMakerIdentityWriteLock } from "./lock.js";
 export const MAKER_IDENTITY_NAMESPACE = "zwap.maker-identity";
 
 /**
- * Builds the profile's maker identity on top of the encrypted driver.
+ * Builds the maker identity on top of the encrypted driver.
  *
  * The per-order Nostr secret keys are wallet-grade material - whoever holds
  * one can sign as that order - so they go through `EncryptedStorageDriver`
@@ -17,7 +17,7 @@ export const MAKER_IDENTITY_NAMESPACE = "zwap.maker-identity";
  * of them is re-entrant:
  *
  * - the *maker identity* lock, which the encrypted driver re-acquires on every
- *   `get`/`set` while resolving the profile key;
+ *   `get`/`set` while resolving the encryption key;
  * - the *maker identity write* lock, which makes `MakerIdentity`'s own
  *   read-then-write of the record atomic;
  * - the *account* lock, which the facade may already be holding when it calls
@@ -29,15 +29,14 @@ export const MAKER_IDENTITY_NAMESPACE = "zwap.maker-identity";
  * left-over plaintext entry is simply ignored and never read again.
  */
 export function composeMakerIdentity(
-  driver: StorageDriver,
-  profile: string
+  driver: StorageDriver
 ): MakerIdentity {
   return new MakerIdentity(
     new EncryptedStorageDriver(
       driver,
       MAKER_IDENTITY_NAMESPACE,
-      (action) => withMakerIdentityLock(profile, action)
+      (action) => withMakerIdentityLock(action)
     ),
-    (action) => withMakerIdentityWriteLock(profile, action)
+    (action) => withMakerIdentityWriteLock(action)
   );
 }

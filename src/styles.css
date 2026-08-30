@@ -230,9 +230,6 @@ main {
 }
 .account-panel__balances .amount { font-size: var(--text-large); font-weight: var(--font-weight-medium); }
 .account-panel__row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
-.account-panel__import { display: grid; gap: var(--space-2); justify-items: start; }
-.account-panel__mnemonic { height: auto; min-height: 4.5rem; padding: var(--space-2) var(--space-3); resize: vertical; }
-.account-panel__tier { width: auto; min-width: 10rem; }
 
 /* ----------------------------------------------------------- Order book --- */
 #orderbook { margin-top: var(--space-5); }

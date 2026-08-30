@@ -79,7 +79,7 @@ export class IndexedDbStorageDriver implements StorageDriver {
       const request = indexedDB.deleteDatabase(this.databaseName);
       request.onsuccess = () => resolve();
       request.onerror = () => reject(request.error ?? new Error("IndexedDB delete failed"));
-      request.onblocked = () => reject(new Error("IndexedDB reset is blocked by another open profile tab"));
+      request.onblocked = () => reject(new Error("IndexedDB reset is blocked by another open zwap tab"));
     });
   }
 }

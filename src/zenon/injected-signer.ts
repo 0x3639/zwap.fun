@@ -6,8 +6,8 @@ import { isHex32, isZenonAddress } from "./validate.js";
  * `docs/proposals/zenon-injected-provider.md`. zwap never sees a key here: the
  * extension owns the seed, fills in address/height/previousHash, decides
  * plasma vs proof of work, signs and publishes. This module only speaks the
- * wire protocol and adapts it to the same `ZenonSigner` the keystore
- * implements, so the trade runtime cannot tell the two apart.
+ * wire protocol and adapts it to the `ZenonSigner` the trade runtime
+ * consumes.
  */
 
 /** EIP-6963-style discovery events. */
@@ -168,9 +168,9 @@ function addressList(value: unknown): string[] {
 
 /**
  * A `ZenonSigner` backed by a browser-extension wallet. Sends are serialized
- * per instance exactly as `KeystoreSigner` serializes them: the extension
- * builds each block on the account-chain height the previous one produced, so
- * two in-flight blocks would race the same frontier.
+ * per instance: the extension builds each block on the account-chain height
+ * the previous one produced, so two in-flight blocks would race the same
+ * frontier.
  */
 export class InjectedZenonSigner implements ZenonSigner {
   private queue: Promise<unknown> = Promise.resolve();

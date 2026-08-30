@@ -6,7 +6,6 @@ describe("loadConfig", () => {
     const config = loadConfig({});
     expect(config.nodeUrl).toBe("wss://my.hc1node.com:35998");
     expect(config.chainId).toBe(1);
-    expect(config.plasmaBotUrl).toBe("https://plazma.bot");
     expect(config.network).toBe("zenon-mainnet");
     expect(config.shortLockSeconds).toBe(1800);
     expect(config.longLockSeconds).toBe(3600);
@@ -16,14 +15,12 @@ describe("loadConfig", () => {
     expect(config.inboxRelay).toBe("wss://auth.nostr1.com");
   });
 
-  it("reads testnet overrides and treats an empty plasma bot url as disabled", () => {
+  it("reads testnet overrides", () => {
     const config = loadConfig({
       VITE_ZENON_NODE_WS: "ws://172.245.236.40:35998",
-      VITE_ZENON_CHAIN_ID: "73404",
-      VITE_PLASMA_BOT_URL: ""
+      VITE_ZENON_CHAIN_ID: "73404"
     });
     expect(config.chainId).toBe(73404);
-    expect(config.plasmaBotUrl).toBeNull();
     expect(config.network).toBe("zenon-testnet-73404");
   });
 
@@ -50,13 +47,6 @@ describe("loadConfig", () => {
       VITE_SHORT_LOCK_SECONDS: "1800",
       VITE_LONG_LOCK_SECONDS: "2400"
     }).longLockSeconds).toBe(2400);
-  });
-
-  it("keeps browser-extension wallets off unless the flag is exactly 1", () => {
-    expect(loadConfig({}).injectedWallet).toBe(false);
-    expect(loadConfig({ VITE_INJECTED_WALLET: "" }).injectedWallet).toBe(false);
-    expect(loadConfig({ VITE_INJECTED_WALLET: "true" }).injectedWallet).toBe(false);
-    expect(loadConfig({ VITE_INJECTED_WALLET: "1" }).injectedWallet).toBe(true);
   });
 
   it("names networks", () => {

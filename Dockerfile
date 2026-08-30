@@ -8,12 +8,10 @@ FROM node:22-alpine AS build
 # testnet image — see .env.testnet for the testnet values.
 ARG VITE_ZENON_NODE_WS=wss://my.hc1node.com:35998
 ARG VITE_ZENON_CHAIN_ID=1
-ARG VITE_PLASMA_BOT_URL=https://plazma.bot
 ARG VITE_NOSTR_RELAYS=wss://relay.primal.net,wss://nos.lol,wss://offchain.pub
 ARG VITE_NOSTR_INBOX_RELAY=wss://auth.nostr1.com
 ENV VITE_ZENON_NODE_WS=$VITE_ZENON_NODE_WS \
     VITE_ZENON_CHAIN_ID=$VITE_ZENON_CHAIN_ID \
-    VITE_PLASMA_BOT_URL=$VITE_PLASMA_BOT_URL \
     VITE_NOSTR_RELAYS=$VITE_NOSTR_RELAYS \
     VITE_NOSTR_INBOX_RELAY=$VITE_NOSTR_INBOX_RELAY
 

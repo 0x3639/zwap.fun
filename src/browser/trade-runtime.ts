@@ -91,7 +91,6 @@ export async function probeTradeInboxRelay(
 }
 
 export interface CreateBrowserTradeRuntimeInput {
-  profile: string;
   driver: StorageDriver;
   /** The connected node every chain read in this runtime goes through. */
   node: ZenonNodePort;
@@ -164,7 +163,7 @@ export async function createBrowserTradeRuntime(
   );
   const sessions = new TradeSessionRepository(
     input.driver,
-    (action) => withTradeSessionStorageLock(input.profile, action)
+    (action) => withTradeSessionStorageLock(action)
   );
   const reservations = new FundsReservationRepository(input.driver);
   const chain = new ZenonTradeClient({
@@ -186,7 +185,7 @@ export async function createBrowserTradeRuntime(
     reservations,
     makerIdentity: input.makerIdentity,
     discoveryRelays,
-    withAccountLock: (action) => withAccountLock(input.profile, action),
+    withAccountLock: (action) => withAccountLock(action),
     network: deploymentFor(chainId),
     shortLockSeconds: input.config.shortLockSeconds
   });
@@ -195,7 +194,7 @@ export async function createBrowserTradeRuntime(
     effects,
     now,
     runSessionExclusive: (sessionId, action) =>
-      withTradeSessionLock(input.profile, sessionId, action)
+      withTradeSessionLock(sessionId, action)
   });
   return {
     api: new TradeApi({

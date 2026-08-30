@@ -5,7 +5,6 @@ import { MakerIdentity } from "../nostr/identity.js";
 import { MemoryStorageDriver } from "../storage/driver.js";
 import {
   withAccountLock,
-  withKeystoreLock,
   withMakerIdentityLock,
   withMakerIdentityWriteLock
 } from "./lock.js";
@@ -42,13 +41,13 @@ async function dump(raw: MemoryStorageDriver): Promise<string> {
 
 describe("maker identity composition", () => {
   it("hands back a real MakerIdentity", () => {
-    expect(composeMakerIdentity(new MemoryStorageDriver(), "maker"))
+    expect(composeMakerIdentity(new MemoryStorageDriver()))
       .toBeInstanceOf(MakerIdentity);
   });
 
   it("never writes an order secret key to the raw driver in the clear", async () => {
     const raw = new MemoryStorageDriver();
-    const identity = composeMakerIdentity(raw, "maker");
+    const identity = composeMakerIdentity(raw);
 
     const publicKey = await identity.publicKey(ORDER_ID);
     const secretKey = await identity.useOrderSecretKey(
@@ -71,22 +70,22 @@ describe("maker identity composition", () => {
       version: 1,
       keys: { [ORDER_ID]: "11".repeat(32) }
     });
-    const identity = composeMakerIdentity(raw, "maker");
+    const identity = composeMakerIdentity(raw);
 
     await expect(identity.listOrderIds()).resolves.toEqual([]);
   });
 
   it("works from inside the account lock the facade holds", async () => {
-    const identity = composeMakerIdentity(new MemoryStorageDriver(), "maker");
+    const identity = composeMakerIdentity(new MemoryStorageDriver());
 
     const publicKey = await within(2_000, () =>
-      withAccountLock("maker", () => identity.publicKey(ORDER_ID)));
+      withAccountLock(() => identity.publicKey(ORDER_ID)));
 
     expect(publicKey).not.toBe("timed-out");
     expect(publicKey).toMatch(/^[0-9a-f]{64}$/);
   }, 10_000);
 
-  it("keeps the maker identity lock distinct from the account and keystore locks", async () => {
+  it("keeps the maker identity lock distinct from the account lock", async () => {
     const order: string[] = [];
     const port = {
       request: async (
@@ -99,17 +98,15 @@ describe("maker identity composition", () => {
       }
     };
 
-    await withAccountLock("maker", async () => undefined, port);
-    await withKeystoreLock("maker", async () => undefined, port);
-    await withMakerIdentityLock("maker", async () => undefined, port);
-    await withMakerIdentityWriteLock("maker", async () => undefined, port);
+    await withAccountLock(async () => undefined, port);
+    await withMakerIdentityLock(async () => undefined, port);
+    await withMakerIdentityWriteLock(async () => undefined, port);
 
     expect(order).toEqual([
-      "zwap-account-maker-write",
-      "zwap-keystore-maker",
-      "zwap-maker-identity-maker",
-      "zwap-maker-identity-maker-write"
+      "zwap-account-default-write",
+      "zwap-maker-identity-default",
+      "zwap-maker-identity-default-write"
     ]);
-    expect(new Set(order).size).toBe(4);
+    expect(new Set(order).size).toBe(3);
   });
 });

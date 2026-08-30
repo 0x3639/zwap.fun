@@ -1,8 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { KeyStore, Zenon, HTLC_ADDRESS as SDK_HTLC } from "znn-typescript-sdk";
-import { KeystoreSigner, toSdkTemplate } from "./keystore-signer.js";
-import { ZNN_ZTS } from "./types.js";
+import { SdkSigner, toSdkTemplate } from "./sdk-signer.js";
+import { ZNN_ZTS } from "../../src/zenon/types.js";
 
 const TEST_MNEMONIC = KeyStore.newRandom().mnemonic; // throwaway, never funded
 
@@ -29,7 +29,7 @@ describe("toSdkTemplate", () => {
   });
 });
 
-describe("KeystoreSigner", () => {
+describe("SdkSigner", () => {
   it("serializes sends and returns the published hash", async () => {
     const keyPair = KeyStore.fromMnemonic(TEST_MNEMONIC).getKeyPair(0);
     const order: number[] = [];
@@ -45,7 +45,7 @@ describe("KeystoreSigner", () => {
         return { ...template, hash: { toString: () => `${id}`.padStart(64, "0") } } as never;
       }
     };
-    const signer = new KeystoreSigner(fakeZenon as never, keyPair);
+    const signer = new SdkSigner(fakeZenon as never, keyPair);
     expect(signer.address()).toBe(keyPair.address.toString());
     const [a, b] = await Promise.all([
       signer.send({ kind: "receive", fromBlockHash: "aa".repeat(32) }),

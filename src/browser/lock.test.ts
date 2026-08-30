@@ -9,7 +9,7 @@ import {
 } from "./lock.js";
 
 describe("wallet mutation lock", () => {
-  it("serializes work under an exclusive profile-scoped Web Lock", async () => {
+  it("serializes work under an exclusive Web Lock", async () => {
     const request = vi.fn(async (
       _name: string,
       _options: { mode: "exclusive" },
@@ -17,9 +17,9 @@ describe("wallet mutation lock", () => {
     ) => callback());
     const locks: LockPort = { request };
 
-    await expect(withAccountLock("maker", async () => "done", locks)).resolves.toBe("done");
+    await expect(withAccountLock(async () => "done", locks)).resolves.toBe("done");
     expect(request).toHaveBeenCalledWith(
-      "zwap-account-maker-write",
+      "zwap-account-default-write",
       { mode: "exclusive" },
       expect.any(Function)
     );
@@ -32,13 +32,13 @@ describe("wallet mutation lock", () => {
       releaseFirst = resolve;
     });
 
-    const first = withAccountLock("fallback", async () => {
+    const first = withAccountLock(async () => {
       events.push("first-start");
       await firstStarted;
       events.push("first-end");
       return "first";
     }, undefined);
-    const second = withAccountLock("fallback", async () => {
+    const second = withAccountLock(async () => {
       events.push("second");
       return "second";
     }, undefined);
@@ -53,7 +53,7 @@ describe("wallet mutation lock", () => {
 });
 
 describe("order outbox mutation lock", () => {
-  it("uses a separate exclusive profile-scoped Web Lock", async () => {
+  it("uses a separate exclusive Web Lock", async () => {
     const request = vi.fn(async (
       _name: string,
       _options: { mode: "exclusive" },
@@ -61,9 +61,9 @@ describe("order outbox mutation lock", () => {
     ) => callback());
     const locks: LockPort = { request };
 
-    await expect(withOrderOutboxLock("maker", async () => "done", locks)).resolves.toBe("done");
+    await expect(withOrderOutboxLock(async () => "done", locks)).resolves.toBe("done");
     expect(request).toHaveBeenCalledWith(
-      "zwap-order-outbox-maker-write",
+      "zwap-order-outbox-default-write",
       { mode: "exclusive" },
       expect.any(Function)
     );
@@ -71,7 +71,7 @@ describe("order outbox mutation lock", () => {
 });
 
 describe("trade session mutation lock", () => {
-  it("uses an exclusive profile- and session-scoped Web Lock", async () => {
+  it("uses an exclusive session-scoped Web Lock", async () => {
     const request = vi.fn(async (
       _name: string,
       _options: { mode: "exclusive" },
@@ -81,31 +81,28 @@ describe("trade session mutation lock", () => {
     const sessionId = "ab".repeat(32);
 
     await expect(withTradeSessionLock(
-      "maker",
       sessionId,
       async () => "done",
       locks
     )).resolves.toBe("done");
     expect(request).toHaveBeenCalledWith(
-      `zwap-trade-maker-${sessionId}-write`,
+      `zwap-trade-default-${sessionId}-write`,
       { mode: "exclusive" },
       expect.any(Function)
     );
   });
 
-  it("rejects malformed profile or session lock names", async () => {
+  it("rejects a malformed session lock name", async () => {
     const locks: LockPort = { request: vi.fn() };
 
-    await expect(withTradeSessionLock("../maker", "ab".repeat(32), async () => {}, locks))
-      .rejects.toThrow("profile");
-    await expect(withTradeSessionLock("maker", "not-a-session", async () => {}, locks))
+    await expect(withTradeSessionLock("not-a-session", async () => {}, locks))
       .rejects.toThrow("session");
     expect(locks.request).not.toHaveBeenCalled();
   });
 });
 
 describe("trade session storage lock", () => {
-  it("uses one global profile-scoped lock for the shared session array", async () => {
+  it("uses one global lock for the shared session array", async () => {
     const request = vi.fn(async (
       _name: string,
       _options: { mode: "exclusive" },
@@ -114,12 +111,11 @@ describe("trade session storage lock", () => {
     const locks: LockPort = { request };
 
     await expect(withTradeSessionStorageLock(
-      "maker",
       async () => "done",
       locks
     )).resolves.toBe("done");
     expect(request).toHaveBeenCalledWith(
-      "zwap-trade-maker-storage-write",
+      "zwap-trade-default-storage-write",
       { mode: "exclusive" },
       expect.any(Function)
     );
