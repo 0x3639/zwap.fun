@@ -3,6 +3,14 @@ import { nodePolyfills } from "vite-plugin-node-polyfills";
 
 export default defineConfig({
   base: "./",
+  build: {
+    rollupOptions: {
+      input: {
+        main: new URL("./index.html", import.meta.url).pathname,
+        howItWorks: new URL("./how-it-works.html", import.meta.url).pathname
+      }
+    }
+  },
   plugins: [
     nodePolyfills({
       include: ["crypto", "buffer", "stream", "util"],

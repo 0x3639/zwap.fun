@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import html from "../index.html?raw";
+import howItWorks from "../how-it-works.html?raw";
 import type { ZwapState } from "./api/zwap-api.js";
 import { renderAccountActions } from "./ui/account-actions.js";
 import { renderDashboard, renderWalletSummary } from "./ui/dashboard.js";
@@ -106,5 +107,24 @@ describe("the deployed shell and the renderers agree", () => {
     const head = html.slice(0, html.indexOf("</head>"));
     expect(head).toContain('<script src="./boot.js"></script>');
     expect(head.indexOf("boot.js")).toBeLessThan(html.indexOf("/src/main.ts"));
+  });
+
+  it("keeps the home page for swapping and the explainer on its own page", () => {
+    // Home: functional panels only, with the way in to the deeper story.
+    expect(html).toContain('href="./how-it-works.html"');
+    expect(html).not.toContain('id="protocol-diagram-title"');
+    expect(html).not.toContain('id="agent-title"');
+    expect(html).toContain('class="masthead__nav"');
+
+    // The explainer page: the protocol walkthrough, the trust cards, and the
+    // agent strip — plus a masthead that leads back to the app and its own
+    // theme toggle, but no wallet control (nothing on it signs).
+    expect(howItWorks).toContain('id="protocol-diagram-title"');
+    expect(howItWorks).toContain("Know the trust boundary.");
+    expect(howItWorks).toContain('id="agent-title"');
+    expect(howItWorks).toContain('id="theme-toggle"');
+    expect(howItWorks).toContain('href="./"');
+    expect(howItWorks).not.toContain('id="wallet-control"');
+    expect(howItWorks).toContain("how-it-works.ts");
   });
 });

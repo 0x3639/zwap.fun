@@ -75,6 +75,13 @@ code {
 }
 
 .masthead__badge { margin: 0; font-family: var(--font-mono); letter-spacing: var(--ledger-tracking); }
+.masthead__nav {
+  margin-left: var(--space-2);
+  color: var(--muted-foreground);
+  font-size: var(--text-sm);
+  text-decoration: none;
+}
+.masthead__nav:hover { color: var(--foreground); text-decoration: underline; text-underline-offset: 4px; }
 .masthead__wallet { margin: 0 0 0 auto; position: relative; flex: none; }
 .wallet-control { position: relative; display: flex; align-items: center; }
 .wallet-control__pill { max-width: 220px; }

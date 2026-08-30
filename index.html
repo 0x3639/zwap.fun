@@ -23,6 +23,7 @@
         <span>zwap</span>
       </a>
       <p id="network-badge" class="nom-badge nom-badge--outline masthead__badge">…</p>
+      <a class="masthead__nav" href="./how-it-works.html">How it works</a>
       <div id="wallet-control" class="masthead__wallet"></div>
       <button id="theme-toggle" class="nom-iconbtn masthead__theme" type="button" aria-label="Switch theme"></button>
     </header>
@@ -32,14 +33,10 @@
         <p class="text-ledger">Peer-to-peer · Zenon Network of Momentum</p>
         <h1 id="hero-title">Public orders.<br /><em>Hash-locked settlement.</em></h1>
         <p class="lede">
-          zwap is a decentralized exchange layer over Zenon. Nostr carries the public order book and
-          the private coordination; two hash time-locked contracts on the Network of Momentum settle
-          the swap. No escrow, no matching server, no custodian.
+          Swap ZNN and QSR peer-to-peer: a public Nostr order book, settled by two hash time-locked
+          contracts on Zenon. Self-custodial and escrow-free — your browser wallet signs, and no
+          server ever holds funds. <a href="./how-it-works.html">How it works&nbsp;&rarr;</a>
         </p>
-        <aside class="notice nom-card" aria-label="Risk">
-          <p><strong>Self-custody.</strong> Your keys stay in your browser wallet. zwap never sees a seed.</p>
-          <p><strong>No escrow.</strong> Funds move only through the two HTLCs you and your counterparty create on chain.</p>
-        </aside>
       </section>
 
       <section class="exchange" aria-labelledby="orderbook-title">
@@ -168,187 +165,8 @@
         </section>
       </div>
 
-      <section class="agent-strip" aria-labelledby="agent-title">
-        <p class="text-ledger">For agents, too</p>
-        <h2 id="agent-title">A wallet agents can call.</h2>
-        <p>
-          Open developer tools and use <code>window.zwap</code>. Read redacted state, publish orders,
-          and drive settlement without ever exposing a preimage or a private key.
-        </p>
-        <p class="agent-strip__api font-mono">
-          zwap.getState() · zwap.connectWallet() · zwap.receivePending() · zwap.publishOrder(input) ·
-          zwap.getOrderBook() · zwap.takeOrder(input) · zwap.runUntilSettled(sessionId) ·
-          zwap.listTrades() · zwap.disconnectWallet()
-        </p>
-        <p>
-          <a href="https://github.com/0x3639/zwap.fun/blob/main/docs/guides/manual-swap.md" target="_blank" rel="noopener">Manual test tutorial</a>
-          ·
-          <a href="https://github.com/0x3639/zwap.fun/blob/main/docs/guides/agent-api.md" target="_blank" rel="noopener">Read the API contract</a>
-        </p>
-        <p class="agent-strip__credit">
-          zwap is a fork of granola, ported from ecash to Zenon HTLC settlement.
-        </p>
-      </section>
 
-      <section class="protocol-section" aria-labelledby="protocol-diagram-title">
-        <p class="text-ledger">Protocol flow</p>
-        <h2 id="protocol-diagram-title">How a swap settles on Zenon</h2>
-        <p class="protocol-section__intro">
-          Nostr carries the order and the private coordination. One hash links both HTLCs: the maker
-          locks the base leg, the taker verifies it and locks the quote leg with the same hash, and
-          the unlock that takes the quote leg publishes the preimage the maker's counterparty needs.
-        </p>
-        <div class="protocol-diagram nom-card" role="img" aria-labelledby="protocol-diagram-title protocol-diagram-description">
-          <p id="protocol-diagram-description" class="sr-only">
-            Sequence diagram: Alice publishes an order through Nostr; Carol reserves it; Alice creates
-            the base HTLC on Zenon; Carol verifies it on chain and creates the quote HTLC with the same
-            hash; Alice unlocks the quote HTLC, which reveals the preimage; Carol reads the preimage
-            from the chain and unlocks the base HTLC.
-          </p>
-          <div class="protocol-diagram__frame">
-            <svg class="protocol-diagram__svg" viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
-              <defs>
-                <marker id="protocol-arrow" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto" markerUnits="strokeWidth">
-                  <path d="M0,0 L7,3.5 L0,7 Z" />
-                </marker>
-                <marker id="protocol-arrow-info" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto" markerUnits="strokeWidth">
-                  <path d="M0,0 L7,3.5 L0,7 Z" />
-                </marker>
-              </defs>
-              <g class="protocol-diagram__participant">
-                <rect x="55" y="36" width="130" height="48" rx="6" />
-                <rect x="335" y="36" width="130" height="48" rx="6" />
-                <rect x="615" y="36" width="130" height="48" rx="6" />
-                <rect x="895" y="36" width="170" height="48" rx="6" />
-                <text x="120" y="66">Alice</text>
-                <text x="400" y="66">Nostr</text>
-                <text x="680" y="66">Carol</text>
-                <text x="980" y="66">Zenon</text>
-              </g>
-              <g class="protocol-diagram__lifeline">
-                <line x1="120" y1="84" x2="120" y2="760" />
-                <line x1="400" y1="84" x2="400" y2="760" />
-                <line x1="680" y1="84" x2="680" y2="760" />
-                <line x1="980" y1="84" x2="980" y2="760" />
-              </g>
-              <g class="protocol-diagram__message">
-                <line x1="120" y1="140" x2="400" y2="140" marker-end="url(#protocol-arrow)" />
-                <text x="260" y="126">Publish signed order</text>
 
-                <line x1="400" y1="200" x2="680" y2="200" marker-end="url(#protocol-arrow)" />
-                <text x="540" y="186">Read book · reserve the order</text>
-
-                <line x1="680" y1="260" x2="120" y2="260" marker-end="url(#protocol-arrow)" />
-                <text x="400" y="246">Encrypted DM · settlement terms</text>
-
-                <line x1="120" y1="330" x2="980" y2="330" marker-end="url(#protocol-arrow)" />
-                <text x="550" y="316">Create base HTLC · hashlock H</text>
-              </g>
-              <g class="protocol-diagram__message protocol-diagram__message--chain">
-                <line x1="980" y1="390" x2="680" y2="390" marker-end="url(#protocol-arrow-info)" />
-                <text x="830" y="376">Carol verifies the base HTLC on chain</text>
-              </g>
-              <g class="protocol-diagram__message">
-                <line x1="680" y1="450" x2="980" y2="450" marker-end="url(#protocol-arrow)" />
-                <text x="830" y="436">Create quote HTLC · same hashlock H</text>
-
-                <line x1="120" y1="530" x2="980" y2="530" marker-end="url(#protocol-arrow)" />
-                <text x="550" y="516">Unlock quote HTLC · reveals the preimage</text>
-              </g>
-              <g class="protocol-diagram__message protocol-diagram__message--chain">
-                <line x1="980" y1="600" x2="680" y2="600" marker-end="url(#protocol-arrow-info)" />
-                <text x="830" y="586">Carol reads the preimage from the chain</text>
-              </g>
-              <g class="protocol-diagram__message">
-                <line x1="680" y1="670" x2="980" y2="670" marker-end="url(#protocol-arrow)" />
-                <text x="830" y="656">Unlock base HTLC with the preimage</text>
-              </g>
-              <g class="protocol-diagram__message protocol-diagram__message--chain">
-                <line x1="980" y1="730" x2="400" y2="730" marker-end="url(#protocol-arrow-info)" />
-                <text x="690" y="716">Signed fill projection published</text>
-              </g>
-            </svg>
-          </div>
-        </div>
-        <details class="protocol-messages nom-card">
-          <summary>
-            <span>Three private messages</span>
-            <small>Open the settlement handshake</small>
-          </summary>
-          <p class="protocol-messages__intro">
-            zwap's settlement flow uses three authenticated DMs. After the third message both wallets
-            advance from independently verified chain state — no private acknowledgement is trusted.
-          </p>
-          <ol class="protocol-messages__list">
-            <li class="protocol-message">
-              <div class="protocol-message__index">01</div>
-              <div>
-                <p class="protocol-message__route">Taker → maker order key</p>
-                <h3><code>reserve_propose</code></h3>
-                <p>Requests this exact order and fill amount. It binds the current public projection, the trade terms, and the taker's fresh session and Zenon settlement addresses.</p>
-              </div>
-            </li>
-            <li class="protocol-message">
-              <div class="protocol-message__index">02</div>
-              <div>
-                <p class="protocol-message__route">Maker order key → taker session</p>
-                <h3><code>reserve_accept</code></h3>
-                <p>Publishes the reserved projection and names the base-side HTLC on chain. The hashlock, the expiration height, the token standard, and the amount are signed together.</p>
-              </div>
-            </li>
-            <li class="protocol-message">
-              <div class="protocol-message__index">03</div>
-              <div>
-                <p class="protocol-message__route">Taker session → maker session</p>
-                <h3><code>quote_lock</code></h3>
-                <p>After verifying the first HTLC against the chain, the taker creates the quote HTLC with the same hashlock and a shorter expiration. This is the final private message.</p>
-              </div>
-            </li>
-          </ol>
-          <div class="protocol-messages__after">
-            <p class="protocol-message__route">After <code>quote_lock</code></p>
-            <p>The maker unlocks the quote HTLC, which writes the preimage into the chain. The taker reads that preimage and unlocks the base HTLC. The maker then publishes the signed fill projection; the taker verifies it. If either side stalls, the expiration lets each creator reclaim their own leg.</p>
-          </div>
-        </details>
-        <section class="protocol-notes" aria-labelledby="protocol-notes-title">
-          <div class="protocol-notes__heading">
-            <p class="text-ledger">What matters</p>
-            <h2 id="protocol-notes-title">Know the trust boundary.</h2>
-          </div>
-          <div class="protocol-notes__grid">
-            <article class="protocol-note nom-card">
-              <p class="protocol-note__number">01</p>
-              <h3>Trust the chain, not the peer.</h3>
-              <p>A private message is coordination, not proof. Verified HTLC state and the on-chain preimage decide whether a leg actually settled.</p>
-            </article>
-            <article class="protocol-note nom-card">
-              <p class="protocol-note__number">02</p>
-              <h3>Ephemeral keys, no ceremony.</h3>
-              <p>Every reservation gets fresh Nostr session keys. zwap scopes and stores them for the swap; you never manage a key ceremony.</p>
-            </article>
-            <article class="protocol-note nom-card">
-              <p class="protocol-note__number">03</p>
-              <h3>Nostr coordinates. It does not custody.</h3>
-              <p>Relays carry orders and encrypted coordination. Preimages, seeds, and private keys stay out of public events.</p>
-            </article>
-            <article class="protocol-note nom-card">
-              <p class="protocol-note__number">04</p>
-              <h3>Atomic under Zenon's HTLC rules.</h3>
-              <p>One hash links both legs and staggered expiration heights provide recovery. Safety depends on the Network of Momentum enforcing the embedded HTLC contract.</p>
-            </article>
-            <article class="protocol-note nom-card">
-              <p class="protocol-note__number">05</p>
-              <h3>Plasma, not fees.</h3>
-              <p>Zenon is feeless. Your wallet extension covers each block with fused plasma or a proof of work and shows which in its confirmation.</p>
-            </article>
-            <article class="protocol-note nom-card">
-              <p class="protocol-note__number">06</p>
-              <h3>All local, no servers.</h3>
-              <p>Your wallet and session state run in this browser. zwap has no account, matching, or custody server; Nostr relays and a Zenon node are the only external infrastructure.</p>
-            </article>
-          </div>
-        </section>
-      </section>
     </main>
 
     <div id="status" role="status" aria-live="polite"></div>
