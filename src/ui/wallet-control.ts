@@ -31,22 +31,40 @@ function labelled(button: HTMLButtonElement, label: string): HTMLButtonElement {
  * Popover open/closed is the one piece of state the render keeps between
  * paints, and only while the address it was opened for is still the one on
  * screen: a refresh that only changed balances must not slam the menu shut.
+ * Keyed by `root` — the masthead renders one control, but nothing stops two
+ * roots (e.g. a test, or a future secondary surface) from rendering the same
+ * connected address, and their popovers must not cross-talk.
  */
-let openFor: string | null = null;
-let teardownGlobalListeners: (() => void) | undefined;
+interface RootState {
+  openFor: string | null;
+  teardown: (() => void) | undefined;
+}
+
+const rootStates = new WeakMap<HTMLElement, RootState>();
+
+function stateFor(root: HTMLElement): RootState {
+  let entry = rootStates.get(root);
+  if (!entry) {
+    entry = { openFor: null, teardown: undefined };
+    rootStates.set(root, entry);
+  }
+  return entry;
+}
 
 function closeMenu(root: HTMLElement): void {
-  openFor = null;
+  const entry = stateFor(root);
+  entry.openFor = null;
   const menu = root.querySelector<HTMLElement>("[role=menu]");
   const pill = root.querySelector<HTMLButtonElement>("button[data-wallet-pill]");
   if (menu) menu.hidden = true;
   pill?.setAttribute("aria-expanded", "false");
-  teardownGlobalListeners?.();
-  teardownGlobalListeners = undefined;
+  entry.teardown?.();
+  entry.teardown = undefined;
 }
 
 function openMenu(root: HTMLElement, address: string): void {
-  openFor = address;
+  const entry = stateFor(root);
+  entry.openFor = address;
   const menu = root.querySelector<HTMLElement>("[role=menu]");
   const pill = root.querySelector<HTMLButtonElement>("button[data-wallet-pill]");
   if (menu) menu.hidden = false;
@@ -59,7 +77,7 @@ function openMenu(root: HTMLElement, address: string): void {
   };
   document.addEventListener("keydown", onKey);
   document.addEventListener("pointerdown", onPointer);
-  teardownGlobalListeners = () => {
+  entry.teardown = () => {
     document.removeEventListener("keydown", onKey);
     document.removeEventListener("pointerdown", onPointer);
   };
@@ -146,10 +164,11 @@ export function renderWalletControl(
   state: ZwapState,
   handlers: WalletControlHandlers
 ): void {
-  const reopen = state.wallet === "connected" && state.address !== null && openFor === state.address;
-  teardownGlobalListeners?.();
-  teardownGlobalListeners = undefined;
-  openFor = null;
+  const entry = stateFor(root);
+  const reopen = state.wallet === "connected" && state.address !== null && entry.openFor === state.address;
+  entry.teardown?.();
+  entry.teardown = undefined;
+  entry.openFor = null;
   root.replaceChildren();
   root.classList.add("wallet-control");
   if (state.wallet === "absent" || state.providerName === null) {

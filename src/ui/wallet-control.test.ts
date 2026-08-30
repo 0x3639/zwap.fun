@@ -101,4 +101,16 @@ describe("renderWalletControl", () => {
     renderWalletControl(root, state(), h);
     expect(root.querySelector("[role=menu]")).toBeNull();
   });
+
+  it("does not share open state between two roots with the same address", () => {
+    const rootB = document.createElement("div");
+    document.body.append(rootB);
+
+    renderWalletControl(root, state({ wallet: "connected", address: ADDRESS }), handlers());
+    root.querySelector<HTMLButtonElement>("button[data-wallet-pill]")?.click();
+    expect(root.querySelector<HTMLElement>("[role=menu]")?.hidden).toBe(false);
+
+    renderWalletControl(rootB, state({ wallet: "connected", address: ADDRESS }), handlers());
+    expect(rootB.querySelector<HTMLElement>("[role=menu]")?.hidden).toBe(true);
+  });
 });
