@@ -38,7 +38,12 @@ export interface ZenonAccountDeps {
  */
 export class ZenonAccount {
   private readonly node: ZenonNodePort;
-  private readonly signer: ZenonSigner;
+  /**
+   * The signer this account was built over, exposed so the trade runtime can
+   * share the exact instance: the signer serializes its own sends, and two
+   * signers over one address would race each other's account-chain height.
+   */
+  readonly signer: ZenonSigner;
   private readonly now: () => number;
 
   constructor(deps: ZenonAccountDeps) {

@@ -60,11 +60,14 @@ describe("manual swap tutorial", () => {
     expect(html).not.toContain('name="minimumFillAmount"');
   });
 
-  it("keeps demo wallet deletion to one click", () => {
-    expect(html).toContain('id="clear-wallet"');
-    expect(html).toContain('id="reset-profile"');
+  it("keeps erasing this browser's zwap data to one click", () => {
+    expect(html).toContain('id="reset-local-data"');
+    // The seed and the profile switcher are gone: the extension holds the keys.
+    expect(html).not.toContain('id="clear-wallet"');
+    expect(html).not.toContain('id="reset-profile"');
+    expect(html).not.toContain('id="backup"');
     expect(html).not.toContain('name="confirmation"');
     expect(html).not.toContain("DELETE TEST WALLET");
-    expect(html).not.toContain("RESET ZWAP PROFILE");
+    expect(html).not.toContain("RESET ZWAP DATA");
   });
 });

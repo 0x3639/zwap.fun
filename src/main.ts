@@ -2,7 +2,6 @@ import { Buffer } from "buffer";
 (globalThis as { Buffer?: typeof Buffer }).Buffer ??= Buffer;
 
 import { nip19 } from "nostr-tools";
-import type { KeyPair } from "znn-typescript-sdk";
 
 import { OrderApi, type PublishOrderInput } from "./api/order-api.js";
 import type { TradeApi, TakeOrderInput } from "./api/trade-api.js";
@@ -12,17 +11,7 @@ import {
   withAccountLock,
   withOrderOutboxLock
 } from "./browser/lock.js";
-import { composeKeystore } from "./browser/keystore-compose.js";
 import { composeMakerIdentity } from "./browser/maker-identity-compose.js";
-import {
-  guardKeystoreActions,
-  type WalletSource
-} from "./browser/wallet-source-guard.js";
-import {
-  profileFromLocation,
-  resetProfileSequence,
-  storageNameForProfile
-} from "./browser/profile.js";
 import { BrowserTradeController } from "./browser/trade-controller.js";
 import { startInboxListeners } from "./browser/startup.js";
 import {
@@ -36,16 +25,9 @@ import { NostrOrderService } from "./order/service.js";
 import { RelayClient } from "./nostr/relay.js";
 import { OrderOutboxRepository } from "./storage/order-outbox.js";
 import { IndexedDbStorageDriver } from "./storage/driver.js";
-import { ZenonAccount } from "./zenon/account.js";
-import {
-  detectInjectedProvider,
-  InjectedZenonSigner,
-  type DetectedProvider
-} from "./zenon/injected-signer.js";
-import { KeystoreSigner } from "./zenon/keystore-signer.js";
-import type { PlasmaTier } from "./zenon/plasma-bot.js";
+import { detectInjectedProvider } from "./zenon/injected-signer.js";
 import { ChainMismatchError, SdkZenonNode } from "./zenon/sdk-node.js";
-import { QSR_ZTS, ZNN_ZTS, type ZenonSigner } from "./zenon/types.js";
+import { QSR_ZTS, ZNN_ZTS } from "./zenon/types.js";
 import {
   renderAccountActions,
   type AccountActionHandlers
@@ -58,7 +40,10 @@ import {
 } from "./ui/order-form.js";
 import { renderOrderBook } from "./ui/orderbook.js";
 import { renderPendingPublications } from "./ui/order-outbox.js";
-import { showSeedDialog } from "./ui/seed-dialog.js";
+import {
+  renderWalletControl,
+  type WalletControlHandlers
+} from "./ui/wallet-control.js";
 import { TakeRequestRegistry } from "./ui/take-request-registry.js";
 import { applyTheme, mountThemeToggle } from "./ui/theme.js";
 import { tokenDirectory, type TokenLookup } from "./ui/tokens.js";
@@ -73,14 +58,11 @@ import type { PublicTradeView } from "./trade/session.js";
 
 interface ZwapBrowserFacade {
   getState: ZwapApi["getState"];
-  createWallet: ZwapApi["createWallet"];
-  importWallet: ZwapApi["importWallet"];
+  connectWallet: ZwapApi["connect"];
+  disconnectWallet: () => Promise<void>;
   receivePending: ZwapApi["receivePending"];
-  fusePlasma: ZwapApi["fusePlasma"];
   send: ZwapApi["send"];
-  revealMnemonic: ZwapApi["revealMnemonic"];
-  clearWallet: ZwapApi["clearWallet"];
-  resetProfile: (confirmation: string) => Promise<void>;
+  resetLocalData: (confirmation: string) => Promise<void>;
   getMakerPublicKeys: OrderApi["getMakerPublicKeys"];
   getOrderBook: OrderApi["getOrderBook"];
   publishOrder: OrderApi["publishOrder"];
@@ -114,6 +96,7 @@ const trades = byId("trades");
 const status = byId("status");
 const orderSettlementHint = byId("order-settlement-hint");
 const activity = byId<HTMLOListElement>("activity-log");
+const walletControl = byId("wallet-control");
 
 const activityEntries: ActivityEntry[] = [];
 const tracedTradeMessages = new Set<string>();
@@ -142,8 +125,8 @@ function blockTrading(message: string): void {
   blockedReason = message;
   showStatus(message, true);
   document.documentElement.dataset.zwapChain = "unavailable";
-  // Erasing the seed and resetting the profile stay reachable: neither needs
-  // a node, and a user who cannot reach one must still be able to get out.
+  // Erasing this browser's zwap data stays reachable: it needs no node, and a
+  // user who cannot reach one must still be able to get out.
   for (const node of document.querySelectorAll<HTMLButtonElement>(
     "#order-form button[type=submit], #refresh"
   )) {
@@ -165,11 +148,6 @@ function disableRetryActions(): void {
     node.disabled = true;
     node.title = blockedReason ?? "";
   }
-}
-
-function setStatus(message: string): void {
-  if (blockedReason !== undefined) return;
-  showStatus(message, false);
 }
 
 function clearStatus(): void {
@@ -196,19 +174,17 @@ function messageOf(value: unknown): string {
 }
 
 const config = browserConfig();
-const profile = profileFromLocation(window.location.href);
-const driver = new IndexedDbStorageDriver(storageNameForProfile(profile));
+/** One storage namespace per browser origin. The literal is the pre-existing default profile name, kept so nothing already stored is orphaned. */
+const STORAGE_NAME = "zwap-wallet-default";
+const driver = new IndexedDbStorageDriver(STORAGE_NAME);
 const locked = <T>(action: () => Promise<T>): Promise<T> =>
-  withAccountLock(profile, action);
+  withAccountLock("default", action);
 const outboxLocked = <T>(action: () => Promise<T>): Promise<T> =>
-  withOrderOutboxLock(profile, action);
-// The keystore gets its own lock: its encrypted driver re-acquires the runner
-// on every read and write, and the facade already holds the account lock when
-// it calls in. See `composeKeystore`.
-const keystore = composeKeystore(driver, profile);
-// Order signing keys are encrypted at rest under their own lock, for the same
-// reason the keystore is. See `composeMakerIdentity`.
-const makerIdentity = composeMakerIdentity(driver, profile);
+  withOrderOutboxLock("default", action);
+// Order signing keys are encrypted at rest under their own lock: the encrypted
+// driver re-acquires it on every read and write while the facade may already
+// hold the account lock. See `composeMakerIdentity`.
+const makerIdentity = composeMakerIdentity(driver, "default");
 const relayClient = new RelayClient();
 const orderService = new NostrOrderService(makerIdentity, relayClient);
 const orderOutbox = new OrderOutboxRepository(driver, outboxLocked);
@@ -220,89 +196,43 @@ const orderApi = new OrderApi(
   orderOutbox
 );
 
-/**
- * The page's single signer. `ZwapApi` derives the key pair once and hands it
- * here; the trade runtime then shares this exact instance, because
- * `KeystoreSigner` serializes its own sends and two signers over one address
- * would race each other's account-chain height.
- *
- * The key pair stays resident until the tab closes or the wallet is erased —
- * this is a hot wallet by design, and re-deriving per action would only spread
- * the same secret over more allocations.
- */
-let walletSigner: KeystoreSigner | undefined;
 let walletApi: ZwapApi | undefined;
-/**
- * The browser-extension wallet, when `VITE_INJECTED_WALLET=1` and one
- * announced itself. `injectedSigner` is set only after the user connects; from
- * that point it, and not the keystore, is the page's signer — zwap holds no
- * key for this address at all.
- */
-let injectedWallet: DetectedProvider | null = null;
-let injectedSigner: InjectedZenonSigner | undefined;
-let injectedAccount: ZenonAccount | undefined;
-let connectInjectedWallet: (() => Promise<void>) | undefined;
 let createTradeRuntime: (() => Promise<BrowserTradeRuntime>) | undefined;
 let resetTradeRuntime: (() => void) | undefined;
-let powWorkerFailure: string | undefined;
 
 try {
   const node = await SdkZenonNode.connect({
     nodeUrl: config.nodeUrl,
     chainId: config.chainId
   });
-  try {
-    KeystoreSigner.installPowWorker({
-      onPowStart: () => setStatus("Generating proof of work…"),
-      onPowEnd: () => clearStatus()
-    });
-  } catch (error) {
-    // Degraded, not fatal: the wallet still works while the address has
-    // plasma. Only a send from an unfused address would need the worker.
-    powWorkerFailure = messageOf(error);
-  }
-  const createAccount = (keyPair: KeyPair): ZenonAccount => {
-    walletSigner = new KeystoreSigner(node.zenon, keyPair);
-    return new ZenonAccount({ node, signer: walletSigner });
-  };
-  const api = new ZwapApi({ keystore, node, config, createAccount });
+  // Discovery is a 300 ms race at worst and resolves `null` on a page with no
+  // extension, which renders the install offer instead of the connect button.
+  const provider = await detectInjectedProvider(window).catch(() => null);
+  const api = new ZwapApi({ node, config, provider });
   walletApi = api;
-  if (config.injectedWallet) {
-    // Discovery is a 300 ms race at worst and resolves `null` on a page with
-    // no extension, which leaves the keystore in charge unchanged.
-    injectedWallet = await detectInjectedProvider(window).catch(() => null);
-  }
-  connectInjectedWallet = async () => {
-    const detected = injectedWallet;
-    if (detected === null) throw new Error("No browser-extension wallet is available");
-    const signer = await InjectedZenonSigner.connect(detected.provider, config.chainId);
-    injectedSigner = signer;
-    injectedAccount = new ZenonAccount({ node, signer });
-    // Any runtime built over the keystore signer is now signing for the wrong
-    // address; drop it so the next trade action rebuilds over the extension.
-    await teardownWallet();
-    // The account the extension signs with is the whole identity of this
-    // session. When the user switches it, restart rather than half-migrate.
-    signer.onAccountsChanged(() => window.location.reload());
-  };
+  api.onAccountsChanged((accounts) => {
+    if (accounts.length === 0) {
+      // The site grant was revoked or the wallet locked this site out.
+      void teardownWallet().then(() => refresh()).then(() => {
+        trace("Account", "Wallet disconnected");
+        report("Wallet disconnected", true);
+      });
+      return;
+    }
+    // The account the extension signs with is the whole identity of every
+    // open session. When the user switches it, restart rather than half-migrate.
+    window.location.reload();
+  });
   let runtimePromise: Promise<BrowserTradeRuntime> | undefined;
   resetTradeRuntime = () => { runtimePromise = undefined; };
   createTradeRuntime = async () => {
-    let signer: ZenonSigner | undefined = injectedSigner;
-    if (signer === undefined) {
-      // `createAccount` runs on the first wallet read, which is what publishes
-      // the shared signer. Force it before the runtime asks for one.
-      if (walletSigner === undefined) await api.getState();
-      signer = walletSigner;
-    }
-    if (signer === undefined) {
-      throw new Error("Create or import a wallet before trading");
-    }
+    const account = api.account();
+    if (account === null) throw new Error("Connect your wallet before trading");
     runtimePromise ??= createBrowserTradeRuntime({
-      profile,
+      profile: "default",
       driver,
       node,
-      signer,
+      signer: account.signer,
       config,
       makerIdentity,
       orderApi,
@@ -425,39 +355,42 @@ async function refresh(state?: ZwapState): Promise<ZwapState> {
     walletSummary.textContent = unavailable();
     dashboard.textContent = unavailable();
     accountActions.textContent = unavailable();
+    renderWalletControl(walletControl, {
+      wallet: "absent",
+      providerName: null,
+      address: null,
+      network: config.network,
+      chainId: config.chainId,
+      balances: [],
+      unreceived: 0,
+      plasma: null
+    }, walletHandlers);
     throw new Error(unavailable());
   }
-  const next = state ?? await walletState();
+  const next = state ?? await requireWallet().getState();
   tokens = tokenDirectory(next.balances);
   renderWalletSummary(walletSummary, next);
   renderDashboard(dashboard, next);
   renderAccountActions(accountActions, next, accountHandlers);
+  renderWalletControl(walletControl, next, walletHandlers);
+  setWalletGating(next.wallet === "connected");
   return next;
 }
 
 /**
- * The wallet snapshot the whole page paints from. While a browser-extension
- * wallet is connected it describes that address, not the keystore's: the
- * extension is the signer, and a panel showing the local address would be
- * showing balances no button on this page can move.
+ * Everything that signs is gated on the connected wallet. Retry buttons are
+ * re-rendered on every outbox paint, so they are gated where they are painted
+ * (`refreshPendingPublications`); the static buttons are gated here.
  */
-async function walletState(): Promise<ZwapState> {
-  const account = injectedAccount;
-  if (account === undefined) return requireWallet().getState();
-  const snapshot = await account.snapshot();
-  return {
-    address: snapshot.address,
-    balances: snapshot.balances,
-    unreceived: snapshot.unreceived,
-    plasma: snapshot.plasma,
-    // The extension decides plasma versus proof of work and says so in its own
-    // confirmation, so the page neither warns about PoW nor offers to fuse.
-    powRequired: false,
-    plasmaBotAvailable: false,
-    network: config.network,
-    chainId: config.chainId,
-    walletSource: "injected"
-  };
+function setWalletGating(connected: boolean): void {
+  document.documentElement.dataset.zwapWallet = connected ? "connected" : "disconnected";
+  for (const node of document.querySelectorAll<HTMLButtonElement>(
+    "#order-form button[type=submit], [data-requires-wallet]"
+  )) {
+    if (blockedReason !== undefined) continue;
+    node.disabled = !connected;
+    node.title = connected ? "" : "Connect your wallet first";
+  }
 }
 
 async function refreshOrderBook(): Promise<void> {
@@ -470,14 +403,14 @@ async function refreshOrderBook(): Promise<void> {
     renderOrderBook(
       orderbook,
       { status: "ready", book: result.book },
-      blockedReason === undefined
+      blockedReason === undefined && walletApi?.status() === "connected"
         ? {
           tokens,
           onTake: takeOrderFromBook,
           onCancel: cancelOrderFromBook,
           canCancel: (order) => identities.includes(order.makerPubkey)
         }
-        // Read-only while blocked: taking or canceling both need to sign.
+        // Read-only without a node or a wallet: taking and canceling both sign.
         : { tokens }
     );
   } catch (error) {
@@ -647,17 +580,28 @@ async function refreshPendingPublications(): Promise<void> {
     retryPendingPublication,
     relayClient.relays.length
   );
-  if (blockedReason !== undefined) disableRetryActions();
+  if (blockedReason !== undefined) {
+    disableRetryActions();
+    return;
+  }
+  if (walletApi?.status() !== "connected") {
+    // Retry republishes a signed projection, so it waits for the wallet too.
+    for (const node of document.querySelectorAll<HTMLButtonElement>(
+      "#pending-publications button"
+    )) {
+      node.disabled = true;
+      node.title = "Connect your wallet first";
+    }
+  }
 }
 
 /**
- * Drops everything that outlived the erased seed. `ZwapApi.clearWallet` zeroes
- * the key pair in place, so the `KeystoreSigner` wrapping it and the trade
- * runtime holding that signer are now signing with zeroes. Both must go, and
- * the maker listener with them.
+ * Drops everything that outlived the connected wallet. The trade runtime holds
+ * the extension's signer and the maker listener runs off that runtime, so both
+ * must go the moment the page stops signing for that address.
  */
 async function teardownWallet(): Promise<void> {
-  walletSigner = undefined;
+  walletApi?.disconnect();
   const controller = tradeControllerPromise;
   tradeControllerPromise = undefined;
   resetTradeRuntime?.();
@@ -668,59 +612,22 @@ async function teardownWallet(): Promise<void> {
   tracedTradeCheckpoints.clear();
 }
 
-/** Which wallet is signing right now, read fresh on every guarded call. */
-function walletSource(): WalletSource {
-  return injectedAccount === undefined ? "keystore" : "injected";
-}
-
-/**
- * Hiding the reveal and the erase in the panel is not enough: `window.zwap` is
- * a public surface, and an agent script must not read or destroy a seed that
- * is not the wallet signing this session.
- *
- * `resetProfile` is deliberately left unguarded. It is not a keystore action —
- * it erases the whole profile, including the trade journal and the Nostr
- * identity the extension session is actively using — and it is the one escape
- * hatch that must keep working when everything else is wedged.
- */
-const keystoreOnly = guardKeystoreActions(walletSource, {
-  createWallet: () => locked(() => requireWallet().createWallet()),
-  importWallet: (mnemonic: string) => locked(() => requireWallet().importWallet(mnemonic)),
-  // Reading and erasing the seed touch the keystore only, so they keep working
-  // while the node is unreachable.
-  revealMnemonic: (confirmation: string) => keystore.revealMnemonic(confirmation),
-  clearWallet: async (confirmation: string) => {
-    await locked(() => walletApi === undefined
-      ? keystore.clear(confirmation)
-      : walletApi.clearWallet(confirmation));
-    await teardownWallet();
-  }
-});
-
 const zwap: ZwapBrowserFacade = {
-  getState: () => walletState(),
-  ...keystoreOnly,
-  receivePending: () => locked(async () => {
-    const account = injectedAccount;
-    if (account === undefined) return requireWallet().receivePending();
-    await account.receiveAll();
-    return walletState();
-  }),
-  fusePlasma: (tier: PlasmaTier) => requireWallet().fusePlasma(tier),
+  getState: () => requireWallet().getState(),
+  connectWallet: () => requireWallet().connect(),
+  disconnectWallet: async () => { await teardownWallet(); await refresh(); },
+  receivePending: () => locked(() => requireWallet().receivePending()),
   send: (toAddress, tokenStandard, amount) =>
-    locked(() => injectedAccount === undefined
-      ? requireWallet().send(toAddress, tokenStandard, amount)
-      : injectedAccount.send(toAddress, tokenStandard, amount)),
-  resetProfile: async (confirmation) => {
-    if (confirmation !== "RESET ZWAP PROFILE") {
-      throw new Error("Type RESET ZWAP PROFILE to erase this profile");
+    locked(() => requireWallet().send(toAddress, tokenStandard, amount)),
+  resetLocalData: async (confirmation) => {
+    if (confirmation !== "RESET ZWAP DATA") {
+      throw new Error("Type RESET ZWAP DATA to erase this browser's zwap data");
     }
-    await resetProfileSequence({
-      runLocked: locked,
-      forgetWallet: () => walletApi?.forgetWallet(),
-      resetDatabase: () => driver.resetDatabase(),
-      teardown: teardownWallet
-    });
+    // Teardown first: the runtime and the maker listener hold the database
+    // this is about to delete. Runs outside the account lock, which `stop()`
+    // takes itself.
+    await teardownWallet();
+    await locked(() => driver.resetDatabase());
   },
   getMakerPublicKeys: orderApi.getMakerPublicKeys.bind(orderApi),
   getOrderBook: orderApi.getOrderBook.bind(orderApi),
@@ -738,14 +645,9 @@ const zwap: ZwapBrowserFacade = {
 };
 window.zwap = zwap;
 
-if (powWorkerFailure !== undefined) {
-  log(`Proof-of-work worker unavailable: ${powWorkerFailure}. Sends from an address with no plasma cannot be signed; fuse plasma first.`);
-  report("Proof-of-work worker unavailable — fuse plasma before sending", true);
-}
-
 if (!hasNativeWebLocks()) {
-  log("Web Locks API unavailable. Using single-tab mode; keep this wallet profile in one tab. Use HTTPS and a browser with Web Locks for multi-tab workflows.");
-  report("Web Locks unavailable: single-tab mode enabled. Do not open this wallet profile in another tab.");
+  log("Web Locks API unavailable. Using single-tab mode; keep zwap in one tab. Use HTTPS and a browser with Web Locks for multi-tab workflows.");
+  report("Web Locks unavailable: single-tab mode enabled. Do not open zwap in another tab.");
 }
 
 let makerInboxStartPromise: Promise<void> | undefined;
@@ -812,87 +714,42 @@ function startMakerInbox(): Promise<void> {
   return makerInboxStartPromise;
 }
 
-/**
- * The account panel's escape hatches. Each one repaints the whole wallet
- * surface from a fresh snapshot, so the panel can never show a balance the
- * chain has already moved past.
- */
-function revealSeed(button: HTMLButtonElement): void {
-  void withButtonFeedback(button, "Reading…", () => zwap.revealMnemonic("REVEAL SEED"))
-    .then((mnemonic) => {
-      showSeedDialog(document.body, mnemonic);
-      // The words themselves never reach the log or the status toast.
-      log("Seed phrase revealed on screen");
-    })
-    .catch((error: unknown) => report(messageOf(error), true));
-}
-
-/**
- * Once the extension signs, this profile's seed is beside the point: hide the
- * reveal and the erase so the custody panel cannot describe a wallet that is
- * no longer the one in use.
- */
-function hideKeystoreCustody(): void {
-  for (const id of ["backup", "clear-wallet"]) {
-    byId(id).hidden = true;
-  }
-}
-
 const accountHandlers: AccountActionHandlers = {
-  onCreate: (button: HTMLButtonElement) => {
-    void withButtonFeedback(button, "Creating…", () => zwap.createWallet())
-      .then((state) => refresh(state))
-      .then(() => report("Wallet created in this browser profile"))
-      .catch((error: unknown) => report(messageOf(error), true));
-  },
-  onImport: (mnemonic: string, button: HTMLButtonElement) => {
-    void withButtonFeedback(button, "Importing…", () => zwap.importWallet(mnemonic))
-      .then((state) => refresh(state))
-      .then(() => report("Wallet imported into this browser profile"))
-      .catch((error: unknown) => report(messageOf(error), true));
-  },
   onReceive: (button: HTMLButtonElement) => {
     void withButtonFeedback(button, "Receiving…", () => zwap.receivePending())
       .then((state) => refresh(state))
       .then(() => report("Pending blocks received"))
       .catch((error: unknown) => report(messageOf(error), true));
   },
-  onFuse: (tier: PlasmaTier, button: HTMLButtonElement) => {
-    void withButtonFeedback(button, "Fusing…", () => zwap.fusePlasma(tier))
-      .then(async (result) => {
-        trace("Plasma", "Plasma fusion requested", [
-          { label: "tier", value: result.tier },
-          { label: "QSR", value: result.amount.toLocaleString("en-US") }
-        ]);
-        await refresh();
-        report(`Plasma bot accepted a ${result.tier} fusion`);
-      })
-      .catch((error: unknown) => report(messageOf(error), true));
-  },
-  onReveal: revealSeed,
   onCopyAddress: (address: string, button: HTMLButtonElement) => {
     void withButtonFeedback(button, "…", () => navigator.clipboard.writeText(address))
       .then(() => report("Address copied"))
       .catch((error: unknown) => report(messageOf(error), true));
-  },
-  get injectedProvider(): { name: string } | null {
-    const detected = injectedWallet;
-    if (detected === null) return null;
-    return { name: detected.info?.name ?? "Browser extension" };
-  },
-  onConnectInjected: (button: HTMLButtonElement) => {
-    void withButtonFeedback(button, "Connecting…", async () => {
-      await connectInjectedWallet?.();
-      return refresh();
-    })
+  }
+};
+
+const walletHandlers: WalletControlHandlers = {
+  onConnect: (button: HTMLButtonElement) => {
+    void withButtonFeedback(button, "Connecting…", () => zwap.connectWallet())
+      .then((state) => refresh(state))
       .then((state) => {
-        hideKeystoreCustody();
-        trace("Account", "Browser-extension wallet connected", [
-          { label: "wallet", value: accountHandlers.injectedProvider?.name ?? "extension" },
+        trace("Account", "Browser wallet connected", [
+          { label: "wallet", value: state.providerName ?? "extension" },
           { label: "address", value: `${(state.address ?? "").slice(0, 8)}…` }
         ]);
-        report("Signing through the browser-extension wallet");
+        report("Wallet connected");
+        void refreshTrades();
       })
+      .catch((error: unknown) => report(messageOf(error), true));
+  },
+  onDisconnect: () => {
+    void zwap.disconnectWallet()
+      .then(() => { trace("Account", "Wallet disconnected"); report("Wallet disconnected"); })
+      .catch((error: unknown) => report(messageOf(error), true));
+  },
+  onCopy: (address: string) => {
+    void navigator.clipboard.writeText(address)
+      .then(() => report("Address copied"))
       .catch((error: unknown) => report(messageOf(error), true));
   }
 };
@@ -928,9 +785,6 @@ const requestedAgentRun = new URL(window.location.href).searchParams
   .get("runUntilSettled");
 if (requestedAgentRun !== null) runAgentSettlement(requestedAgentRun);
 
-byId("profile-label").textContent = profile === "default"
-  ? "Local browser wallet"
-  : `Local wallet workspace: ${profile}`;
 // The masthead badge is the page's honesty about which chain it is signing on.
 const networkBadge = byId("network-badge");
 networkBadge.textContent = config.chainId === 1
@@ -939,8 +793,6 @@ networkBadge.textContent = config.chainId === 1
 networkBadge.classList.toggle("nom-badge--warning", config.chainId === 1);
 networkBadge.classList.toggle("nom-badge--outline", config.chainId !== 1);
 
-const backupButton = byId<HTMLButtonElement>("backup");
-backupButton.addEventListener("click", () => revealSeed(backupButton));
 const refreshButton = byId<HTMLButtonElement>("refresh");
 refreshButton.addEventListener("click", () => {
   void withButtonFeedback(refreshButton, "Refreshing…", () => refresh())
@@ -1028,18 +880,9 @@ orderForm.addEventListener("submit", (event) => {
   });
 });
 
-const clearWalletButton = byId<HTMLButtonElement>("clear-wallet");
-clearWalletButton.addEventListener("click", () => {
-  // Reload rather than refresh: the erased key pair is zeroed in place, and
-  // the signer the trade runtime captured must not outlive the wallet.
-  void withButtonFeedback(clearWalletButton, "Erasing…", () => zwap.clearWallet("DELETE WALLET"))
-    .then(() => window.location.reload())
-    .catch((error: unknown) => report(messageOf(error), true));
-});
-
-const resetProfileButton = byId<HTMLButtonElement>("reset-profile");
-resetProfileButton.addEventListener("click", () => {
-  void withButtonFeedback(resetProfileButton, "Restarting…", () => zwap.resetProfile("RESET ZWAP PROFILE"))
+const resetLocalDataButton = byId<HTMLButtonElement>("reset-local-data");
+resetLocalDataButton.addEventListener("click", () => {
+  void withButtonFeedback(resetLocalDataButton, "Erasing…", () => zwap.resetLocalData("RESET ZWAP DATA"))
     .then(() => window.location.reload())
     .catch((error: unknown) => report(messageOf(error), true));
 });
@@ -1057,7 +900,7 @@ for (const start of [
 ]) {
   void start().catch((error: unknown) => report(messageOf(error), true));
 }
-log("Opened the shared maker/taker workspace");
+log("Opened zwap");
 
 window.addEventListener("pagehide", () => {
   void tradeControllerPromise?.then((controller) => controller.stop()).catch(() => undefined);

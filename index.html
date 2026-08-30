@@ -37,7 +37,7 @@
           the swap. No escrow, no matching server, no custodian.
         </p>
         <aside class="notice nom-card" aria-label="Risk">
-          <p><strong>Self-custody.</strong> Your seed lives only in this browser profile. Nobody can recover it for you.</p>
+          <p><strong>Self-custody.</strong> Your keys stay in your browser wallet. zwap never sees a seed.</p>
           <p><strong>No escrow.</strong> Funds move only through the two HTLCs you and your counterparty create on chain.</p>
         </aside>
       </section>
@@ -54,7 +54,7 @@
         </div>
         <div class="market-wallet nom-card">
           <div id="wallet-summary" aria-label="Wallet balances"></div>
-          <button id="refresh" class="nom-btn nom-btn--sm nom-btn--ghost" type="button">
+          <button id="refresh" class="nom-btn nom-btn--sm nom-btn--ghost" type="button" data-requires-wallet>
             <span data-button-label="true">Refresh balances</span>
           </button>
         </div>
@@ -135,24 +135,18 @@
       </section>
 
       <div class="work-grid">
-        <section class="panel" aria-labelledby="custody-title">
-          <p class="text-ledger">05 / Custody</p>
-          <h2 id="custody-title">Back up or erase your wallet</h2>
+        <section class="panel" aria-labelledby="local-data-title">
+          <p class="text-ledger">05 / Local data</p>
+          <h2 id="local-data-title">Trade journal and order keys</h2>
           <p>
-            Your seed lives only in this browser profile's IndexedDB. Write the twelve words down
-            offline — they are the whole wallet.
+            Open swaps, pending order publications, and the per-order Nostr keys that sign
+            your listings live only in this browser. Erasing them abandons any swap in progress.
           </p>
-          <button id="backup" class="nom-btn nom-btn--outline" type="button">
-            <span data-button-label="true">Show seed phrase</span>
-          </button>
           <details>
             <summary>Danger zone</summary>
             <div class="danger-zone">
-              <button id="clear-wallet" class="nom-btn nom-btn--destructive" type="button">
-                <span data-button-label="true">Erase local wallet</span>
-              </button>
-              <button id="reset-profile" class="nom-btn nom-btn--destructive" type="button">
-                <span data-button-label="true">Erase everything and restart</span>
+              <button id="reset-local-data" class="nom-btn nom-btn--destructive" type="button">
+                <span data-button-label="true">Erase local data and restart</span>
               </button>
             </div>
           </details>
@@ -162,7 +156,7 @@
           <p class="text-ledger">06 / Trace</p>
           <h2 id="log-title">Local activity</h2>
           <ol id="activity-log" aria-live="polite"></ol>
-          <p class="hint">Seeds, preimages, and private keys stay out of this log.</p>
+          <p class="hint">Preimages and private keys stay out of this log.</p>
         </section>
       </div>
 
@@ -171,12 +165,12 @@
         <h2 id="agent-title">A wallet agents can call.</h2>
         <p>
           Open developer tools and use <code>window.zwap</code>. Read redacted state, publish orders,
-          and drive settlement without ever exposing a seed, a preimage, or a private key.
+          and drive settlement without ever exposing a preimage or a private key.
         </p>
         <p class="agent-strip__api font-mono">
-          zwap.getState() · zwap.createWallet() · zwap.importWallet(words) · zwap.receivePending() ·
-          zwap.fusePlasma(tier) · zwap.publishOrder(input) · zwap.getOrderBook() · zwap.takeOrder(input) ·
-          zwap.runUntilSettled(sessionId) · zwap.listTrades() · zwap.revealMnemonic("REVEAL SEED")
+          zwap.getState() · zwap.connectWallet() · zwap.receivePending() · zwap.publishOrder(input) ·
+          zwap.getOrderBook() · zwap.takeOrder(input) · zwap.runUntilSettled(sessionId) ·
+          zwap.listTrades() · zwap.disconnectWallet()
         </p>
         <p>
           <a href="https://github.com/0x3639/zwap.fun/blob/main/docs/guides/manual-swap.md" target="_blank" rel="noopener">Manual test tutorial</a>
@@ -337,7 +331,7 @@
             <article class="protocol-note nom-card">
               <p class="protocol-note__number">05</p>
               <h3>Plasma, not fees.</h3>
-              <p>Zenon is feeless. Sends need plasma from fused QSR, or a proof of work this page computes locally in a worker.</p>
+              <p>Zenon is feeless. Your wallet extension covers each block with fused plasma or a proof of work and shows which in its confirmation.</p>
             </article>
             <article class="protocol-note nom-card">
               <p class="protocol-note__number">06</p>

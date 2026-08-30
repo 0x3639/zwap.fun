@@ -13,15 +13,14 @@ import { tokenDirectory } from "./ui/tokens.js";
 import { QSR_ZTS, ZNN_ZTS } from "./zenon/types.js";
 
 const state: ZwapState = {
+  wallet: "connected",
+  providerName: "NoM Wallet",
   address: "z1qzal6c5s9rjnnxd2z7dvdhjxpmmj4fmw56a0mz",
   network: "zenon-mainnet",
   chainId: 1,
   balances: [{ tokenStandard: ZNN_ZTS, symbol: "ZNN", decimals: 8, balance: "1200000000" }],
   unreceived: 1,
-  plasma: { currentPlasma: 21000, maxPlasma: 21000, qsrFused: "1" },
-  powRequired: false,
-  plasmaBotAvailable: true,
-  walletSource: "keystore"
+  plasma: { currentPlasma: 21000, maxPlasma: 21000, qsrFused: "1" }
 };
 
 describe("the deployed shell and the renderers agree", () => {
@@ -37,8 +36,8 @@ describe("the deployed shell and the renderers agree", () => {
     for (const id of [
       "dashboard", "wallet-summary", "account-actions", "orderbook",
       "pending-publications", "trades", "status", "order-settlement-hint",
-      "activity-log", "profile-label", "refresh", "refresh-orderbook",
-      "refresh-trades", "order-form", "backup", "clear-wallet", "reset-profile",
+      "activity-log", "wallet-control", "refresh", "refresh-orderbook",
+      "refresh-trades", "order-form", "reset-local-data",
       "network-badge", "theme-toggle"
     ]) byId(id);
 
@@ -46,8 +45,7 @@ describe("the deployed shell and the renderers agree", () => {
     renderWalletSummary(byId("wallet-summary"), state);
     renderDashboard(byId("dashboard"), state);
     renderAccountActions(byId("account-actions"), state, {
-      onCreate: noop, onImport: noop, onReceive: noop,
-      onFuse: noop, onReveal: noop, onCopyAddress: noop
+      onReceive: noop, onCopyAddress: noop
     });
     renderTrades(byId("trades"), []);
     const book = await buildOrderBook([], { chainId: "1", baseToken: ZNN_ZTS, quoteToken: QSR_ZTS }, 1);

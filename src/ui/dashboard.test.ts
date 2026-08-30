@@ -9,6 +9,8 @@ const ADDRESS = "z1qzal6c5s9rjnnxd2z7dvdhjxpmmj4fmw56a0mz";
 
 function state(overrides: Partial<ZwapState> = {}): ZwapState {
   return {
+    wallet: "connected",
+    providerName: "NoM Wallet",
     address: ADDRESS,
     network: "zenon-mainnet",
     chainId: 1,
@@ -18,9 +20,6 @@ function state(overrides: Partial<ZwapState> = {}): ZwapState {
     ],
     unreceived: 0,
     plasma: { currentPlasma: 21000, maxPlasma: 21000, qsrFused: "50000000000" },
-    powRequired: false,
-    plasmaBotAvailable: true,
-    walletSource: "keystore",
     ...overrides
   };
 }
@@ -44,10 +43,10 @@ describe("wallet summary strip", () => {
   it("says there is no wallet rather than inventing a zero balance", () => {
     const root = document.createElement("section");
 
-    renderWalletSummary(root, state({ address: null, balances: [], plasma: null }));
+    renderWalletSummary(root, state({ wallet: "detected", address: null, balances: [], plasma: null }));
 
     expect(root.querySelectorAll("[data-balance-token]")).toHaveLength(0);
-    expect(root.textContent).toContain("No wallet in this browser profile yet");
+    expect(root.textContent).toContain("No wallet connected");
   });
 
   it("says the address is empty rather than hiding it", () => {
@@ -88,30 +87,28 @@ describe("wallet dashboard", () => {
     expect(cards[0]?.getAttribute("title")).toBe(ZNN_ZTS);
   });
 
-  it("reports proof-of-work sends as a warning, never an error", () => {
+  it("leaves the fee decision to the wallet extension", () => {
     const root = document.createElement("section");
 
-    renderDashboard(root, state({ powRequired: true }));
+    renderDashboard(root, state());
 
-    const badge = root.querySelector<HTMLElement>("[data-wallet-pow]");
-    expect(badge?.className).toContain("nom-badge--warning");
-    expect(badge?.className).not.toContain("destructive");
-    expect(badge?.textContent).toContain("Proof of work");
+    expect(root.querySelector("[data-wallet-pow]")).toBeNull();
+    expect(root.textContent).not.toContain("Proof of work");
   });
 
   it("renders an honest empty state without a wallet", () => {
     const root = document.createElement("section");
 
-    renderDashboard(root, state({ address: null, balances: [], plasma: null }));
+    renderDashboard(root, state({ wallet: "detected", address: null, balances: [], plasma: null }));
 
-    expect(root.textContent).toContain("No wallet in this browser profile yet");
+    expect(root.textContent).toContain("No wallet connected");
     expect(root.querySelectorAll("[data-balance-token]")).toHaveLength(0);
   });
 
   it("carries no emoji", () => {
     const root = document.createElement("section");
 
-    renderDashboard(root, state({ powRequired: true }));
+    renderDashboard(root, state());
 
     expect(root.textContent ?? "").not.toMatch(/\p{Extended_Pictographic}/u);
   });

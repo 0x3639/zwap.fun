@@ -1,8 +1,7 @@
 import type { ZwapState } from "../api/zwap-api.js";
 import { renderTokenAmount, truncateAddress } from "./format.js";
-import { icon } from "./icons.js";
 
-const NO_WALLET = "No wallet in this browser profile yet.";
+const NO_WALLET = "No wallet connected.";
 
 function element<K extends keyof HTMLElementTagNameMap>(
   name: K,
@@ -39,7 +38,7 @@ export function renderWalletSummary(root: HTMLElement, state: ZwapState): void {
   root.setAttribute("aria-live", "polite");
 
   if (state.address === null) {
-    root.append(note(`${NO_WALLET} Create or import one in the Account panel.`));
+    root.append(note(`${NO_WALLET} Use Connect wallet in the header.`));
     return;
   }
 
@@ -88,7 +87,7 @@ export function renderDashboard(root: HTMLElement, state: ZwapState): void {
     empty.append(element("h3", NO_WALLET));
     empty.append(element(
       "p",
-      "Create a wallet or import a seed in the Account panel to see balances and plasma."
+      "Connect your browser wallet to see balances and plasma."
     ));
     root.append(empty);
     return;
@@ -110,14 +109,6 @@ export function renderDashboard(root: HTMLElement, state: ZwapState): void {
     stat("unreceived", "Unreceived", state.unreceived.toLocaleString("en-US"))
   );
   root.append(stats);
-
-  if (state.powRequired) {
-    const badge = element("span");
-    badge.className = "nom-badge nom-badge--warning";
-    badge.dataset.walletPow = "true";
-    badge.append(icon("shield"), element("span", "Proof of work required to send"));
-    root.append(badge);
-  }
 
   if (state.balances.length === 0) {
     root.append(note("No balances yet on this address."));
