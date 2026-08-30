@@ -142,6 +142,22 @@ describe("order-book presentation", () => {
     expect(take).toHaveBeenCalledWith(best, "2000000000", expect.any(HTMLButtonElement));
   });
 
+  it("says why take is disabled while no wallet is connected", async () => {
+    const best = record(askLow, "sell", "500000000", "2000000000");
+    const book = await buildOrderBook([best], market, 1_700_000_100);
+    const root = document.createElement("section");
+
+    // No `onTake`: exactly what `refreshOrderBook` passes while the page has
+    // no wallet to sign the take with.
+    renderOrderBook(root, { status: "ready", book }, {});
+
+    const button = root.querySelector<HTMLButtonElement>(
+      `[data-order-id="${askLow}"] [data-take-order]`
+    );
+    expect(button?.disabled).toBe(true);
+    expect(button?.title).toBe("Connect your wallet first");
+  });
+
   it("echoes the exact minor-unit figure the click will sign", async () => {
     const best = record(askLow, "sell", "500000000", "2000000000");
     const book = await buildOrderBook([best], market, 1_700_000_100);

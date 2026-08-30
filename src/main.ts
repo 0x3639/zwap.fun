@@ -373,8 +373,36 @@ async function refresh(state?: ZwapState): Promise<ZwapState> {
   renderDashboard(dashboard, next);
   renderAccountActions(accountActions, next, accountHandlers);
   renderWalletControl(walletControl, next, walletHandlers);
-  setWalletGating(next.wallet === "connected");
+  const connected = next.wallet === "connected";
+  setWalletGating(connected);
+  if (connected !== paintedWalletConnected) {
+    paintedWalletConnected = connected;
+    repaintWalletDependentSurfaces(connected);
+  }
   return next;
+}
+
+/**
+ * The page boots disconnected, and the start-up loop paints these surfaces
+ * itself, so the first paint must not double the work.
+ */
+let paintedWalletConnected = false;
+
+/**
+ * Take and Cancel are wired during the order-book paint and Retry during the
+ * outbox paint, so neither follows `setWalletGating` — the wallet coming or
+ * going has to repaint them, or a stale Take stays clickable after a
+ * disconnect. Fire and forget: a failed repaint reports itself and must never
+ * fail the wallet paint that triggered it.
+ */
+function repaintWalletDependentSurfaces(connected: boolean): void {
+  const reportFailure = (error: unknown): void => report(messageOf(error), true);
+  void refreshOrderBook().catch(reportFailure);
+  void refreshPendingPublications().catch(reportFailure);
+  void refreshTrades().catch(reportFailure);
+  // The maker listener runs off the trade runtime, so it can only start once
+  // there is a signer for it.
+  if (connected) void syncMakerInboxes().catch(reportFailure);
 }
 
 /**
@@ -449,7 +477,30 @@ function tradeController(): Promise<BrowserTradeController> {
   return tradeControllerPromise;
 }
 
+/**
+ * The journal is keyed to the address that signed those sessions, and the
+ * trade runtime cannot even be built without a signer. Say so quietly rather
+ * than letting the runtime throw a red toast onto a page nobody has connected
+ * a wallet to yet.
+ */
+function renderDisconnectedTrades(): void {
+  trades.replaceChildren();
+  trades.setAttribute("aria-live", "polite");
+  const empty = document.createElement("div");
+  empty.className = "empty-state nom-card";
+  const heading = document.createElement("h3");
+  heading.textContent = "Connect your wallet to see your swaps";
+  const note = document.createElement("p");
+  note.textContent = "Open swaps belong to the address that signed them.";
+  empty.append(heading, note);
+  trades.append(empty);
+}
+
 async function refreshTrades(): Promise<void> {
+  if (walletApi?.status() !== "connected") {
+    renderDisconnectedTrades();
+    return;
+  }
   const controller = await tradeController();
   const current = await controller.resume();
   current.forEach(tradeTrace);
@@ -656,6 +707,9 @@ let makerInboxRetryAttempt = 0;
 let makerInboxRetryTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
 
 async function syncMakerInboxes(): Promise<void> {
+  // `enableMaker` builds the trade runtime, which needs the extension's
+  // signer. Nothing to start, and nothing to report, until one is connected.
+  if (walletApi?.status() !== "connected") return;
   const publicKeys = await zwap.getMakerPublicKeys();
   if (publicKeys.length === 0) {
     return;
@@ -664,6 +718,7 @@ async function syncMakerInboxes(): Promise<void> {
 }
 
 function startMakerInbox(): Promise<void> {
+  if (walletApi?.status() !== "connected") return Promise.resolve();
   if (makerInboxStartPromise !== undefined) {
     makerInboxResyncQueued = true;
     const current = makerInboxStartPromise;
@@ -738,7 +793,6 @@ const walletHandlers: WalletControlHandlers = {
           { label: "address", value: `${(state.address ?? "").slice(0, 8)}…` }
         ]);
         report("Wallet connected");
-        void refreshTrades();
       })
       .catch((error: unknown) => report(messageOf(error), true));
   },

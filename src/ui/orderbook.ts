@@ -244,6 +244,12 @@ function orderRow(
     `${order.state.side === "sell" ? "Buy from ask" : "Sell into bid"}`
   );
   take.disabled = !order.verified || options.onTake === undefined;
+  // A button disabled with no reason reads as broken. Say so when the only
+  // thing missing is a wallet; an unverified order is disabled on its own
+  // merits and keeps the treatment it already had.
+  if (order.verified && options.onTake === undefined) {
+    take.title = "Connect your wallet first";
+  }
   if (options.onTake) take.addEventListener("click", () => {
     const minor = takeAmountMinorUnits(amount, order, base.decimals);
     if (!amount.reportValidity() || minor === null) return;
