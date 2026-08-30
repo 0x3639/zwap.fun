@@ -5,6 +5,13 @@ import { icon } from "./icons.js";
 /** Where "Install NoM Wallet" sends a visitor. Update when the store listing exists. */
 export const INSTALL_URL = "https://github.com/0x3639/nom-wallet";
 
+/**
+ * Trailing characters the masthead shows. Six, not the shared default of four:
+ * this is the address the user checks against their wallet before signing, and
+ * both ends have to be worth comparing.
+ */
+const PILL_TAIL = 6;
+
 export interface WalletControlHandlers {
   onConnect(button: HTMLButtonElement): void;
   onDisconnect(): void;
@@ -115,14 +122,18 @@ function renderConnected(root: HTMLElement, address: string, handlers: WalletCon
   pill.setAttribute("aria-expanded", "false");
   pill.title = address;
   pill.append(icon("shield"));
-  labelled(pill, truncateAddress(address));
+  labelled(pill, truncateAddress(address, PILL_TAIL));
 
   const menu = element("div");
   menu.className = "wallet-control__menu nom-card";
   menu.setAttribute("role", "menu");
   menu.hidden = true;
 
-  const full = element("p", address);
+  // Truncated, not full: a 40-character address on one line forces the whole
+  // popover as wide as the masthead. Same truncation as the pill above them,
+  // so the two never disagree; the title carries the full string for a hover,
+  // and Copy address still copies every character.
+  const full = element("p", truncateAddress(address, PILL_TAIL));
   full.className = "wallet-control__address font-mono";
   full.title = address;
 

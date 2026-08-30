@@ -7,12 +7,6 @@ import type {
 } from "./types.js";
 import { isAmount, isTokenStandard, isZenonAddress } from "./validate.js";
 
-/**
- * Plasma a plain send or receive consumes. Below this the node demands PoW,
- * which the UI must warn about before it blocks the page for tens of seconds.
- */
-export const MINIMUM_SEND_PLASMA = 21_000;
-
 /** How many unreceived blocks one `receiveAll` sweep will drain. */
 export const DEFAULT_RECEIVE_LIMIT = 50;
 
@@ -21,7 +15,6 @@ export interface AccountSnapshot {
   balances: BalanceView[];
   unreceived: number;
   plasma: PlasmaView;
-  powRequired: boolean;
 }
 
 export interface ZenonAccountDeps {
@@ -67,8 +60,7 @@ export class ZenonAccount {
       address,
       balances: structuredClone(balances),
       unreceived: unreceived.length,
-      plasma: structuredClone(plasma),
-      powRequired: plasma.currentPlasma < MINIMUM_SEND_PLASMA
+      plasma: structuredClone(plasma)
     };
   }
 

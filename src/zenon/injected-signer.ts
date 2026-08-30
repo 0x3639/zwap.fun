@@ -91,7 +91,7 @@ function readAnnouncement(event: Event): DetectedProvider | null {
  * Announces first, `window.zenon` second. A conforming wallet answers
  * `zenon:requestProvider` synchronously, so the common case costs nothing; the
  * timeout only runs for a page with no wallet, where it resolves `null` and
- * the keystore stays in charge.
+ * the page stays in the absent state.
  */
 export function detectInjectedProvider(
   win: Window & { zenon?: ZenonProvider },

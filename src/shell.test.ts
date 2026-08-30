@@ -38,6 +38,7 @@ describe("the deployed shell and the renderers agree", () => {
       "pending-publications", "trades", "status", "order-settlement-hint",
       "activity-log", "wallet-control", "refresh", "refresh-orderbook",
       "refresh-trades", "order-form", "reset-local-data",
+      "reset-local-data-confirmation",
       "network-badge", "theme-toggle"
     ]) byId(id);
 

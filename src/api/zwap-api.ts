@@ -62,6 +62,13 @@ export class ZwapApi {
   private readonly accountHandlers: Array<(accounts: string[]) => void> = [];
   private current: ZenonAccount | null = null;
   private connecting: Promise<ZwapState> | undefined;
+  /**
+   * Deliberately never reset. `InjectedZenonSigner.onAccountsChanged`
+   * subscribes on the provider object, which is stable across reconnects, so
+   * one subscription serves every signer this class builds; clearing this on
+   * `disconnect()` would double-subscribe on the next connect and deliver
+   * every account change twice.
+   */
   private listening = false;
 
   constructor(dependencies: ZwapApiDependencies) {
@@ -123,8 +130,18 @@ export class ZwapApi {
       this.listening = true;
       signer.onAccountsChanged((accounts) => {
         // A revoked site grant, or a wallet that locked the site out, arrives
-        // as an empty list: the page has no signer any more.
-        if (accounts.length === 0) this.disconnect();
+        // as an empty list: the page has no signer any more. It is forwarded
+        // either way — `disconnect()` is idempotent and the page still wants
+        // to log it. A non-empty list, though, only concerns a page that is
+        // still connected: the subscription outlives `disconnect()`, and
+        // handlers reload on an account switch, so forwarding one while
+        // disconnected would reload a page the user has already stepped away
+        // from.
+        if (accounts.length === 0) {
+          this.disconnect();
+        } else if (this.current === null) {
+          return;
+        }
         for (const handler of this.accountHandlers) handler(accounts);
       });
     }

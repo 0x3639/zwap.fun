@@ -72,7 +72,7 @@ a demonstrated swap end to end, including a refund drill. The
 [agent API](docs/guides/agent-api.md) documents `window.zwap`'s exact
 methods and amounts.
 
-`npm test` runs 58+ files of unit and fake-node integration tests; it never
+`npm test` runs 60 files of unit and fake-node integration tests; it never
 touches a real node. A separate, real-funds
 [gated live-chain integration test](docs/guides/live-test.md)
 (`src/zenon/live.integration.test.ts`) is skipped unless `ZENON_INTEGRATION=1`

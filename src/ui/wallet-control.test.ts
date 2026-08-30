@@ -53,19 +53,24 @@ describe("renderWalletControl", () => {
   it("shows the truncated address as a menu button when connected", () => {
     renderWalletControl(root, state({ wallet: "connected", address: ADDRESS }), handlers());
     const pill = root.querySelector<HTMLButtonElement>("button[data-wallet-pill]");
-    expect(pill?.textContent).toContain("z1qrmm…7fns");
+    expect(pill?.textContent).toContain("z1qrmm…nh7fns");
+    expect(pill?.title).toBe(ADDRESS);
     expect(pill?.getAttribute("aria-haspopup")).toBe("menu");
     expect(pill?.getAttribute("aria-expanded")).toBe("false");
     expect(root.querySelector<HTMLElement>("[role=menu]")?.hidden).toBe(true);
   });
 
-  it("opens the menu with the full address, copy and disconnect", () => {
+  it("opens the menu with the truncated address, copy and disconnect", () => {
     const h = handlers();
     renderWalletControl(root, state({ wallet: "connected", address: ADDRESS }), h);
     root.querySelector<HTMLButtonElement>("button[data-wallet-pill]")?.click();
     const menu = root.querySelector<HTMLElement>("[role=menu]");
     expect(menu?.hidden).toBe(false);
-    expect(menu?.textContent).toContain(ADDRESS);
+    // Truncated so the popover stays narrow; the full string is the title, and
+    // Copy address still hands over every character.
+    expect(menu?.textContent).toContain("z1qrmm…nh7fns");
+    expect(menu?.textContent).not.toContain(ADDRESS);
+    expect(menu?.querySelector<HTMLElement>(".wallet-control__address")?.title).toBe(ADDRESS);
 
     menu?.querySelector<HTMLButtonElement>("button[data-wallet-copy]")?.click();
     expect(h.onCopy).toHaveBeenCalledWith(ADDRESS);

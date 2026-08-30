@@ -69,6 +69,14 @@ describe("address and hash truncation", () => {
     expect(truncateAddress("z1qzal")).toBe("z1qzal");
   });
 
+  it("widens the trailing run on request without moving the default", () => {
+    const address = "z1qzal6c5s9rjnnxd2z7dvdhjxpmmj4fmw56a0mz";
+    expect(truncateAddress(address, 6)).toBe("z1qzal…56a0mz");
+    // The guard scales with the tail: nothing is saved by eliding 13 characters into 13.
+    expect(truncateAddress("z1qzal6c5s9rj", 6)).toBe("z1qzal6c5s9rj");
+    expect(truncateAddress("z1qzal6c5s9rjn", 6)).toBe("z1qzal…5s9rjn");
+  });
+
   it("truncates hashes and HTLC ids with a longer head", () => {
     expect(truncateHash("0".repeat(56) + "abcdef12")).toBe("00000000…abcdef12");
   });

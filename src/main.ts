@@ -174,6 +174,8 @@ function messageOf(value: unknown): string {
 }
 
 const config = browserConfig();
+/** The exact phrase that unlocks the danger zone, typed by hand or passed by an agent. */
+const RESET_LOCAL_DATA_CONFIRMATION = "RESET ZWAP DATA";
 /** One storage namespace per browser origin. The literal is the pre-existing default profile name, kept so nothing already stored is orphaned. */
 const STORAGE_NAME = "zwap-wallet-default";
 const driver = new IndexedDbStorageDriver(STORAGE_NAME);
@@ -200,15 +202,19 @@ let walletApi: ZwapApi | undefined;
 let createTradeRuntime: (() => Promise<BrowserTradeRuntime>) | undefined;
 let resetTradeRuntime: (() => void) | undefined;
 
+// Discovery is a 300 ms race at worst and resolves `null` on a page with no
+// extension, which renders the install offer instead of the connect button.
+// It runs above the node connect on purpose: an unreachable node must not be
+// reported as a missing wallet, so the masthead can still say which extension
+// is installed while the banner explains why nothing can be signed.
+const detectedProvider = await detectInjectedProvider(window).catch(() => null);
+
 try {
   const node = await SdkZenonNode.connect({
     nodeUrl: config.nodeUrl,
     chainId: config.chainId
   });
-  // Discovery is a 300 ms race at worst and resolves `null` on a page with no
-  // extension, which renders the install offer instead of the connect button.
-  const provider = await detectInjectedProvider(window).catch(() => null);
-  const api = new ZwapApi({ node, config, provider });
+  const api = new ZwapApi({ node, config, provider: detectedProvider });
   walletApi = api;
   api.onAccountsChanged((accounts) => {
     if (accounts.length === 0) {
@@ -354,9 +360,15 @@ async function refresh(state?: ZwapState): Promise<ZwapState> {
     walletSummary.textContent = unavailable();
     dashboard.textContent = unavailable();
     accountActions.textContent = unavailable();
+    // The wallet is whatever discovery found: without a node it cannot be
+    // connected, but calling an installed extension "absent" would send the
+    // user off to install one they already have. Connect stays wired and
+    // fails with the banner's reason through `requireWallet`.
     renderWalletControl(walletControl, {
-      wallet: "absent",
-      providerName: null,
+      wallet: detectedProvider === null ? "absent" : "detected",
+      providerName: detectedProvider === null
+        ? null
+        : detectedProvider.info?.name ?? "Browser extension",
       address: null,
       network: config.network,
       chainId: config.chainId,
@@ -478,26 +490,38 @@ function tradeController(): Promise<BrowserTradeController> {
 
 /**
  * The journal is keyed to the address that signed those sessions, and the
- * trade runtime cannot even be built without a signer. Say so quietly rather
- * than letting the runtime throw a red toast onto a page nobody has connected
- * a wallet to yet.
+ * trade runtime cannot even be built without a signer or a node. Say why
+ * quietly rather than letting the runtime throw a red toast onto a page that
+ * has no wallet connected — or no node to connect one to.
  */
-function renderDisconnectedTrades(): void {
+function renderTradesEmptyState(heading: string, note: string): void {
   trades.replaceChildren();
   trades.setAttribute("aria-live", "polite");
   const empty = document.createElement("div");
   empty.className = "empty-state nom-card";
-  const heading = document.createElement("h3");
-  heading.textContent = "Connect your wallet to see your swaps";
-  const note = document.createElement("p");
-  note.textContent = "Open swaps belong to the address that signed them.";
-  empty.append(heading, note);
+  const title = document.createElement("h3");
+  title.textContent = heading;
+  const body = document.createElement("p");
+  body.textContent = note;
+  empty.append(title, body);
   trades.append(empty);
 }
 
 async function refreshTrades(): Promise<void> {
-  if (walletApi?.status() !== "connected") {
-    renderDisconnectedTrades();
+  if (walletApi === undefined) {
+    // No node, so no connect card: pointing at a connect button that cannot
+    // work would blame the user for the node's outage.
+    renderTradesEmptyState(
+      "Zenon node unavailable",
+      "Swap sessions need the node; see the banner above."
+    );
+    return;
+  }
+  if (walletApi.status() !== "connected") {
+    renderTradesEmptyState(
+      "Connect your wallet to see your swaps",
+      "Open swaps belong to the address that signed them."
+    );
     return;
   }
   const controller = await tradeController();
@@ -670,7 +694,7 @@ const zwap: ZwapBrowserFacade = {
   send: (toAddress, tokenStandard, amount) =>
     locked(() => requireWallet().send(toAddress, tokenStandard, amount)),
   resetLocalData: async (confirmation) => {
-    if (confirmation !== "RESET ZWAP DATA") {
+    if (confirmation !== RESET_LOCAL_DATA_CONFIRMATION) {
       throw new Error("Type RESET ZWAP DATA to erase this browser's zwap data");
     }
     // Teardown first: the runtime and the maker listener hold the database
@@ -934,10 +958,29 @@ orderForm.addEventListener("submit", (event) => {
 });
 
 const resetLocalDataButton = byId<HTMLButtonElement>("reset-local-data");
+const resetLocalDataConfirmation = byId<HTMLInputElement>("reset-local-data-confirmation");
+/**
+ * The disabled button is the affordance, not the gate: the typed phrase is
+ * passed through to `resetLocalData`, which refuses anything else, so the real
+ * check is the one an agent calling `window.zwap` also has to pass.
+ * `endButtonFeedback` re-enables unconditionally, so re-gate after every run.
+ */
+function syncResetLocalDataGate(): void {
+  resetLocalDataButton.disabled =
+    resetLocalDataConfirmation.value.trim() !== RESET_LOCAL_DATA_CONFIRMATION;
+}
+resetLocalDataConfirmation.addEventListener("input", syncResetLocalDataGate);
 resetLocalDataButton.addEventListener("click", () => {
-  void withButtonFeedback(resetLocalDataButton, "Erasing…", () => zwap.resetLocalData("RESET ZWAP DATA"))
+  void withButtonFeedback(
+    resetLocalDataButton,
+    "Erasing…",
+    () => zwap.resetLocalData(resetLocalDataConfirmation.value)
+  )
     .then(() => window.location.reload())
-    .catch((error: unknown) => report(messageOf(error), true));
+    .catch((error: unknown) => {
+      syncResetLocalDataGate();
+      report(messageOf(error), true);
+    });
 });
 
 // Each start-up read stands on its own: without a node the order book and the

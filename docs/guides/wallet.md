@@ -54,8 +54,16 @@ session, and half-migrating an in-flight trade is worse than restarting.
 
 **Erase local data and restart**, in the danger zone (confirmed by typing
 `RESET ZWAP DATA`), erases this browser's trade-session journal,
-order-key store, and publication outbox. It never touches the wallet — the
-extension holds the seed, not zwap.
+order-key store, and publication outbox. The button stays disabled until the
+phrase is typed exactly, and the phrase is re-checked by `resetLocalData`
+itself, so an agent calling it has to pass the same gate. It never touches the
+wallet — the extension holds the seed, not zwap.
+
+Data written under the old `?wallet=<name>` profile namespaces, before
+profiles were removed, is no longer reachable from the page: everything now
+lives in the single default namespace. Those old stores were not deleted, so
+they still occupy this browser's storage until the site's data is cleared
+through the browser itself.
 
 Known limitation: trade sessions and per-order Nostr keys are keyed to the
 browser, not to the signing address. A session opened with account A

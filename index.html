@@ -54,7 +54,7 @@
         </div>
         <div class="market-wallet nom-card">
           <div id="wallet-summary" aria-label="Wallet balances"></div>
-          <button id="refresh" class="nom-btn nom-btn--sm nom-btn--ghost" type="button" data-requires-wallet>
+          <button id="refresh" class="nom-btn nom-btn--sm nom-btn--ghost" type="button" data-requires-wallet disabled>
             <span data-button-label="true">Refresh balances</span>
           </button>
         </div>
@@ -93,7 +93,7 @@
               zwap converts the amount and price to exact integers in minor units before signing, and
               shows you both figures here.
             </p>
-            <button class="nom-btn nom-btn--primary" type="submit">
+            <button class="nom-btn nom-btn--primary" type="submit" disabled>
               <span data-button-label="true">Sign and post order</span>
             </button>
           </form>
@@ -145,7 +145,15 @@
           <details>
             <summary>Danger zone</summary>
             <div class="danger-zone">
-              <button id="reset-local-data" class="nom-btn nom-btn--destructive" type="button">
+              <label for="reset-local-data-confirmation">Type RESET ZWAP DATA to confirm</label>
+              <input
+                id="reset-local-data-confirmation"
+                class="nom-input font-mono"
+                type="text"
+                autocomplete="off"
+                placeholder="RESET ZWAP DATA"
+              >
+              <button id="reset-local-data" class="nom-btn nom-btn--destructive" type="button" disabled>
                 <span data-button-label="true">Erase local data and restart</span>
               </button>
             </div>

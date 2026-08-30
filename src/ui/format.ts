@@ -82,9 +82,16 @@ export function renderTokenAmount(
   return node;
 }
 
-/** `z1qzal…a0mz` — the full value belongs in a `title`, never dropped. */
-export function truncateAddress(address: string): string {
-  return address.length <= 11 ? address : `${address.slice(0, 6)}…${address.slice(-4)}`;
+/**
+ * `z1qzal…a0mz` — the full value belongs in a `title`, never dropped. `tail`
+ * widens the trailing run for surfaces with room for it (the masthead pill and
+ * its popover ask for 6); the default stays 4 so every other caller is unmoved.
+ * Below `7 + tail` characters the ellipsis would save nothing, so pass it through.
+ */
+export function truncateAddress(address: string, tail = 4): string {
+  return address.length <= 7 + tail
+    ? address
+    : `${address.slice(0, 6)}…${address.slice(-tail)}`;
 }
 
 /** Hashes and HTLC ids get a longer head: eight hex digits identify them. */

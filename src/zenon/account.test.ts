@@ -53,17 +53,15 @@ describe("ZenonAccount", () => {
       maxPlasma: 210_000,
       qsrFused: "10000000000"
     });
-    expect(snapshot.powRequired).toBe(false);
   });
 
-  it("reports powRequired when plasma is below the send threshold", async () => {
+  it("reports the drained plasma the node reports", async () => {
     const { node, address, account } = harness();
     node.setPow(address, true);
 
     const snapshot = await account.snapshot();
 
     expect(snapshot.plasma.currentPlasma).toBe(0);
-    expect(snapshot.powRequired).toBe(true);
   });
 
   it("receives every pending block sequentially and credits the balance", async () => {

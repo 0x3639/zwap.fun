@@ -169,6 +169,35 @@ describe("ZwapApi", () => {
     expect(seen).toHaveBeenLastCalledWith([address]);
   });
 
+  it("ignores account changes while disconnected and resumes after reconnect", async () => {
+    const { api, provider, address } = harness();
+    const seen = vi.fn();
+    api.onAccountsChanged(seen);
+    await api.connect();
+    api.disconnect();
+
+    // The provider subscription outlives disconnect; page handlers reload on
+    // an account switch, so a switch nobody is connected for must not reach them.
+    provider.emit("accountsChanged", [address]);
+    expect(seen).not.toHaveBeenCalled();
+
+    await api.connect();
+    provider.emit("accountsChanged", [address]);
+    expect(seen).toHaveBeenCalledTimes(1);
+    expect(seen).toHaveBeenCalledWith([address]);
+  });
+
+  it("names an unannounced provider Browser extension", async () => {
+    // The `window.zenon` fallback announces no info, so there is no name to show.
+    const node = new FakeZenonNode({ chainId: 1, now: () => NOW });
+    const provider = fakeProvider(node, node.createAddress("wallet"));
+    const api = new ZwapApi({ node, config: config(), provider: { info: null, provider } });
+
+    const state = await api.getState();
+    expect(state.wallet).toBe("detected");
+    expect(state.providerName).toBe("Browser extension");
+  });
+
   it("shares one signer between account() and send()", async () => {
     const { api, node, address, funder } = harness();
     node.fund(address, ZNN_ZTS, "5");

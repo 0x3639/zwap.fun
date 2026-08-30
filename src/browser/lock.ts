@@ -1,3 +1,10 @@
+/**
+ * Every lock name below carries a literal `default` segment where the profile
+ * name used to be. It is kept verbatim, not dropped with the profiles: Web
+ * Locks match on the exact string, so a tab still running the pre-profile-
+ * removal build would take `zwap-account-default-write` while a new tab took
+ * `zwap-account-write` and the two would write the same store unserialized.
+ */
 export interface LockPort {
   request(
     name: string,
