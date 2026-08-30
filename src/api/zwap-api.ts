@@ -1,96 +1,80 @@
-import type { KeyPair } from "znn-typescript-sdk";
-
 import type { ZwapConfig } from "../config.js";
-import type { ZenonAccount } from "../zenon/account.js";
-import type { KeystoreRepository } from "../zenon/keystore-repository.js";
+import { ZenonAccount } from "../zenon/account.js";
 import {
-  fusePlasma,
-  type FuseResult,
-  type PlasmaTier
-} from "../zenon/plasma-bot.js";
+  InjectedProviderError,
+  InjectedZenonSigner,
+  PROVIDER_ERROR,
+  type DetectedProvider,
+  type ZenonProvider
+} from "../zenon/injected-signer.js";
 import type {
   BalanceView,
   PlasmaView,
   SendReceipt,
-  ZenonNodePort
+  ZenonNodePort,
+  ZenonSigner
 } from "../zenon/types.js";
 
-/** Everything the wallet panel renders, in one round trip. */
+export type WalletStatus = "absent" | "detected" | "connected";
+
+/** Everything the page paints from, in one round trip. */
 export interface ZwapState {
+  wallet: WalletStatus;
+  /** The extension's announced name, once one has announced itself. */
+  providerName: string | null;
   address: string | null;
   network: string;
   chainId: number;
   balances: BalanceView[];
   unreceived: number;
   plasma: PlasmaView | null;
-  powRequired: boolean;
-  plasmaBotAvailable: boolean;
-  /**
-   * Which wallet signs for this address. `ZwapApi` only ever produces
-   * `"keystore"`; the composition root substitutes an injected-provider
-   * snapshot when a browser-extension wallet is connected.
-   */
-  walletSource: "keystore" | "injected";
 }
 
-/** The unlocked account, or `null` until a keystore exists in this profile. */
-export interface ZenonPort {
-  account(): ZenonAccount | null;
+/** What `connect()` needs from a signer: the `ZenonSigner` plus account-change events. */
+export interface ConnectedSigner extends ZenonSigner {
+  onAccountsChanged(handler: (accounts: string[]) => void): void;
 }
-
-/** The slice of the keystore the wallet API drives. */
-export type KeystorePort = Pick<
-  KeystoreRepository,
-  "exists" | "create" | "import" | "loadKeyPair" | "revealMnemonic" | "clear"
->;
 
 export interface ZwapApiDependencies {
-  keystore: KeystorePort;
-  /**
-   * The node the composition root connected. It is not called directly here —
-   * every read goes through the account `createAccount` builds over this same
-   * connection — but taking it keeps one node per page in the wiring.
-   */
   node: ZenonNodePort;
   config: ZwapConfig;
-  /**
-   * Builds the account for the profile's single key pair. Injected so the
-   * browser can hand it a `KeystoreSigner` over the live node while tests sign
-   * through `FakeZenonNode` without touching the SDK's PoW machinery.
-   */
-  createAccount: (keyPair: KeyPair) => ZenonAccount;
-  fetchImpl?: typeof fetch;
+  /** The wallet discovery result; `null` when no extension announced itself. */
+  provider: DetectedProvider | null;
+  /** Test seam. The browser leaves it unset and gets `InjectedZenonSigner.connect`. */
+  connectSigner?: (provider: ZenonProvider, chainId: number) => Promise<ConnectedSigner>;
 }
 
+const NOT_CONNECTED = "Connect your wallet before trading";
+
 /**
- * The wallet-facing half of zwap: one self-custodial Zenon address, its
- * balances, its plasma, and the four transfers a user drives by hand. Trading
- * lives in `TradeApi`; this class deliberately knows nothing about HTLCs.
- *
- * The key pair is derived at most once and stays resident for the lifetime of
- * the page — the wallet is a hot wallet by construction, and re-deriving per
- * action would only spread the same secret over more allocations. It is wiped
- * when `clearWallet` erases the seed.
+ * The wallet-facing half of zwap over a browser-extension wallet. zwap holds
+ * no key: the extension owns the seed and signs every account block. This
+ * class owns the three-state wallet machine (absent / detected / connected)
+ * and hands out the one `ZenonAccount` the trade runtime must share, because
+ * the signer serializes its own sends and two signers over one address would
+ * race each other's account-chain height.
  */
-export class ZwapApi implements ZenonPort {
-  private readonly keystore: KeystorePort;
+export class ZwapApi {
+  private readonly node: ZenonNodePort;
   private readonly config: ZwapConfig;
-  private readonly createAccount: (keyPair: KeyPair) => ZenonAccount;
-  private readonly fetchImpl: typeof fetch | undefined;
+  private readonly provider: DetectedProvider | null;
+  private readonly connectSigner: (provider: ZenonProvider, chainId: number) => Promise<ConnectedSigner>;
+  private readonly accountHandlers: Array<(accounts: string[]) => void> = [];
   private current: ZenonAccount | null = null;
-  private keyPair: KeyPair | null = null;
-  private unlocking: Promise<ZenonAccount | null> | undefined;
-  /**
-   * Bumped by `clearWallet`. A derive that started before the erase finishes
-   * after it, and must not re-install the key pair the erase just wiped.
-   */
-  private generation = 0;
+  private connecting: Promise<ZwapState> | undefined;
+  private listening = false;
 
   constructor(dependencies: ZwapApiDependencies) {
-    this.keystore = dependencies.keystore;
+    this.node = dependencies.node;
     this.config = dependencies.config;
-    this.createAccount = dependencies.createAccount;
-    this.fetchImpl = dependencies.fetchImpl;
+    this.provider = dependencies.provider;
+    this.connectSigner = dependencies.connectSigner
+      ?? ((provider, chainId) => InjectedZenonSigner.connect(provider, chainId));
+  }
+
+  status(): WalletStatus {
+    if (this.provider === null) return "absent";
+    return this.current === null ? "detected" : "connected";
   }
 
   account(): ZenonAccount | null {
@@ -98,134 +82,93 @@ export class ZwapApi implements ZenonPort {
   }
 
   async getState(): Promise<ZwapState> {
-    const account = await this.unlock();
-    const empty = {
+    const base = {
+      wallet: this.status(),
+      providerName: this.provider?.info?.name ?? (this.provider === null ? null : "Browser extension"),
       network: this.config.network,
-      chainId: this.config.chainId,
-      plasmaBotAvailable: this.config.plasmaBotUrl !== null,
-      walletSource: "keystore" as const
+      chainId: this.config.chainId
     };
+    const account = this.current;
     if (account === null) {
-      return {
-        address: null,
-        balances: [],
-        unreceived: 0,
-        plasma: null,
-        powRequired: false,
-        ...empty
-      };
+      return { ...base, address: null, balances: [], unreceived: 0, plasma: null };
     }
     const snapshot = await account.snapshot();
     return {
+      ...base,
       address: snapshot.address,
       balances: snapshot.balances,
       unreceived: snapshot.unreceived,
-      plasma: snapshot.plasma,
-      powRequired: snapshot.powRequired,
-      ...empty
+      plasma: snapshot.plasma
     };
   }
 
-  async createWallet(): Promise<ZwapState> {
-    await this.keystore.create();
+  /** Single-flight: two clicks share one connect window rather than opening two. */
+  connect(): Promise<ZwapState> {
+    this.connecting ??= this.doConnect().finally(() => { this.connecting = undefined; });
+    return this.connecting;
+  }
+
+  private async doConnect(): Promise<ZwapState> {
+    const detected = this.provider;
+    if (detected === null) throw new Error("No browser wallet is available");
+    if (this.current !== null) return this.getState();
+    let signer: ConnectedSigner;
+    try {
+      signer = await this.connectSigner(detected.provider, this.config.chainId);
+    } catch (error) {
+      throw describeConnectError(error, this.config.chainId);
+    }
+    this.current = new ZenonAccount({ node: this.node, signer });
+    if (!this.listening) {
+      this.listening = true;
+      signer.onAccountsChanged((accounts) => {
+        // A revoked site grant, or a wallet that locked the site out, arrives
+        // as an empty list: the page has no signer any more.
+        if (accounts.length === 0) this.disconnect();
+        for (const handler of this.accountHandlers) handler(accounts);
+      });
+    }
     return this.getState();
   }
 
-  async importWallet(mnemonic: string): Promise<ZwapState> {
-    await this.keystore.import(mnemonic);
-    return this.getState();
+  disconnect(): void {
+    this.current = null;
   }
 
   async receivePending(): Promise<ZwapState> {
-    await (await this.require()).receiveAll();
+    await this.require().receiveAll();
     return this.getState();
   }
 
-  async fusePlasma(tier: PlasmaTier): Promise<FuseResult> {
-    const baseUrl = this.config.plasmaBotUrl;
-    if (baseUrl === null) {
-      throw new Error("Plasma bot is not configured for this network");
-    }
-    const account = await this.require();
-    return fusePlasma(baseUrl, account.address(), tier, this.fetchImpl);
+  async send(toAddress: string, tokenStandard: string, amount: string): Promise<SendReceipt> {
+    return this.require().send(toAddress, tokenStandard, amount);
   }
 
-  async send(
-    toAddress: string,
-    tokenStandard: string,
-    amount: string
-  ): Promise<SendReceipt> {
-    return (await this.require()).send(toAddress, tokenStandard, amount);
+  onAccountsChanged(handler: (accounts: string[]) => void): void {
+    this.accountHandlers.push(handler);
   }
 
-  async revealMnemonic(confirmation: string): Promise<string> {
-    return this.keystore.revealMnemonic(confirmation);
-  }
-
-  /** Erases the seed and zeroes the resident key pair the signer still holds. */
-  async clearWallet(confirmation: string): Promise<void> {
-    await this.keystore.clear(confirmation);
-    this.invalidate();
-  }
-
-  /**
-   * Drops the in-memory wallet without touching storage, for when the seed is
-   * erased by other means - a whole-profile reset deletes the database under
-   * this object, and the key pair it derived must not outlive it.
-   */
-  forgetWallet(): void {
-    this.invalidate();
-  }
-
-  private invalidate(): void {
-    this.generation += 1;
-    this.unlocking = undefined;
-    this.current = null;
-    this.keyPair?.clear();
-    this.keyPair = null;
-  }
-
-  private async require(): Promise<ZenonAccount> {
-    const account = await this.unlock();
-    if (account === null) {
-      throw new Error("There is no wallet in this browser profile");
-    }
+  private require(): ZenonAccount {
+    const account = this.current;
+    if (account === null) throw new Error(NOT_CONNECTED);
     return account;
   }
+}
 
-  /**
-   * Single-flight: concurrent callers share one derivation rather than racing
-   * two key pairs — and therefore two send queues — onto the same address.
-   */
-  private async unlock(): Promise<ZenonAccount | null> {
-    if (this.current !== null) return this.current;
-    const pending = this.unlocking ?? this.derive(this.generation);
-    this.unlocking = pending;
-    try {
-      return await pending;
-    } finally {
-      if (this.unlocking === pending) this.unlocking = undefined;
+/**
+ * The spec's three user-facing connect failures. Anything else keeps the
+ * provider's own words, prefixed so the log says who said them.
+ */
+function describeConnectError(error: unknown, expectedChainId: number): Error {
+  if (error instanceof InjectedProviderError) {
+    if (error.code === PROVIDER_ERROR.userRejected) {
+      return new Error("Wallet connection refused");
     }
+    if (error.code === PROVIDER_ERROR.chainMismatch) {
+      const reported = /chain (\S+?);/.exec(error.message)?.[1] ?? "unknown";
+      return new Error(`Wallet is on chain ${reported}; zwap needs chain ${expectedChainId}`);
+    }
+    return new Error(`Wallet: ${error.message}`);
   }
-
-  private async derive(generation: number): Promise<ZenonAccount | null> {
-    if (!(await this.keystore.exists())) return null;
-    const keyPair = await this.keystore.loadKeyPair();
-    let account: ZenonAccount;
-    try {
-      account = this.createAccount(keyPair);
-    } catch (error) {
-      keyPair.clear();
-      throw error;
-    }
-    if (generation !== this.generation) {
-      // `clearWallet` landed while this derive was in flight. The seed is gone;
-      // installing this key pair would resurrect a wallet the user erased.
-      keyPair.clear();
-      return null;
-    }
-    this.keyPair = keyPair;
-    this.current = account;
-    return account;
-  }
+  return new Error(`Wallet: ${error instanceof Error ? error.message : String(error)}`);
 }
