@@ -33,12 +33,10 @@ nothing on chain but still holds the order's public slot until
 self-authorized early-release reason in the signed projection schema:
 `order/model.ts` currently refuses `expired` before `reservation.expires_at`
 and the only other reason (`abort`) requires a taker-signed event.
-Sketch: allow the maker to publish a release with a new reason (e.g.
-`withdrawn`) once its session is `frozen` holding nothing — the projection
-consumer side (`order/events.ts`, verification in the book) must accept it,
-and `atomic-messages.ts`'s exact `long + grace` expiry pin stays untouched.
-Same wire-change caveat as the base-lock deferral: flag-day, fine
-pre-launch. **Decision needed before starting.**
+Implemented as sketched: `withdrawn` reason, self-authorized by the maker
+order key; the planner stages it from the frozen-holding-nothing state, the
+`long + grace` expiry pin is untouched, and the refund ladder still releases
+as `expired`.
 
 ## 3. End-to-end mainnet swap test with the extension (manual, needs funds)
 
