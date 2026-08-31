@@ -468,7 +468,15 @@ export async function queryGiftWraps(
             if (typeof event?.created_at === "number" && event.created_at < oldest) {
               oldest = event.created_at;
             }
-            if (typeof event?.id === "string" && !collected.has(event.id)) {
+            // The whole-wrap ceiling from validateGiftWrap, applied before
+            // retention: oversized junk still defines the page window but is
+            // never held between pages and never counts toward progress.
+            if (
+              typeof event?.id !== "string" ||
+              typeof event?.content !== "string" ||
+              new TextEncoder().encode(event.content).length > MAX_WRAP_CONTENT_BYTES
+            ) continue;
+            if (!collected.has(event.id)) {
               collected.set(event.id, event);
               added += 1;
             }

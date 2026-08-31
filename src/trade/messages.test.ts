@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { finalizeEvent, getPublicKey, nip44 } from "nostr-tools";
 
 import { ZNN_ZTS, QSR_ZTS } from "../zenon/types.js";
@@ -14,6 +14,7 @@ import {
   type ZwapTradeMessage,
   type ZwapTradeTerms
 } from "./messages.js";
+import { randomOuterExpiration } from "./messages.js";
 
 const key = (last: number): Uint8Array => {
   const bytes = new Uint8Array(32);
@@ -416,5 +417,23 @@ describe("strict Zwap NIP-17 messages", () => {
   it("rejects terms whose base and quote tokens are the same token standard", async () => {
     await expect(termsHash({ ...terms, quote_token: terms.base_token }))
       .rejects.toThrow(/must differ/i);
+  });
+});
+
+describe("randomOuterExpiration", () => {
+  it("draws its default jitter from crypto randomness within the 1-24h band", () => {
+    const spy = vi.spyOn(globalThis.crypto, "getRandomValues");
+    try {
+      const base = 1_800_000_000;
+      for (let i = 0; i < 64; i += 1) {
+        const expiry = randomOuterExpiration(base);
+        expect(expiry).toBeGreaterThanOrEqual(base + 3_600);
+        expect(expiry).toBeLessThanOrEqual(base + 86_400);
+        expect((expiry - base) % 3_600).toBe(0);
+      }
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

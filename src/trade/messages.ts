@@ -466,9 +466,13 @@ function assertRandomizedTimestamp(value: number, rumorTime: number, label: stri
  * 1-24 range the unwrap policy accepts, so the tag only brackets the send
  * time to within a day.
  */
+function cryptoRandomUnit(): number {
+  return crypto.getRandomValues(new Uint32Array(1))[0]! / 2 ** 32;
+}
+
 export function randomOuterExpiration(
   messageExpiresAt: number,
-  random: () => number = Math.random
+  random: () => number = cryptoRandomUnit
 ): number {
   return messageExpiresAt + 3_600 * (1 + Math.floor(random() * 24));
 }

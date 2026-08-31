@@ -605,6 +605,23 @@ describe("gift-wrap query paging", () => {
     expect(port.filters.length).toBe(1);
   });
 
+  it("filters oversized wraps per page so they cannot consume the paging budget", async () => {
+    const wanted = validWrapAt(now - 110);
+    const oversized = "x".repeat(32 * 1024 + 1);
+    const flood = Array.from({ length: 500 }, (_, index) => ({
+      ...floodWrapAt(now - 100, index + 1),
+      content: oversized
+    }));
+    const port = new PagingRelayPort([...flood, wanted]);
+
+    await expect(queryGiftWraps(recipient, [relay], recipientKey, port, now - 900, now))
+      .resolves.toEqual([structuredClone(wanted)]);
+    // A full page of oversized junk counts as zero retained events, so the
+    // walk plateau-steps immediately instead of burning a page re-collecting it.
+    expect(port.filters.length).toBe(2);
+    expect(port.filters[1]).toMatchObject({ until: now - 101 });
+  });
+
   it("gives up after eight pages per relay", async () => {
     const wanted = validWrapAt(now - 4500);
     const flood = Array.from({ length: 4000 }, (_, index) =>
