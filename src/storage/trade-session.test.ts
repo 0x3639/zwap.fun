@@ -856,6 +856,36 @@ describe("zwap trade session repository", () => {
       .toBe(laterProjection.id);
   });
 
+  it("frees the maker slot when the competing session is frozen holding nothing", async () => {
+    // A maker session that froze before publishing a reservation or creating
+    // an HTLC has nothing at stake; leaving it in the slot would block the
+    // order's maker slot forever (a costless permanent denial of service).
+    const repository = new TradeSessionRepository(new MemoryStorageDriver());
+    const frozen = structuredClone(session);
+    frozen.role = "maker";
+    frozen.phase = "frozen";
+    frozen.reserveProjectionId = null;
+    frozen.evidence.reserveProjectionId = null;
+    frozen.evidence.reservation.takerCommitment = null;
+    // The publication and outbox retry artifacts both pin the reserve
+    // projection this fixture just nulled; a slot-free frozen session has
+    // neither in flight.
+    frozen.pendingOrderPublication = null;
+    frozen.privateState.outbox = null;
+    for (const leg of ["base", "quote"] as const) {
+      frozen.privateState.legs[leg].htlcId = null;
+      frozen.evidence.legs[leg].htlcId = null;
+      frozen.evidence.legs[leg].validationCommitment = null;
+    }
+    await repository.save(frozen, null);
+
+    const next = sessionFixture({
+      sessionId: "ab".repeat(32),
+      reservationId: "abababab-abab-4bab-8bab-abababababab"
+    });
+    await expect(repository.createMakerForOrder(next)).resolves.toBeDefined();
+  });
+
   it("prunes filled and released sessions past retention, with their start bindings", async () => {
     const repository = new TradeSessionRepository(new MemoryStorageDriver());
     const filled = structuredClone(session);

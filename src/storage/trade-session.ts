@@ -1938,7 +1938,16 @@ export class TradeSessionRepository {
           item.role === "maker" &&
           item.orderAddress === session.orderAddress &&
           item.phase !== "filled" &&
-          item.phase !== "released"
+          item.phase !== "released" &&
+          // A frozen session holding nothing - no published reservation, no
+          // HTLC on either leg (the exact slot-free condition coordinator-plan's
+          // terminal() uses) - must not occupy the order's maker slot forever:
+          // a proposal that froze before locking anything would otherwise be a
+          // costless, permanent denial of service against the order.
+          !(item.phase === "frozen" &&
+            item.reserveProjectionId === null &&
+            item.privateState.legs.base.htlcId === null &&
+            item.privateState.legs.quote.htlcId === null)
       );
       if (competing !== undefined) {
         throw new Error("Order is already being taken by another trader");

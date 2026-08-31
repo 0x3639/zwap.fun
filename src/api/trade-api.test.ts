@@ -308,6 +308,10 @@ function options(setup: {
   ]) {
     node.fund(localAddress, funding.tokenStandard, funding.amount);
   }
+  // The claimed taker address is funded by default: an honest taker runs its
+  // own balance preflight before proposing, and the accept path now verifies
+  // the claim on chain. Tests for the negative case use a fresh address.
+  node.fund(counterpartyAddress, QSR_ZTS, QUOTE_AMOUNT);
   const reservations = new FundsReservationRepository(new MemoryStorageDriver());
   const chainIdentifier = vi.fn(() => node.chainIdentifier());
   const frontierMomentum = vi.fn(() => node.frontierMomentum());
@@ -663,7 +667,11 @@ describe("trade start API", () => {
       balances: [{ tokenStandard: ZNN_ZTS, amount: "2000" }]
     });
     const first = await proposal(fixture.counterpartyAddress);
-    const second = await proposal(fixture.counterpartyAddress, order(), {
+    // A different, fully funded taker address: the taker-claim gates must both
+    // pass so the rejection can only come from the durable slot guard.
+    const otherTaker = fixture.node.createAddress("other-taker");
+    fixture.node.fund(otherTaker, QSR_ZTS, QUOTE_AMOUNT);
+    const second = await proposal(otherTaker, order(), {
       sessionId: "77".repeat(32),
       reservationId: "77777777-7777-4777-8777-777777777777",
       messageId: "88888888-8888-4888-8888-888888888888",
@@ -676,6 +684,56 @@ describe("trade start API", () => {
 
     expect(fixture.sessions.values).toHaveProperty("size", 1);
     expect([...fixture.sessions.values.keys()]).toEqual([sessionId]);
+  });
+
+  it("rejects a proposal whose claimed taker address cannot fund the trade", async () => {
+    // A reserve_propose costs the sender nothing; before the maker publishes
+    // a reservation and locks the base HTLC, the claimed taker address must
+    // at least hold what the taker side would have to lock.
+    const fixture = options({
+      balances: [{ tokenStandard: ZNN_ZTS, amount: BASE_AMOUNT }]
+    });
+    const pauper = fixture.node.createAddress("pauper");
+    const verified = await proposal(pauper);
+
+    await expect(fixture.api.acceptReserveProposal(verified))
+      .rejects.toThrow(/taker address cannot fund/i);
+    expect(fixture.sessions.createMakerForOrder).not.toHaveBeenCalled();
+  });
+
+  it("rejects a proposal reusing a taker address already backing a live session", async () => {
+    // One funded address must not be able to squat every order at once.
+    const fixture = options({
+      balances: [{ tokenStandard: ZNN_ZTS, amount: "2000" }]
+    });
+    const otherId = "22222222-2222-4222-8222-222222222222";
+    const second = order({
+      address: `30078:${maker}:zwap:order:v1:${otherId}`,
+      eventId: "45".repeat(32),
+      state: createOrderState({
+        orderId: otherId,
+        createdAt: now - 100,
+        expiresAt: now + 9 * 86_400,
+        side: "sell",
+        chainId: "1",
+        baseToken: ZNN_ZTS,
+        quoteToken: QSR_ZTS,
+        amount: BASE_AMOUNT,
+        price: PRICE
+      })
+    });
+    const first = await proposal(fixture.counterpartyAddress);
+    const reuse = await proposal(fixture.counterpartyAddress, second, {
+      sessionId: "77".repeat(32),
+      reservationId: "77777777-7777-4777-8777-777777777777",
+      messageId: "88888888-8888-4888-8888-888888888888",
+      entropyOffset: 12
+    });
+
+    await expect(fixture.api.acceptReserveProposal(first)).resolves.toBeDefined();
+    fixture.books.current = second;
+    await expect(fixture.api.acceptReserveProposal(reuse))
+      .rejects.toThrow(/already backing/i);
   });
 
   it("rejects unverified proposals and an insufficient maker base balance", async () => {

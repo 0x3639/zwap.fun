@@ -240,6 +240,11 @@ export class TradeApi {
       localAddress: this.settlementAddress()
     });
     await this.assertFunded(session, makerOfferedLeg(order.state.side));
+    // A reserve_propose costs its sender nothing, but accepting one costs the
+    // maker a published reservation, a funds reservation, and an on-chain
+    // HTLC. Before spending any of that, hold the proposal to the same
+    // standard the taker side already holds itself to before proposing.
+    await this.assertTakerClaim(session, takerFundingLeg(order.state.side));
     const persisted = await this.sessions.createMakerForOrder(session);
     this.assertBoundMaker(persisted, proposal);
     return publicTradeView(persisted);
@@ -310,6 +315,46 @@ export class TradeApi {
       throw new Error(
         `Insufficient ${entry?.symbol ?? tokenStandard} balance for this trade`
       );
+    }
+  }
+
+  /**
+   * The two costless-griefing gates for an incoming reservation proposal:
+   * the claimed taker address must actually hold what the taker leg will
+   * have to lock, and one funded address must not be able to back every
+   * order's reservation at once.
+   */
+  private async assertTakerClaim(
+    session: TradeSession,
+    takerLeg: "base" | "quote"
+  ): Promise<void> {
+    const takerAddress = session.privateState.counterpartyAddress;
+    if (takerAddress === null) {
+      throw new Error("Maker session is missing the proposal's taker address");
+    }
+    const tokenStandard = takerLeg === "base"
+      ? session.terms.baseToken
+      : session.terms.quoteToken;
+    const targetAmount = BigInt(
+      takerLeg === "base" ? session.terms.baseAmount : session.terms.quoteAmount
+    );
+    const balances = await this.chain.getBalances(takerAddress);
+    const entry = balances.find((item) => item.tokenStandard === tokenStandard);
+    if (BigInt(entry?.balance ?? "0") < targetAmount) {
+      throw new Error("Proposal's taker address cannot fund this trade");
+    }
+    const live = (await this.sessions.list()).some((item) =>
+      item.sessionId !== session.sessionId &&
+      item.role === "maker" &&
+      item.privateState.counterpartyAddress === takerAddress &&
+      item.phase !== "filled" &&
+      item.phase !== "released" &&
+      !(item.phase === "frozen" &&
+        item.reserveProjectionId === null &&
+        item.privateState.legs.base.htlcId === null &&
+        item.privateState.legs.quote.htlcId === null));
+    if (live) {
+      throw new Error("Taker address is already backing another live reservation");
     }
   }
 
