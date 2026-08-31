@@ -56,7 +56,7 @@ separate browser profiles):
 5. The full settle: take → quote lock → unlock ladder → fill projection,
    plus `docs/guides/live-test.md`'s reference-run checklist.
 
-## 4. Inbox robustness leftovers (medium)
+## 4. ~~Inbox robustness leftovers~~ — done (`ae3e445` + `6b7f9f7`, 2026-08-31)
 
 - `queryGiftWraps` uses `limit: 500` over a 48 h lookback; a flooded inbox
   can push the wanted wrap outside the relay's returned page (the client-side
@@ -66,6 +66,17 @@ separate browser profiles):
 - `handleSubscriptionError` swallows `relay_start` silently
   (`src/browser/trade-controller.ts`) — acceptable but undiagnosable; a
   one-line activity trace would help.
+
+Shipped: `queryGiftWraps` pages per relay by `until` (8-page cap,
+exclusive `until - 1` step past full-page timestamp plateaus, partial
+results kept when a later page fails), and `relay_start` now leaves a
+one-line activity trace via a new `onTrace` controller hook. Review
+minors deferred, not planned: per-page websocket/AUTH re-handshake in the
+production port (worst case 8 x 8 s per relay — consider connection reuse
+or a wall-clock budget if it bites), and the 32 KiB wrap-size check still
+running post-collection (a hostile relay can park up to ~4000 oversized
+blobs per relay transiently; a per-page size pre-filter would restore the
+old ceiling).
 
 ## 5. Upstream and external waits
 
