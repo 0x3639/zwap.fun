@@ -88,6 +88,21 @@ old ceiling).
 - **`INSTALL_URL`** in `src/ui/wallet-control.ts` is a placeholder pointing
   at the extension's repository; pin it when the store listing exists.
 
+## 6. Security-pass follow-ups (2026-08-31, decisions pending)
+
+From the post-review security pass over `6aecb7b..e4a0caf` (no reportable
+findings; quick wins shipped on `fix/security-hardening`):
+
+- **`assertTakerClaim` proof-of-control**: the anti-squatting gate trusts
+  the claimed taker address (`src/api/trade-api.ts`). Residual risk is
+  DoS-class squatting, already blunted by the `withdrawn` release. Either
+  accept-and-document, or fold a wallet-signed session-bound challenge
+  into the take flow next time it changes.
+- **Generate the CSP from one source at build time** instead of four
+  hand-kept copies (the consistency test now guards all four).
+- **Re-run the external security review** after the manual mainnet test
+  and before launch, on the running system.
+
 ## Accepted limitations (documented, not planned)
 
 - Per-session Nostr secret keys exist transiently as immutable JS strings;
