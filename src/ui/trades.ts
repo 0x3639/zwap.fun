@@ -146,10 +146,6 @@ const MESSAGE_COPY: Record<TradeMessageType, {
     title: "Accepted · offer locked",
     meaning: "The maker accepts and names the Zenon HTLC that locks the offered token."
   },
-  reserve_reject: {
-    title: "Reservation rejected",
-    meaning: "The maker declines the reservation request."
-  },
   session_ack: {
     title: "Session acknowledged",
     meaning: "The taker confirms the private settlement session and its terms."
@@ -174,14 +170,6 @@ const MESSAGE_COPY: Record<TradeMessageType, {
   claim_notice: {
     title: "Unlock observed",
     meaning: "A verified chain observation proves that one leg of the swap was unlocked."
-  },
-  ack: {
-    title: "Message acknowledged",
-    meaning: "The counterparty confirms receipt of the preceding protocol message."
-  },
-  abort: {
-    title: "Swap aborted",
-    meaning: "The session requests the protocol-safe abort and reclaim path."
   },
   fill_request: {
     title: "Fill requested",

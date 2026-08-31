@@ -126,7 +126,7 @@ describe("strict Zwap NIP-17 messages", () => {
     })).rejects.toThrow(/revision/i);
 
     const later = await proposal({
-      type: "ack",
+      type: "quote_lock",
       sequence: "1",
       previous_message_id: message.message_id,
       previous_transcript_hash: "88".repeat(32)
@@ -387,7 +387,7 @@ describe("strict Zwap NIP-17 messages", () => {
 
   it("requires an exact predecessor for later transcript messages", async () => {
     const message = await proposal({
-      type: "ack",
+      type: "quote_lock",
       message_id: "77777777-7777-4777-8777-777777777777",
       sequence: "1",
       previous_message_id: "11111111-1111-4111-8111-111111111111",

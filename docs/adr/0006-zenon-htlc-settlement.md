@@ -208,12 +208,20 @@ is shorter, and this is deliberate:
 
 - `reserve_accept` advances straight to `awaiting_quote_lock`, and `quote_lock`
   straight to `settling`. The acknowledgement and courtesy messages
-  `session_ack`, `base_lock_ack`, `quote_lock_ack`, `claim_notice`,
-  `fill_request` and `settlement_ack` are **currently unreachable**: they are
-  still validated and still advance the choreography if one ever arrives, but
-  no code path stages them. Their planner branches remain as dead-but-correct
+  `session_ack`, `base_lock`, `base_lock_ack`, `quote_lock_ack`,
+  `claim_notice`, `fill_request` and `settlement_ack` are **currently
+  unreachable** (`base_lock` included: `reserve_accept` carries the base lock
+  inline, so the standalone message can never be awaited): they are still
+  validated and still advance the choreography if one ever arrives, but no
+  code path stages them. Their planner branches remain as dead-but-correct
   code rather than being deleted, so re-enabling the fuller handshake is a
   staging change, not a protocol change.
+- 2026-08-30: `ack`, `abort` and `reserve_reject`, by contrast, were removed
+  from `TRADE_MESSAGE_TYPES` entirely. Unlike the set above they were never
+  members of the atomic-swap schema, so no layer could validate or consume
+  them even in principle - they were dead at the type level, undocumented,
+  and pure audit surface. A maker declines a reservation by letting it
+  expire.
 - Nothing is lost by their absence because **the chain is authoritative**: each
   side re-reads every HTLC with `getById` and learns every spend from a decoded
   account block. An acknowledgement DM can only ever restate what the chain

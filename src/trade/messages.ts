@@ -21,15 +21,12 @@ export type JsonValue =
 export const TRADE_MESSAGE_TYPES = [
   "reserve_propose",
   "reserve_accept",
-  "reserve_reject",
   "session_ack",
   "base_lock",
   "base_lock_ack",
   "quote_lock",
   "quote_lock_ack",
   "claim_notice",
-  "ack",
-  "abort",
   "fill_request",
   "settlement_ack",
   "refund",
@@ -381,7 +378,7 @@ async function assertMessage(value: unknown): Promise<ZwapTradeMessage> {
   if (message.type === "reserve_propose" && message.recipient_pubkey !== maker) {
     throw new Error("Reservation proposal recipient must be the maker order key");
   }
-  if (["reserve_accept", "reserve_reject"].includes(message.type as string) && message.author_pubkey !== maker) {
+  if (message.type === "reserve_accept" && message.author_pubkey !== maker) {
     throw new Error("Reservation response must be authored by the maker order key");
   }
   return message as unknown as ZwapTradeMessage;
