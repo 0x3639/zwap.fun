@@ -453,7 +453,15 @@ export async function queryGiftWraps(
             kinds: [1059], "#p": [recipientPubkey], since, limit: GIFT_WRAP_QUERY_PAGE_LIMIT
           };
           if (until !== undefined) filter.until = until;
-          const events = await port.query(relay, filter, auth);
+          let events: NostrEvent[];
+          try {
+            events = await port.query(relay, filter, auth);
+          } catch (error) {
+            // A dead relay keeps its old all-or-nothing semantics, but a
+            // failure deeper into the walk must not discard fetched pages.
+            if (page === 0) throw error;
+            break;
+          }
           let added = 0;
           let oldest = Number.POSITIVE_INFINITY;
           for (const event of events) {
@@ -467,11 +475,19 @@ export async function queryGiftWraps(
           }
           if (
             events.length < GIFT_WRAP_QUERY_PAGE_LIMIT ||
-            added === 0 ||
             !Number.isFinite(oldest) ||
             oldest <= since
           ) break;
-          until = oldest;
+          // A full page of already-seen events means >= limit wraps share one
+          // timestamp; step past it exclusively rather than giving up, so a
+          // same-second flood hides at most its own overflow, not everything
+          // older. `until` strictly decreases, so this still terminates.
+          if (added === 0) {
+            if (oldest - 1 < since) break;
+            until = oldest - 1;
+          } else {
+            until = oldest;
+          }
         }
         return [...collected.values()];
       } catch {

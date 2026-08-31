@@ -502,6 +502,7 @@ describe("gift-wrap query paging", () => {
    */
   class PagingRelayPort implements InboxRelayPort {
     readonly filters: Array<Record<string, unknown>> = [];
+    failFromQuery: number | undefined;
 
     constructor(private readonly events: NostrEvent[]) {}
 
@@ -519,6 +520,9 @@ describe("gift-wrap query paging", () => {
       auth: AuthHandler
     ): Promise<NostrEvent[]> {
       await auth(`challenge:${queriedRelay}`);
+      if (this.failFromQuery !== undefined && this.filters.length >= this.failFromQuery) {
+        throw new Error("relay dropped mid-walk");
+      }
       this.filters.push(filter);
       const since = filter.since as number;
       const until = filter.until as number | undefined;
@@ -576,15 +580,29 @@ describe("gift-wrap query paging", () => {
     });
   });
 
-  it("stops when a full page yields no new events (timestamp plateau)", async () => {
+  it("steps past a full-page timestamp plateau with until - 1", async () => {
     const wanted = validWrapAt(now - 500);
     const flood = Array.from({ length: 500 }, (_, index) =>
       floodWrapAt(now - 100, index + 1));
     const port = new PagingRelayPort([...flood, wanted]);
 
     await expect(queryGiftWraps(recipient, [relay], recipientKey, port, now - 900, now))
-      .resolves.toEqual([]);
-    expect(port.filters.length).toBe(2);
+      .resolves.toEqual([structuredClone(wanted)]);
+    expect(port.filters.length).toBe(3);
+    expect(port.filters[1]).toMatchObject({ until: now - 100 });
+    expect(port.filters[2]).toMatchObject({ until: now - 101 });
+  });
+
+  it("keeps already-fetched pages when a later page query fails", async () => {
+    const wanted = validWrapAt(now - 5);
+    const flood = Array.from({ length: 499 }, (_, index) =>
+      floodWrapAt(now - 200 - index, index + 1));
+    const port = new PagingRelayPort([...flood, wanted]);
+    port.failFromQuery = 1;
+
+    await expect(queryGiftWraps(recipient, [relay], recipientKey, port, now - 900, now))
+      .resolves.toEqual([structuredClone(wanted)]);
+    expect(port.filters.length).toBe(1);
   });
 
   it("gives up after eight pages per relay", async () => {
