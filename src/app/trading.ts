@@ -225,6 +225,11 @@ export function createTradingSurface(input: TradingSurfaceInput): TradingSurface
     });
     const token = requirement.token === "base" ? ZNN_ZTS : QSR_ZTS;
     const state = await input.requireWallet().getState();
+    if (state.wallet !== "connected") {
+      // Without a wallet the balances are empty by definition; "holds 0 ZNN"
+      // would name the wrong problem.
+      throw new Error("Connect your wallet before posting an order");
+    }
     const held = state.balances.find((balance) => balance.tokenStandard === token);
     if (held === undefined || BigInt(held.balance) < BigInt(requirement.amount)) {
       // Say it in the units the form speaks, not the integers underneath.

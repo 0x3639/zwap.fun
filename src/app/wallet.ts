@@ -118,12 +118,23 @@ export function createWalletSurface(input: WalletSurfaceInput): WalletSurface {
    */
   function setWalletGating(connected: boolean): void {
     document.documentElement.dataset.zwapWallet = connected ? "connected" : "disconnected";
+    // While the node-unreachable banner owns these buttons, gating stays out.
+    if (status.blockedReason() !== undefined) return;
     for (const node of document.querySelectorAll<HTMLButtonElement>(
       "#order-form button[type=submit], [data-requires-wallet]"
     )) {
-      if (status.blockedReason() !== undefined) continue;
       node.disabled = !connected;
-      node.title = connected ? "" : "Connect your wallet first";
+      if (connected) {
+        // Restore whatever tooltip the button carried before gating touched
+        // it, rather than clobbering authored titles to "".
+        node.title = node.dataset.walletGatedTitle ?? "";
+        delete node.dataset.walletGatedTitle;
+      } else {
+        if (node.title !== "" && node.title !== "Connect your wallet first") {
+          node.dataset.walletGatedTitle = node.title;
+        }
+        node.title = "Connect your wallet first";
+      }
     }
   }
 

@@ -93,7 +93,9 @@ export class ZwapApi {
   async getState(): Promise<ZwapState> {
     const base = {
       wallet: this.status(),
-      providerName: this.provider?.info?.name ?? (this.provider === null ? null : "Browser extension"),
+      providerName: this.provider === null
+        ? null
+        : this.provider.info?.name ?? "Browser extension",
       network: this.config.network,
       chainId: this.config.chainId
     };

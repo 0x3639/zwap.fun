@@ -63,6 +63,9 @@ function closeMenu(root: HTMLElement): void {
   entry.openFor = null;
   const menu = root.querySelector<HTMLElement>("[role=menu]");
   const pill = root.querySelector<HTMLButtonElement>("button[data-wallet-pill]");
+  // An ARIA menu returns focus to its trigger; without this, closing via
+  // Escape strands keyboard focus on a hidden element.
+  if (menu?.contains(document.activeElement)) pill?.focus();
   if (menu) menu.hidden = true;
   pill?.setAttribute("aria-expanded", "false");
   entry.teardown?.();
@@ -76,6 +79,9 @@ function openMenu(root: HTMLElement, address: string): void {
   const pill = root.querySelector<HTMLButtonElement>("button[data-wallet-pill]");
   if (menu) menu.hidden = false;
   pill?.setAttribute("aria-expanded", "true");
+  // The counterpart of the close-time focus return: an ARIA menu receives
+  // focus when it opens.
+  menu?.querySelector<HTMLButtonElement>("button")?.focus();
   const onKey = (event: KeyboardEvent): void => {
     if (event.key === "Escape") closeMenu(root);
   };

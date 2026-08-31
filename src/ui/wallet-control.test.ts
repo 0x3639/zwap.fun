@@ -96,6 +96,31 @@ describe("renderWalletControl", () => {
     expect(menu.hidden).toBe(true);
   });
 
+  it("moves focus into the menu on open and back to the pill on Escape", () => {
+    renderWalletControl(root, state({ wallet: "connected", address: ADDRESS }), handlers());
+    const pill = root.querySelector<HTMLButtonElement>("button[data-wallet-pill]")!;
+
+    pill.click();
+    expect(document.activeElement)
+      .toBe(root.querySelector("button[data-wallet-copy]"));
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(root.querySelector<HTMLElement>("[role=menu]")?.hidden).toBe(true);
+    expect(document.activeElement).toBe(pill);
+  });
+
+  it("cleans itself up when the root leaves the DOM while the menu is open", () => {
+    renderWalletControl(root, state({ wallet: "connected", address: ADDRESS }), handlers());
+    root.querySelector<HTMLButtonElement>("button[data-wallet-pill]")!.click();
+    const menu = root.querySelector<HTMLElement>("[role=menu]")!;
+    expect(menu.hidden).toBe(false);
+
+    root.remove();
+    // The next document event finds the root detached and tears down.
+    document.body.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    expect(menu.hidden).toBe(true);
+  });
+
   it("keeps the menu open across a re-render with the same address", () => {
     const h = handlers();
     renderWalletControl(root, state({ wallet: "connected", address: ADDRESS }), h);
