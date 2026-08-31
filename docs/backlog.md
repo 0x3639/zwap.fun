@@ -5,7 +5,7 @@ Open follow-ups, in recommended order. Each item is scoped to be implemented
 review, the DM-handling trace, per-task code reviews, and deliberate
 deferrals recorded in commit messages.
 
-## 1. Wallet-control polish batch (small, no decisions)
+## 1. ~~Wallet-control polish batch~~ — done (`eff52eb`, 2026-08-31)
 
 Deferred minors that share one component surface:
 
@@ -25,7 +25,7 @@ Deferred minors that share one component surface:
   (`src/app/trading.ts`).
 - **Readability**: the `providerName` ternary in `src/api/zwap-api.ts`.
 
-## 2. Early release of an abandoned reservation (wire change — needs a go)
+## 2. ~~Early release of an abandoned reservation~~ — done (`39a14fa`, 2026-08-31; new `withdrawn` release reason)
 
 After the deferred-base-lock change, a squatting proposal costs the maker
 nothing on chain but still holds the order's public slot until
