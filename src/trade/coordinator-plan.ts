@@ -434,6 +434,27 @@ function planCoordinatorAction(
   }
 
   if (terminal(session)) return { kind: "none" };
+  if (
+    session.phase === "frozen" &&
+    session.role === "maker" &&
+    session.reserveProjectionId !== null &&
+    session.privateState.legs.base.htlcId === null &&
+    session.privateState.legs.quote.htlcId === null
+  ) {
+    // Frozen holding nothing but still owing a published reservation: the
+    // order book gets its slot back through a withdrawn release instead of
+    // squatting the maker's own order until reservation expiry.
+    const pending = session.pendingOrderPublication;
+    if (pending === null) return { kind: "stage_order_release" };
+    if (pending.operation === "release") {
+      return pending.status === "committed"
+        ? { kind: "none" }
+        : { kind: "stage_order_release" };
+    }
+    return pending.operation === "reserve" && pending.status === "committed"
+      ? { kind: "clear_order_publication" }
+      : { kind: "enter_recovery" };
+  }
   if (session.privateState.transcript.choreography.phase === "settled") {
     return { kind: "enter_recovery" };
   }

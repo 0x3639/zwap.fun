@@ -829,12 +829,18 @@ export class ZwapCoordinatorEffects implements CoordinatorEffectPort {
       if (!session.reserveProjectionId || !session.reserveProjectionRevision) {
         throw new Error("Release staging lacks the reserve head");
       }
+      // A frozen session holding nothing withdraws its reservation early -
+      // the whole point of the deferred base lock. A session that walked the
+      // refund ladder waited the reservation out and releases as expired.
+      const withdrawn = session.phase === "frozen" &&
+        session.privateState.legs.base.htlcId === null &&
+        session.privateState.legs.quote.htlcId === null;
       const request: PublishReleaseInput = {
         address: session.orderAddress,
         expectedProjectionId: session.reserveProjectionId,
         expectedRevision: session.reserveProjectionRevision,
         reservationId: session.reservationId,
-        reason: "expired"
+        reason: withdrawn ? "withdrawn" : "expired"
       };
       progress = await this.orderApi.ensureReleaseStaged(request);
     }

@@ -296,6 +296,19 @@ describe("atomic swap coordinator action planning", () => {
       .toBe(action);
   });
 
+  it("withdraws the published reservation of a frozen maker holding nothing", () => {
+    // The anti-squatting endgame: a maker frozen before locking anything owes
+    // the order book a release, not a 70-minute wait for reservation expiry.
+    const frozen = session("maker", "failed");
+    frozen.phase = "frozen";
+    frozen.reserveProjectionId = "44".repeat(32);
+    frozen.evidence.reserveProjectionId = frozen.reserveProjectionId;
+    expect(nextCoordinatorAction(frozen, NOW).kind).toBe("stage_order_release");
+
+    setCommittedPublication(frozen, "release", frozen.reserveProjectionId);
+    expect(nextCoordinatorAction(frozen, NOW).kind).toBe("none");
+  });
+
   it("stages each protocol message only after its durable prerequisite exists", () => {
     const reserve = session("maker", "awaiting_reserve_accept");
     reserve.reserveProjectionId = "44".repeat(32);

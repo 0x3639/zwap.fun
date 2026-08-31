@@ -35,7 +35,7 @@ export interface FillOrderEvidence {
 }
 
 export interface ReleaseOrderEvidence {
-  release_reason: "expired" | "abort";
+  release_reason: "expired" | "abort" | "withdrawn";
   abort_event_id?: string;
 }
 

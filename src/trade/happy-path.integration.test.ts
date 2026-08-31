@@ -562,13 +562,23 @@ describe("two-party Zenon atomic swap", () => {
     const trace = await drive(value, [value.maker]);
 
     expect(trace[0]).toBe("maker:enter_recovery");
-    const frozen = await session(value.maker);
-    expect(frozen.phase).toBe("frozen");
-    expect(frozen.privateState.legs.base.htlcId).toBeNull();
-    expect(frozen.privateState.legs.quote.htlcId).toBeNull();
+    expect(trace).toContain("maker:stage_order_release");
+    const released = await session(value.maker);
+    expect(released.phase).toBe("released");
+    expect(released.privateState.legs.base.htlcId).toBeNull();
+    expect(released.privateState.legs.quote.htlcId).toBeNull();
     // No lock, no refund, no reservation: the maker's funds never moved.
     expect(await balance(value.node, value.maker.address, ZNN_ZTS)).toBe(BASE_AMOUNT);
     expect((await value.maker.reservations.load()).reservations).toEqual([]);
+    // And the order book got its slot back through a withdrawn release.
+    const published = await value.orderService.loadLatestPublishedProjection(
+      released.orderAddress
+    );
+    expect(published.record.state).toMatchObject({
+      status: "open",
+      reserved_amount: "0",
+      reservation: null
+    });
   }, 60_000);
 
   it("refunds the maker after a slept-through cutoff when the taker never locks", async () => {

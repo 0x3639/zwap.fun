@@ -79,7 +79,7 @@ export interface FillOrderInput {
 
 export interface ReleaseOrderInput {
   reservationId: string;
-  reason: "expired" | "abort";
+  reason: "expired" | "abort" | "withdrawn";
   releasedAt: number;
   abortEventId?: string;
 }
@@ -353,6 +353,13 @@ export function releaseOrder(state: OrderState, input: ReleaseOrderInput): Order
   } else if (input.reason === "abort") {
     if (!input.abortEventId || !isHex32(input.abortEventId)) {
       throw new Error("Abort release requires a signed abort event ID");
+    }
+  } else if (input.reason === "withdrawn") {
+    // Self-authorized early release: the projection is signed by the maker
+    // order key, and only the maker loses anything by withdrawing its own
+    // reservation - so no expiry wait and no counterparty evidence needed.
+    if (input.abortEventId !== undefined) {
+      throw new Error("Withdrawn release cannot reference an abort event");
     }
   } else {
     throw new Error("Reservation release reason is invalid");

@@ -297,6 +297,17 @@ describe("Zwap order model", () => {
 
     expect(releaseOrder(reserved, {
       reservationId: reserved.reservation!.id,
+      reason: "withdrawn",
+      releasedAt: reserved.reservation!.accepted_at + 1
+    }).reservation).toBeNull();
+    expect(() => releaseOrder(reserved, {
+      reservationId: reserved.reservation!.id,
+      reason: "withdrawn",
+      releasedAt: reserved.reservation!.accepted_at + 1,
+      abortEventId: "ab".repeat(32)
+    })).toThrow(/withdrawn release cannot reference an abort event/i);
+    expect(releaseOrder(reserved, {
+      reservationId: reserved.reservation!.id,
       reason: "abort",
       releasedAt: 1_700_000_200,
       abortEventId: "c".repeat(64)

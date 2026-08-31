@@ -105,7 +105,7 @@ export type PublishReleaseInput = CurrentProjectionBinding & {
   reservationId: string;
 } & (
   | {
-      reason: "expired";
+      reason: "expired" | "withdrawn";
       abortEventId?: never;
     }
   | {
@@ -487,9 +487,9 @@ export class OrderApi {
       }
       abortEventId = input.abortMessage.seal.id;
     }
-    const evidence: OrderOperationEvidence = input.reason === "expired"
-      ? { release_reason: "expired" }
-      : { release_reason: "abort", abort_event_id: abortEventId! };
+    const evidence: OrderOperationEvidence = input.reason === "abort"
+      ? { release_reason: "abort", abort_event_id: abortEventId! }
+      : { release_reason: input.reason };
     const compatibility = bindingCompatibility("release", input, {
       reservationId: input.reservationId,
       reason: input.reason,
