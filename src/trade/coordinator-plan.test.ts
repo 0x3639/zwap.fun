@@ -300,13 +300,14 @@ describe("atomic swap coordinator action planning", () => {
     const reserve = session("maker", "awaiting_reserve_accept");
     reserve.reserveProjectionId = "44".repeat(32);
     reserve.evidence.reserveProjectionId = reserve.reserveProjectionId;
+    // The acceptance goes out as soon as the reservation is published: the
+    // base lock now waits for session_ack in the awaiting_base_lock arm.
     expect(nextCoordinatorAction(reserve, NOW).kind)
-      .toBe("prepare_base_lock");
+      .toBe("stage_reserve_accept");
     setCommittedPublication(reserve, "reserve", reserve.reserveProjectionId);
     expect(nextCoordinatorAction(reserve, NOW).kind)
       .toBe("clear_order_publication");
     reserve.pendingOrderPublication = null;
-    markLockReady(reserve, "base");
     expect(nextCoordinatorAction(reserve, NOW).kind)
       .toBe("stage_reserve_accept");
 

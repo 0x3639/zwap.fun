@@ -452,6 +452,20 @@ describe("two-party Zenon atomic swap", () => {
     });
     await startMaker(value);
 
+    // The acceptance stage is chain-free by design: until the taker's
+    // session_ack arrives the maker has published a reservation but holds no
+    // HTLC and has no chain operation in flight.
+    await drive(value, [value.maker, value.taker], {
+      stopWhen: (party, current) =>
+        party.role === "maker" &&
+        current.privateState.transcript.choreography.phase === "awaiting_session_ack"
+    });
+    const accepted = await session(value.maker);
+    expect(accepted.reserveProjectionId).not.toBeNull();
+    expect(accepted.privateState.legs.base.htlcId).toBeNull();
+    expect(accepted.privateState.legs.quote.htlcId).toBeNull();
+    expect(accepted.privateState.chainOperation).toBeNull();
+
     const trace = await drive(value, [value.maker, value.taker]);
 
     expect(trace.some((action) =>
@@ -525,6 +539,36 @@ describe("two-party Zenon atomic swap", () => {
 
   it("settles a buy-side order with the market legs reversed", async () => {
     await settle("buy");
+  }, 60_000);
+
+  it("freezes a maker abandoned before session_ack with nothing on chain", async () => {
+    // The point of deferring the base lock: a reservation proposal that is
+    // never followed up costs the maker no chain funds and no plasma - only
+    // the published reservation, which expires on its own.
+    const value = await stack("sell");
+    await startTaker(value);
+    await drive(value, [value.taker], {
+      stopWhen: (_party, current) =>
+        current.privateState.transcript.choreography.phase === "awaiting_reserve_accept"
+    });
+    await startMaker(value);
+    await drive(value, [value.maker], {
+      stopWhen: (_party, current) =>
+        current.privateState.transcript.choreography.phase === "awaiting_session_ack"
+    });
+
+    const accepted = await session(value.maker);
+    value.clock.now = accepted.plan.reservationExpiresAt;
+    const trace = await drive(value, [value.maker]);
+
+    expect(trace[0]).toBe("maker:enter_recovery");
+    const frozen = await session(value.maker);
+    expect(frozen.phase).toBe("frozen");
+    expect(frozen.privateState.legs.base.htlcId).toBeNull();
+    expect(frozen.privateState.legs.quote.htlcId).toBeNull();
+    // No lock, no refund, no reservation: the maker's funds never moved.
+    expect(await balance(value.node, value.maker.address, ZNN_ZTS)).toBe(BASE_AMOUNT);
+    expect((await value.maker.reservations.load()).reservations).toEqual([]);
   }, 60_000);
 
   it("refunds the maker after a slept-through cutoff when the taker never locks", async () => {

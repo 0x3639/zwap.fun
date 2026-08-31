@@ -161,9 +161,6 @@ const QUOTE_RUNG_SOURCES: readonly TradePhase[] = [
 const transitions = new Map<string, TradePhase>([
   ["negotiating:reserve_confirmed", "reserved"],
   ["reserved:base_lock_validated", "base_locked"],
-  // The maker publishes its base lock inside `reserve_accept`, so a maker can
-  // jump straight from negotiating to a locked base leg.
-  ["negotiating:base_lock_validated", "base_locked"],
   ["base_locked:quote_lock_validated", "quote_locked"],
   ["quote_locked:quote_spent_with_preimage", "quote_claimed"],
   ["quote_claimed:base_spent", "base_claimed"],

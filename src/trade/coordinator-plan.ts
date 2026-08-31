@@ -464,11 +464,10 @@ function planCoordinatorAction(
       return session.role === "maker"
         ? session.reserveProjectionId === null
           ? { kind: "stage_order_reserve" }
-          : session.privateState.legs[slotLeg(session, "base")].htlcId === null
-            ? { kind: "prepare_base_lock" }
-            : lockReady(session, "base")
-              ? { kind: "stage_reserve_accept" }
-              : { kind: "enter_recovery" }
+          // The base lock now waits for the taker's session_ack (the
+          // awaiting_base_lock arm below): acceptance costs the maker a
+          // public reservation, never chain funds.
+          : { kind: "stage_reserve_accept" }
         : { kind: "poll_inbox" };
     case "awaiting_session_ack":
       if (now >= session.plan.makerClaimCutoff) return { kind: "enter_recovery" };

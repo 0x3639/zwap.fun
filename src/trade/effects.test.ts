@@ -994,7 +994,7 @@ describe("ZwapCoordinatorEffects", () => {
     });
   });
 
-  describe("validate_incoming for a reserve_accept body", () => {
+  describe("validate_incoming across the acceptance and lock stages", () => {
     async function acceptance(
       htlcAmount: string,
       shortLockSeconds?: number
@@ -1002,6 +1002,7 @@ describe("ZwapCoordinatorEffects", () => {
       context: Harness;
       pending: TradeSession;
       body: AtomicSwapBody<"reserve_accept">;
+      completed: Awaited<ReturnType<Harness["maker"]["chain"]["completeLock"]>>;
     }> {
       const context = harness({
         makerBalance: "40",
@@ -1027,19 +1028,7 @@ describe("ZwapCoordinatorEffects", () => {
         maker_claim_cutoff: MAKER_CLAIM_CUTOFF,
         long_locktime: LONG_LOCKTIME,
         taker_claim_cutoff: TAKER_CLAIM_CUTOFF,
-        reservation_expires_at: RESERVATION_EXPIRES_AT,
-        base_lock: {
-          schema: "zwap/atomic-swap-body/v1",
-          htlc_id: completed.htlcId,
-          validation_commitment: completed.summary.validationCommitment,
-          settlement_hash: HTLC_HASH,
-          chain_id: "1",
-          token_standard: ZNN_ZTS,
-          amount: "20",
-          hash_locked_address: addresses.taker,
-          time_locked_address: addresses.maker,
-          expiration_time: LONG_LOCKTIME
-        }
+        reservation_expires_at: RESERVATION_EXPIRES_AT
       };
       // A taker that has only sent reserve_propose: it knows neither the
       // maker's settlement address nor the hash lock until this message.
@@ -1109,27 +1098,114 @@ describe("ZwapCoordinatorEffects", () => {
         receivedAt: NOW - 5,
         validation: { status: "unvalidated", checkedAt: null, error: null }
       };
-      return { context, pending, body };
+      return { context, pending, body, completed };
     }
 
-    it("binds the maker address, hash lock and base leg from the acceptance", async () => {
+    function lockPending(
+      context: Harness,
+      completed: Awaited<ReturnType<Harness["maker"]["chain"]["completeLock"]>>,
+      amount: string
+    ): TradeSession {
+      // The base leg now arrives as its own message, after the acceptance has
+      // already committed the plan, maker address and settlement hash - which
+      // is exactly the harness's default taker state.
+      const { addresses } = context;
+      const lockBody = {
+        schema: "zwap/atomic-swap-body/v1",
+        htlc_id: completed.htlcId,
+        validation_commitment: completed.summary.validationCommitment,
+        settlement_hash: HTLC_HASH,
+        chain_id: "1",
+        token_standard: ZNN_ZTS,
+        amount,
+        hash_locked_address: addresses.taker,
+        time_locked_address: addresses.maker,
+        expiration_time: LONG_LOCKTIME
+      };
+      const session = boundSession("taker", addresses);
+      const message: ZwapTradeMessage = {
+        schema: "zwap/dm/v1",
+        deployment: NETWORK,
+        type: "base_lock",
+        message_id: "11111111-1111-4111-8111-111111111118",
+        session_id: FIXTURE_SESSION_ID,
+        reservation_id: FIXTURE_RESERVATION_ID,
+        order_address: FIXTURE_ORDER_ADDRESS,
+        order_projection_id: RESERVE_PROJECTION_ID,
+        order_revision: "1",
+        maker_order_pubkey: FIXTURE_MAKER_PUBKEY,
+        author_pubkey: COUNTERPARTY_PUBKEY,
+        recipient_pubkey: FIXTURE_SESSION_PUBKEY,
+        sequence: "3",
+        previous_message_id: LAST_MESSAGE_ID,
+        previous_transcript_hash: LAST_TRANSCRIPT_HASH,
+        sent_at: NOW - 10,
+        expires_at: NOW + 300,
+        terms_hash: TERMS_HASH,
+        body: lockBody
+      };
+      const opened = {
+        wrapper: event(1059, "b6", [["p", FIXTURE_SESSION_PUBKEY]]),
+        seal: event(13, "b5"),
+        rumor: {
+          kind: 14 as const,
+          created_at: NOW - 10,
+          tags: [["p", FIXTURE_SESSION_PUBKEY]],
+          content: "encrypted-rumor",
+          id: "b4".repeat(32),
+          pubkey: FIXTURE_MAKER_PUBKEY
+        },
+        message,
+        transcriptHash: "7b".repeat(32)
+      };
+      // The retry check re-opens the wrapper; serve the lock, not the accept.
+      Object.assign(context.taker.effects, { openIncoming: async () => clone(opened) });
+      session.privateState.pendingIncoming = {
+        ...clone(opened),
+        receivedAt: NOW - 5,
+        validation: { status: "unvalidated", checkedAt: null, error: null }
+      };
+      return session;
+    }
+
+    it("binds the maker address and settlement hash from the lock-free acceptance", async () => {
       const { context, pending, body } = await acceptance("20");
 
       const validated = await context.taker.effects.performExternal(
         externalInput({ kind: "validate_incoming" }, pending)
       );
+      const committed = await context.taker.effects.applyLocal({
+        action: { kind: "commit_incoming" },
+        session: validated,
+        now: NOW
+      });
 
-      expect(validated.privateState.counterpartyAddress)
+      // Nothing on chain yet: the acceptance fixes identity and deadlines only.
+      expect(validated.privateState.pendingIncoming?.validation.status)
+        .toBe("validated");
+      expect(committed.privateState.counterpartyAddress)
         .toBe(context.addresses.maker);
-      expect(validated.privateState.htlcHash).toBe(body.settlement_hash);
-      expect(validated.evidence.commitments).toEqual([body.settlement_hash]);
-      expect(validated.privateState.legs.base.htlcId)
-        .toBe(body.base_lock.htlc_id);
+      expect(committed.privateState.htlcHash).toBe(body.settlement_hash);
+      expect(committed.evidence.commitments).toEqual([body.settlement_hash]);
+      expect(committed.privateState.legs.base.htlcId).toBeNull();
+      expect(committed.privateState.transcript.choreography.phase)
+        .toBe("awaiting_session_ack");
+    });
+
+    it("binds the base leg from the standalone lock message", async () => {
+      const { context, completed } = await acceptance("20");
+      const pending = lockPending(context, completed, "20");
+
+      const validated = await context.taker.effects.performExternal(
+        externalInput({ kind: "validate_incoming" }, pending)
+      );
+
+      expect(validated.privateState.legs.base.htlcId).toBe(completed.htlcId);
       expect(validated.privateState.legs.base.expected)
         .toEqual(expectedFor("base", context.addresses));
       expect(validated.evidence.legs.base).toMatchObject({
-        htlcId: body.base_lock.htlc_id,
-        validationCommitment: body.base_lock.validation_commitment,
+        htlcId: completed.htlcId,
+        validationCommitment: completed.summary.validationCommitment,
         htlcState: "LOCKED",
         observedAt: NOW
       });
@@ -1160,8 +1236,9 @@ describe("ZwapCoordinatorEffects", () => {
       });
     });
 
-    it("rejects a nested base_lock whose on-chain amount was tampered with", async () => {
-      const { context, pending } = await acceptance("19");
+    it("rejects a lock message whose on-chain amount was tampered with", async () => {
+      const { context, completed } = await acceptance("19");
+      const pending = lockPending(context, completed, "20");
 
       const failure = await context.taker.effects.performExternal(
         externalInput({ kind: "validate_incoming" }, pending)

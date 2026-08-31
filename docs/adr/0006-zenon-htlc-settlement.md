@@ -206,16 +206,33 @@ The design in `docs/superpowers/specs/2026-08-28-zwap-zenon-dex-design.md`
 describes the full granola message choreography. The implemented choreography
 is shorter, and this is deliberate:
 
-- `reserve_accept` advances straight to `awaiting_quote_lock`, and `quote_lock`
-  straight to `settling`. The acknowledgement and courtesy messages
-  `session_ack`, `base_lock`, `base_lock_ack`, `quote_lock_ack`,
+- 2026-08-31: the base lock is **deferred behind `session_ack`**. This was a
+  wire-format change, not just a staging change: `ReserveAcceptBody` lost its
+  required inline `base_lock` field (a flag-day break - pre-change clients
+  fail closed on the exact-key check in either direction). The live ladder is
+  now `reserve_propose -> reserve_accept -> session_ack -> base_lock ->
+  quote_lock`. The maker publishes its reservation and fixes the deadlines at
+  acceptance but creates the base HTLC only after the taker's `session_ack`,
+  so a costless reservation proposal can no longer make the maker lock funds
+  or spend plasma; an abandoned proposal freezes the maker session with
+  nothing on chain. The `session_ack` rebind of `settlementTranscriptHash`
+  also now happens before either side records an expected lock, closing a
+  latent ordering conflict with the durable leg-evidence pins. The base
+  lock's expiration is still the plan's absolute `longLocktime`, so deferral
+  only shortens the maker's on-chain exposure; all cutoffs are unchanged and
+  the extra round trip fits inside the ~1600 s budget before
+  `makerClaimCutoff`. One cost is deliberately accepted: an abandoned
+  reservation still occupies the order's public slot until
+  `reservationExpiresAt` (long + grace, ~70 min) - releasing it earlier would
+  need a self-authorized early-release reason in the projection schema.
+- `quote_lock` still advances straight to `settling`. The remaining
+  acknowledgement and courtesy messages `base_lock_ack`, `quote_lock_ack`,
   `claim_notice`, `fill_request` and `settlement_ack` are **currently
-  unreachable** (`base_lock` included: `reserve_accept` carries the base lock
-  inline, so the standalone message can never be awaited): they are still
-  validated and still advance the choreography if one ever arrives, but no
-  code path stages them. Their planner branches remain as dead-but-correct
-  code rather than being deleted, so re-enabling the fuller handshake is a
-  staging change, not a protocol change.
+  unreachable** (`base_lock` now advances directly to `awaiting_quote_lock`:
+  the taker's own quote HTLC is a stronger acknowledgement than a DM). They
+  are still validated and still advance the choreography if one ever
+  arrives, but no code path stages them; their planner branches remain as
+  dead-but-correct code.
 - 2026-08-30: `ack`, `abort` and `reserve_reject`, by contrast, were removed
   from `TRADE_MESSAGE_TYPES` entirely. Unlike the set above they were never
   members of the atomic-swap schema, so no layer could validate or consume

@@ -143,8 +143,9 @@ const MESSAGE_COPY: Record<TradeMessageType, {
     meaning: "The taker commits to this exact order, amount, and settlement identity."
   },
   reserve_accept: {
-    title: "Accepted · offer locked",
-    meaning: "The maker accepts and names the Zenon HTLC that locks the offered token."
+    title: "Accepted · terms fixed",
+    meaning: "The maker accepts the reservation and fixes the settlement deadlines. " +
+      "Nothing is locked on chain until the taker acknowledges the session."
   },
   session_ack: {
     title: "Session acknowledged",

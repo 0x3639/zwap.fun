@@ -51,7 +51,6 @@ export interface ReserveAcceptBody extends VersionedBody {
   long_locktime: number;
   taker_claim_cutoff: number;
   reservation_expires_at: number;
-  base_lock: LockBody;
 }
 
 export interface SessionAckBody extends VersionedBody {
@@ -269,8 +268,7 @@ function reserveAccept(value: unknown): ReserveAcceptBody {
     "maker_claim_cutoff",
     "long_locktime",
     "taker_claim_cutoff",
-    "reservation_expires_at",
-    "base_lock"
+    "reservation_expires_at"
   ]);
   hex32(body.taker_session_pubkey, "Taker session public key");
   hex32(body.maker_session_pubkey, "Maker session public key");
@@ -294,10 +292,6 @@ function reserveAccept(value: unknown): ReserveAcceptBody {
   // so a wider reservation the wire accepted could never be persisted.
   if (reservationExpiry !== long + RESERVATION_GRACE_SECONDS) {
     throw new Error("Reservation expiry does not cover the recovery window");
-  }
-  const baseLock = lock(body.base_lock);
-  if (baseLock.time_locked_address !== body.maker_address) {
-    throw new Error("Base lock time-locked address must be the maker address");
   }
   return body as unknown as ReserveAcceptBody;
 }
@@ -481,7 +475,6 @@ export async function validateAtomicSwapMessage(
     if (body.maker_claim_cutoff <= sentAt) {
       throw new Error("Settlement deadlines are already unsafe at acceptance");
     }
-    if (body.base_lock.expiration_time <= sentAt) throw new Error("Lock expiration has already passed");
   }
   if (type === "base_lock" || type === "quote_lock") {
     const body = parsedBody as LockBody;
@@ -815,15 +808,11 @@ export async function advanceAtomicSwapChoreography(
         makerAddress: body.maker_address
       }
     };
-    assertLockTerms(acceptedState, body.base_lock, "base");
-    if (
-      body.base_lock.hash_locked_address !== state.participants.takerAddress ||
-      body.base_lock.time_locked_address !== body.maker_address
-    ) {
-      throw new Error("Base lock addresses differ from the accepted participants");
-    }
+    // The acceptance no longer carries the base lock: the maker commits
+    // nothing to chain until the taker has answered with `session_ack`, so a
+    // costless reservation proposal can no longer make the maker lock funds.
     return nextState(state, message, {
-      phase: "awaiting_quote_lock",
+      phase: "awaiting_session_ack",
       orderProjectionId: body.reserve_projection_id,
       orderRevision: body.reserve_revision,
       settlementHash: body.settlement_hash,
@@ -831,8 +820,6 @@ export async function advanceAtomicSwapChoreography(
       reserveProjectionRevision: body.reserve_revision,
       shortLocktime: body.short_locktime,
       longLocktime: body.long_locktime,
-      baseHtlcId: body.base_lock.htlc_id,
-      baseValidationCommitment: body.base_lock.validation_commitment,
       participants: {
         ...state.participants,
         makerSessionPubkey: body.maker_session_pubkey,
@@ -870,8 +857,11 @@ export async function advanceAtomicSwapChoreography(
     ) {
       throw new Error("Base lock addresses differ from the accepted participants");
     }
+    // Straight to the quote lock: the taker's own quote HTLC is a stronger
+    // acknowledgement than a `base_lock_ack` DM could ever be, so that rung
+    // stays dormant (see ADR 0006).
     return nextState(state, message, {
-      phase: "awaiting_base_lock_ack",
+      phase: "awaiting_quote_lock",
       baseHtlcId: body.htlc_id,
       baseValidationCommitment: body.validation_commitment
     });

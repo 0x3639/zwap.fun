@@ -1146,8 +1146,7 @@ export class ZwapCoordinatorEffects implements CoordinatorEffectPort {
           maker_claim_cutoff: session.plan.makerClaimCutoff,
           long_locktime: session.plan.longLocktime,
           taker_claim_cutoff: session.plan.takerClaimCutoff,
-          reservation_expires_at: session.plan.reservationExpiresAt,
-          base_lock: completedLockBody(session, "base")
+          reservation_expires_at: session.plan.reservationExpiresAt
         };
       case "session_ack":
         if (!session.reserveProjectionId || !session.reserveProjectionRevision || !htlcHash ||
@@ -1393,32 +1392,17 @@ export class ZwapCoordinatorEffects implements CoordinatorEffectPort {
       validation: { status: "validated", checkedAt: now, error: null }
     };
     if (
-      checked.type === "reserve_accept" ||
       checked.type === "base_lock" ||
       checked.type === "quote_lock"
     ) {
       const slot = checked.type === "quote_lock" ? "quote" : "base";
       const leg = slotLeg(session, slot);
-      const acceptance = checked.type === "reserve_accept"
-        ? checked.body as AtomicSwapBody<"reserve_accept">
-        : null;
-      const body = acceptance?.base_lock ??
-        checked.body as AtomicSwapBody<"base_lock">;
-      const acceptedPlan = acceptance === null
-        ? session.plan
-        : {
-            anchor: acceptance.short_locktime - this.shortLockSeconds,
-            shortLocktime: acceptance.short_locktime,
-            makerClaimCutoff: acceptance.maker_claim_cutoff,
-            longLocktime: acceptance.long_locktime,
-            takerClaimCutoff: acceptance.taker_claim_cutoff,
-            reservationExpiresAt: acceptance.reservation_expires_at,
-            refundGuardSeconds: 60 as const
-          };
-      // The maker's settlement address only arrives with the acceptance, so the
-      // expected lock is derived from the state this message is about to commit.
-      const counterpartyAddress = acceptance?.maker_address ??
-        session.privateState.counterpartyAddress;
+      const body = checked.body as AtomicSwapBody<"base_lock">;
+      // The acceptance (already committed by the time a lock arrives) carried
+      // the plan and the maker's settlement address; locks validate against
+      // the session state it established.
+      const acceptedPlan = session.plan;
+      const counterpartyAddress = session.privateState.counterpartyAddress;
       const expected = this.expectedLock({
         ...session,
         plan: acceptedPlan,

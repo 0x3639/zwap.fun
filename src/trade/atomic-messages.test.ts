@@ -79,19 +79,7 @@ function body<T extends AtomicSwapMessageType>(
       maker_claim_cutoff: MAKER_CUTOFF,
       long_locktime: LONG,
       taker_claim_cutoff: TAKER_CUTOFF,
-      reservation_expires_at: RESERVATION_EXPIRES,
-      base_lock: {
-        schema: ATOMIC_SWAP_BODY_SCHEMA,
-        htlc_id: baseHtlcId,
-        validation_commitment: baseValidationCommitment,
-        settlement_hash: settlementHash,
-        chain_id: terms.chain_id,
-        token_standard: terms.base_token,
-        amount: terms.base_amount,
-        hash_locked_address: takerAddress,
-        time_locked_address: makerAddress,
-        expiration_time: LONG
-      }
+      reservation_expires_at: RESERVATION_EXPIRES
     },
     session_ack: {
       schema: ATOMIC_SWAP_BODY_SCHEMA,
@@ -250,11 +238,13 @@ async function message<T extends AtomicSwapMessageType>(
 }
 
 describe("atomic swap message bodies", () => {
-  it("accepts the exact three-message happy-path choreography", async () => {
+  it("accepts the exact five-message happy-path choreography", async () => {
     let state = initialAtomicSwapChoreography(makerOrder);
     for (const [index, type] of [
       "reserve_propose",
       "reserve_accept",
+      "session_ack",
+      "base_lock",
       "quote_lock"
     ].entries()) {
       state = await advanceAtomicSwapChoreography(
@@ -338,7 +328,9 @@ describe("atomic swap message bodies", () => {
     // One HTLC cannot be both legs: accepting it would let a taker "fund" the
     // quote leg with the maker's own lock.
     let state = initialAtomicSwapChoreography(makerOrder);
-    for (const [index, type] of ["reserve_propose", "reserve_accept"].entries()) {
+    for (const [index, type] of [
+      "reserve_propose", "reserve_accept", "session_ack", "base_lock"
+    ].entries()) {
       state = await advanceAtomicSwapChoreography(
         state,
         await message(type as AtomicSwapMessageType, index)
@@ -346,7 +338,7 @@ describe("atomic swap message bodies", () => {
     }
     await expect(advanceAtomicSwapChoreography(
       state,
-      await message("quote_lock", 2, {}, { htlc_id: baseHtlcId })
+      await message("quote_lock", 4, {}, { htlc_id: baseHtlcId })
     )).rejects.toThrow(/base HTLC/i);
   });
 
@@ -365,33 +357,20 @@ describe("atomic swap message bodies", () => {
   it("binds lock data to the accepted participants, terms, and deadlines", async () => {
     let state = initialAtomicSwapChoreography(makerOrder);
     state = await advanceAtomicSwapChoreography(state, await message("reserve_propose", 0));
+    state = await advanceAtomicSwapChoreography(state, await message("reserve_accept", 1));
+    state = await advanceAtomicSwapChoreography(state, await message("session_ack", 2));
 
     await expect(advanceAtomicSwapChoreography(
       state,
-      await message("reserve_accept", 1, {}, {
-        base_lock: {
-          ...body("base_lock"),
-          hash_locked_address: otherAddress
-        }
-      })
+      await message("base_lock", 3, {}, { hash_locked_address: otherAddress })
     )).rejects.toThrow(/base lock addresses differ from the accepted participants/i);
     await expect(advanceAtomicSwapChoreography(
       state,
-      await message("reserve_accept", 1, {}, {
-        base_lock: {
-          ...body("base_lock"),
-          token_standard: terms.quote_token
-        }
-      })
+      await message("base_lock", 3, {}, { token_standard: terms.quote_token })
     )).rejects.toThrow(/base token/i);
     await expect(advanceAtomicSwapChoreography(
       state,
-      await message("reserve_accept", 1, {}, {
-        base_lock: {
-          ...body("base_lock"),
-          expiration_time: SHORT
-        }
-      })
+      await message("base_lock", 3, {}, { expiration_time: SHORT })
     )).rejects.toThrow(/base expiration/i);
   });
 
@@ -401,24 +380,51 @@ describe("atomic swap message bodies", () => {
 
     await expect(advanceAtomicSwapChoreography(
       state,
-      await message("reserve_accept", 1, {}, {
-        maker_address: takerAddress,
-        base_lock: {
-          ...body("base_lock"),
-          hash_locked_address: otherAddress,
-          time_locked_address: takerAddress
-        }
-      })
+      await message("reserve_accept", 1, {}, { maker_address: takerAddress })
     )).rejects.toThrow(/maker and taker settlement addresses must differ/i);
+  });
+
+  it("defers the base lock behind the session acknowledgement", async () => {
+    let state = initialAtomicSwapChoreography(makerOrder);
+    state = await advanceAtomicSwapChoreography(state, await message("reserve_propose", 0));
+    state = await advanceAtomicSwapChoreography(state, await message("reserve_accept", 1));
+    // Acceptance fixes the terms but locks nothing.
+    expect(state.phase).toBe("awaiting_session_ack");
+    expect(state.baseHtlcId).toBeUndefined();
+
+    state = await advanceAtomicSwapChoreography(state, await message("session_ack", 2));
+    expect(state.phase).toBe("awaiting_base_lock");
+
+    state = await advanceAtomicSwapChoreography(state, await message("base_lock", 3));
+    expect(state.phase).toBe("awaiting_quote_lock");
+    expect(state.baseHtlcId).toBe(baseHtlcId);
+
+    state = await advanceAtomicSwapChoreography(state, await message("quote_lock", 4));
+    expect(state.phase).toBe("settling");
+  });
+
+  it("rejects a reservation acceptance that still carries an inline base lock", async () => {
+    let state = initialAtomicSwapChoreography(makerOrder);
+    state = await advanceAtomicSwapChoreography(state, await message("reserve_propose", 0));
+    await expect(advanceAtomicSwapChoreography(
+      state,
+      await message("reserve_accept", 1, {}, { base_lock: body("base_lock") })
+    )).rejects.toThrow(/missing or unknown fields/i);
   });
 
   it("rejects a locked amount that differs from the canonical terms", async () => {
     let state = initialAtomicSwapChoreography(makerOrder);
-    state = await advanceAtomicSwapChoreography(state, await message("reserve_propose", 0));
-    state = await advanceAtomicSwapChoreography(state, await message("reserve_accept", 1));
+    for (const [index, type] of [
+      "reserve_propose", "reserve_accept", "session_ack", "base_lock"
+    ].entries()) {
+      state = await advanceAtomicSwapChoreography(
+        state,
+        await message(type as AtomicSwapMessageType, index)
+      );
+    }
     await expect(advanceAtomicSwapChoreography(
       state,
-      await message("quote_lock", 2, {}, { amount: "999" })
+      await message("quote_lock", 4, {}, { amount: "999" })
     )).rejects.toThrow(/quote amount differs from terms/i);
   });
 
@@ -436,9 +442,17 @@ describe("atomic swap message bodies", () => {
     )).rejects.toThrow(/expected reserve_accept/i);
 
     state = await advanceAtomicSwapChoreography(state, await message("reserve_accept", 1));
+    // The lock may no longer jump the acknowledgement.
     await expect(advanceAtomicSwapChoreography(
       state,
-      await message("quote_lock", 2, {}, {
+      await message("base_lock", 2)
+    )).rejects.toThrow(/expected session_ack/i);
+
+    state = await advanceAtomicSwapChoreography(state, await message("session_ack", 2));
+    state = await advanceAtomicSwapChoreography(state, await message("base_lock", 3));
+    await expect(advanceAtomicSwapChoreography(
+      state,
+      await message("quote_lock", 4, {}, {
         hash_locked_address: otherAddress
       })
     )).rejects.toThrow(/quote lock addresses differ from the accepted participants/i);
@@ -453,7 +467,9 @@ describe("atomic swap message bodies", () => {
 
     let state = await advanceAtomicSwapChoreography(start, await message("reserve_propose", 0));
     state = await advanceAtomicSwapChoreography(state, await message("reserve_accept", 1));
-    const refund = await message("refund", 2, {
+    state = await advanceAtomicSwapChoreography(state, await message("session_ack", 2));
+    state = await advanceAtomicSwapChoreography(state, await message("base_lock", 3));
+    const refund = await message("refund", 4, {
       author_pubkey: makerSession,
       recipient_pubkey: takerSession,
       sent_at: LONG + 62
@@ -462,10 +478,10 @@ describe("atomic swap message bodies", () => {
 
     const failed = await advanceAtomicSwapChoreography(
       state,
-      await message("error", 2, {
+      await message("error", 4, {
         author_pubkey: takerSession,
         recipient_pubkey: makerSession
-      }, { at_phase: "base_locked", failed_message_id: ids[1] })
+      }, { at_phase: "base_locked", failed_message_id: ids[3] })
     );
     expect(failed.phase).toBe("failed");
     await expect(advanceAtomicSwapChoreography(
@@ -478,13 +494,15 @@ describe("atomic swap message bodies", () => {
     let state = initialAtomicSwapChoreography(makerOrder);
     state = await advanceAtomicSwapChoreography(state, await message("reserve_propose", 0));
     state = await advanceAtomicSwapChoreography(state, await message("reserve_accept", 1));
+    state = await advanceAtomicSwapChoreography(state, await message("session_ack", 2));
+    state = await advanceAtomicSwapChoreography(state, await message("base_lock", 3));
 
     await expect(advanceAtomicSwapChoreography(
       state,
-      await message("error", 2, {
+      await message("error", 4, {
         author_pubkey: makerSession,
         recipient_pubkey: makerSession
-      }, { at_phase: "base_locked", failed_message_id: ids[1] })
+      }, { at_phase: "base_locked", failed_message_id: ids[3] })
     )).rejects.toThrow(/counterparties/i);
     await expect(validateAtomicSwapMessage(
       await message("claim_notice", 7, {}, { claimed_at: 1_800_000_008 })
@@ -498,12 +516,9 @@ describe("atomic swap message bodies", () => {
     const buyTerms: ZwapTradeTerms = { ...terms, maker_side: "buy" };
     const buyHash = await termsHash(buyTerms);
     const buyBody: Partial<Record<AtomicSwapMessageType, Record<string, unknown>>> = {
-      reserve_accept: {
-        base_lock: {
-          ...body("base_lock"),
-          token_standard: terms.quote_token,
-          amount: terms.quote_amount
-        }
+      base_lock: {
+        token_standard: terms.quote_token,
+        amount: terms.quote_amount
       },
       quote_lock: {
         token_standard: terms.base_token,
@@ -512,7 +527,7 @@ describe("atomic swap message bodies", () => {
     };
     let state = initialAtomicSwapChoreography(makerOrder);
     for (const [index, type] of [
-      "reserve_propose", "reserve_accept", "quote_lock"
+      "reserve_propose", "reserve_accept", "session_ack", "base_lock", "quote_lock"
     ].entries()) {
       const messageOverrides: Partial<ZwapTradeMessage> = {
         terms_hash: buyHash,
