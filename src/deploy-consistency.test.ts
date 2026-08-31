@@ -7,9 +7,10 @@ import nginx from "../deploy/nginx.conf?raw";
 import { DEFAULT_DISCOVERY_RELAYS, loadConfig } from "./config.js";
 
 /**
- * The CSP lives in three hand-maintained copies (index.html meta, Cloudflare
- * _headers, nginx). Until it is generated from one source, this test is the
- * guard against the copies drifting apart or dropping a configured endpoint.
+ * The CSP lives in four hand-maintained copies (index.html meta,
+ * how-it-works.html meta, Cloudflare _headers, nginx). Until it is generated
+ * from one source, this test is the guard against the copies drifting apart
+ * or dropping a configured endpoint.
  */
 function connectSrc(csp: string): string[] {
   const directive = csp.split(";").map((part) => part.trim())

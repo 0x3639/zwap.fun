@@ -74,6 +74,7 @@ export function assertVerifiedInboxLiveProbe(
 }
 
 const HEX_64 = /^[0-9a-f]{128}$/;
+const utf8Encoder = new TextEncoder();
 const CANONICAL_INTEGER = /^(0|[1-9][0-9]*)$/;
 const SEVEN_DAYS = 7 * 24 * 60 * 60;
 
@@ -366,7 +367,7 @@ const GIFT_WRAP_QUERY_MAX_PAGES = 8;
 
 export function validateGiftWrap(event: NostrEvent, expectedRecipient: string, now: number): void {
   assertEventShape(event, "Gift wrap");
-  if (new TextEncoder().encode(event.content).length > MAX_WRAP_CONTENT_BYTES) {
+  if (utf8Encoder.encode(event.content).length > MAX_WRAP_CONTENT_BYTES) {
     throw new Error("Gift-wrap content exceeds the 32 KiB zwap limit");
   }
   if (event.kind !== 1059 || !verifyFresh(event)) throw new Error("Gift-wrap signature or kind is invalid");
@@ -470,11 +471,15 @@ export async function queryGiftWraps(
             }
             // The whole-wrap ceiling from validateGiftWrap, applied before
             // retention: oversized junk still defines the page window but is
-            // never held between pages and never counts toward progress.
+            // never held between pages and never counts toward progress — so
+            // a same-second flood of oversized wraps hides at most its own
+            // overflow, like any other plateau. UTF-8 length >= UTF-16
+            // length, so a cheap code-unit check skips most encodes.
             if (
               typeof event?.id !== "string" ||
               typeof event?.content !== "string" ||
-              new TextEncoder().encode(event.content).length > MAX_WRAP_CONTENT_BYTES
+              event.content.length > MAX_WRAP_CONTENT_BYTES ||
+              utf8Encoder.encode(event.content).length > MAX_WRAP_CONTENT_BYTES
             ) continue;
             if (!collected.has(event.id)) {
               collected.set(event.id, event);

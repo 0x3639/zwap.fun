@@ -12,9 +12,9 @@ import {
   unwrapTradeMessage,
   wrapTradeRumor,
   type ZwapTradeMessage,
-  type ZwapTradeTerms
+  type ZwapTradeTerms,
+  randomOuterExpiration
 } from "./messages.js";
-import { randomOuterExpiration } from "./messages.js";
 
 const key = (last: number): Uint8Array => {
   const bytes = new Uint8Array(32);
