@@ -90,6 +90,8 @@ export interface BrowserTradeControllerOptions {
   onMakerAccepted?: (trade: PublicTradeView) => void;
   onError?: (message: string) => void;
   onMakerError?: (message: string) => void;
+  /** Diagnostic one-liners that are not user-facing errors. */
+  onTrace?: (message: string) => void;
   wait?: (delayMs: number) => Promise<void>;
 }
 
@@ -142,6 +144,7 @@ export class BrowserTradeController {
   private readonly onMakerAccepted: (trade: PublicTradeView) => void;
   private readonly onError: (message: string) => void;
   private readonly onMakerError: (message: string) => void;
+  private readonly onTrace: (message: string) => void;
   private readonly wait: (delayMs: number) => Promise<void>;
   private readonly subscriptions = new Map<string, TradeSubscription>();
   private readonly settlementRuns = new Map<string, Promise<RunUntilSettledResult>>();
@@ -178,6 +181,7 @@ export class BrowserTradeController {
     this.onMakerAccepted = options.onMakerAccepted ?? (() => undefined);
     this.onError = options.onError ?? (() => undefined);
     this.onMakerError = options.onMakerError ?? this.onError;
+    this.onTrace = options.onTrace ?? (() => undefined);
     this.wait = options.wait ?? ((delayMs) =>
       new Promise((resolve) => globalThis.setTimeout(resolve, delayMs)));
   }
@@ -599,7 +603,12 @@ export class BrowserTradeController {
     restart: () => Promise<void>,
     reportError: (message: string) => void = this.onError
   ): void {
-    if (error.kind === "relay_start") return;
+    if (error.kind === "relay_start") {
+      // The failed start also rejects into the caller's reconnect ladder;
+      // this line only makes the swallowed signal diagnosable.
+      this.onTrace(`${error.message} (${error.relay})`);
+      return;
+    }
     if (error.kind !== "relay_closed") {
       reportError(error.message);
       return;

@@ -106,6 +106,7 @@ function tradeController(): Promise<BrowserTradeController> {
       status.report("Incoming order accepted automatically");
     },
     onError: (message) => status.report(message, true),
+    onTrace: (message) => status.log(message),
     onMakerError: (message) => {
       status.trace("Nostr", "Maker inbox error", [
         { label: "error", value: message }

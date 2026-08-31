@@ -361,6 +361,9 @@ export async function publishInboxList(
  */
 export const MAX_WRAP_CONTENT_BYTES = 32 * 1024;
 
+const GIFT_WRAP_QUERY_PAGE_LIMIT = 500;
+const GIFT_WRAP_QUERY_MAX_PAGES = 8;
+
 export function validateGiftWrap(event: NostrEvent, expectedRecipient: string, now: number): void {
   assertEventShape(event, "Gift wrap");
   if (new TextEncoder().encode(event.content).length > MAX_WRAP_CONTENT_BYTES) {
@@ -438,9 +441,39 @@ export async function queryGiftWraps(
     const observations = await Promise.all(relays.map(async (relay): Promise<NostrEvent[] | null> => {
       try {
         await requireInboxRelay(relay, port);
-        return await port.query(relay, {
-          kinds: [1059], "#p": [recipientPubkey], since, limit: 500
-        }, authHandler(relay, keySnapshot, now));
+        const auth = authHandler(relay, keySnapshot, now);
+        // Relays return the newest `limit` events, so a flooded inbox pushes
+        // older wraps out of the first page. Walk backward with `until` until
+        // the window is exhausted, a full page adds nothing new (timestamp
+        // plateau), or the per-relay page cap bounds a hostile flood.
+        const collected = new Map<string, NostrEvent>();
+        let until: number | undefined;
+        for (let page = 0; page < GIFT_WRAP_QUERY_MAX_PAGES; page += 1) {
+          const filter: Record<string, unknown> = {
+            kinds: [1059], "#p": [recipientPubkey], since, limit: GIFT_WRAP_QUERY_PAGE_LIMIT
+          };
+          if (until !== undefined) filter.until = until;
+          const events = await port.query(relay, filter, auth);
+          let added = 0;
+          let oldest = Number.POSITIVE_INFINITY;
+          for (const event of events) {
+            if (typeof event?.created_at === "number" && event.created_at < oldest) {
+              oldest = event.created_at;
+            }
+            if (typeof event?.id === "string" && !collected.has(event.id)) {
+              collected.set(event.id, event);
+              added += 1;
+            }
+          }
+          if (
+            events.length < GIFT_WRAP_QUERY_PAGE_LIMIT ||
+            added === 0 ||
+            !Number.isFinite(oldest) ||
+            oldest <= since
+          ) break;
+          until = oldest;
+        }
+        return [...collected.values()];
       } catch {
         return null;
       }

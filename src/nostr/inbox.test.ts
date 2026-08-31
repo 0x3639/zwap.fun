@@ -492,3 +492,109 @@ describe("strict NIP-17 inbox transport", () => {
       .rejects.toThrow(/expiration/i);
   });
 });
+
+describe("gift-wrap query paging", () => {
+  const relay = "wss://inbox-one.example";
+
+  /**
+   * NIP-01 relay semantics the paging logic depends on: newest events first,
+   * truncated at `limit`, bounded inclusively by `since`/`until`.
+   */
+  class PagingRelayPort implements InboxRelayPort {
+    readonly filters: Array<Record<string, unknown>> = [];
+
+    constructor(private readonly events: NostrEvent[]) {}
+
+    async info(): Promise<InboxRelayCapabilities> {
+      return { supportedNips: [17, 40, 42], authRequired: true };
+    }
+
+    async publish(): Promise<string> {
+      throw new Error("paging tests never publish");
+    }
+
+    async query(
+      queriedRelay: string,
+      filter: Record<string, unknown>,
+      auth: AuthHandler
+    ): Promise<NostrEvent[]> {
+      await auth(`challenge:${queriedRelay}`);
+      this.filters.push(filter);
+      const since = filter.since as number;
+      const until = filter.until as number | undefined;
+      const limit = filter.limit as number;
+      return this.events
+        .filter((event) =>
+          event.created_at >= since &&
+          (until === undefined || event.created_at <= until))
+        .sort((left, right) =>
+          right.created_at - left.created_at || left.id.localeCompare(right.id))
+        .slice(0, limit);
+    }
+  }
+
+  function validWrapAt(createdAt: number): NostrEvent {
+    return finalizeEvent({
+      kind: 1059,
+      created_at: createdAt,
+      tags: [["p", recipient], ["expiration", String(now + 3600)]],
+      content: `encrypted-${createdAt}`
+    }, wrapperKey);
+  }
+
+  /** Cheap flood filler: page-shaped but signature-invalid, so it is paged
+   * through and then discarded by validation exactly like relay junk. */
+  function floodWrapAt(createdAt: number, ordinal: number): NostrEvent {
+    return {
+      id: ordinal.toString(16).padStart(64, "0"),
+      pubkey: "0".repeat(64),
+      created_at: createdAt,
+      kind: 1059,
+      tags: [["p", recipient], ["expiration", String(now + 3600)]],
+      content: "flood",
+      sig: "0".repeat(128)
+    };
+  }
+
+  it("pages by until past a flood until the wanted older wrap is found", async () => {
+    const wanted = validWrapAt(now - 800);
+    const flood = Array.from({ length: 500 }, (_, index) =>
+      floodWrapAt(now - 1 - Math.floor(index / 10), index + 1));
+    const port = new PagingRelayPort([...flood, wanted]);
+
+    await expect(queryGiftWraps(recipient, [relay], recipientKey, port, now - 900, now))
+      .resolves.toEqual([structuredClone(wanted)]);
+
+    expect(port.filters.length).toBeGreaterThan(1);
+    expect(port.filters[0]).toMatchObject({ since: now - 900, limit: 500 });
+    expect(port.filters[0]).not.toHaveProperty("until");
+    const oldestFirstPage = Math.min(...flood.map((event) => event.created_at));
+    expect(port.filters[1]).toMatchObject({
+      since: now - 900,
+      until: oldestFirstPage,
+      limit: 500
+    });
+  });
+
+  it("stops when a full page yields no new events (timestamp plateau)", async () => {
+    const wanted = validWrapAt(now - 500);
+    const flood = Array.from({ length: 500 }, (_, index) =>
+      floodWrapAt(now - 100, index + 1));
+    const port = new PagingRelayPort([...flood, wanted]);
+
+    await expect(queryGiftWraps(recipient, [relay], recipientKey, port, now - 900, now))
+      .resolves.toEqual([]);
+    expect(port.filters.length).toBe(2);
+  });
+
+  it("gives up after eight pages per relay", async () => {
+    const wanted = validWrapAt(now - 4500);
+    const flood = Array.from({ length: 4000 }, (_, index) =>
+      floodWrapAt(now - 1 - index, index + 1));
+    const port = new PagingRelayPort([...flood, wanted]);
+
+    await expect(queryGiftWraps(recipient, [relay], recipientKey, port, now - 5000, now))
+      .resolves.toEqual([]);
+    expect(port.filters.length).toBe(8);
+  });
+});

@@ -180,6 +180,7 @@ function setup(options: {
   startGates?: Array<Promise<void> | undefined>;
   wait?: (delayMs: number) => Promise<void>;
   onMakerError?: (message: string) => void;
+  onTrace?: (message: string) => void;
   makerOrderIds?: string[];
   trades?: PublicTradeView[];
 } = {}): {
@@ -234,6 +235,7 @@ function setup(options: {
     now: () => 1_800_000_000,
     ...(options.wait === undefined ? {} : { wait: options.wait }),
     ...(options.onMakerError === undefined ? {} : { onMakerError: options.onMakerError }),
+    ...(options.onTrace === undefined ? {} : { onTrace: options.onTrace }),
     startSubscription: vi.fn(async (input) => {
       const startIndex = subscriptions.length;
       subscriptions.push(input);
@@ -475,6 +477,26 @@ describe("BrowserTradeController", () => {
     await vi.waitFor(() => expect(subscriptions).toHaveLength(2));
     expect(stops[0]).toHaveBeenCalledOnce();
     expect(onMakerError).not.toHaveBeenCalled();
+  });
+
+  it("traces a swallowed relay_start error instead of reporting it", async () => {
+    const onMakerError = vi.fn();
+    const onTrace = vi.fn();
+    const { controller, subscriptions } = setup({ onMakerError, onTrace });
+    await controller.enableMaker();
+
+    subscriptions[0]!.onError({
+      relay: "wss://inbox.example",
+      kind: "relay_start",
+      message: "Inbox relay subscription failed to start"
+    });
+
+    expect(onTrace).toHaveBeenCalledOnce();
+    expect(onTrace).toHaveBeenCalledWith(
+      expect.stringContaining("wss://inbox.example")
+    );
+    expect(onMakerError).not.toHaveBeenCalled();
+    expect(subscriptions).toHaveLength(1);
   });
 
   it("recovers when the relay closes before subscription startup completes", async () => {
