@@ -16,9 +16,8 @@ import {
 import { composeMakerIdentity } from "./browser/maker-identity-compose.js";
 import { BrowserTradeController } from "./browser/trade-controller.js";
 import { startInboxListeners } from "./browser/startup.js";
-import {
-  createBrowserTradeRuntime,
-  type BrowserTradeRuntime
+import type {
+  BrowserTradeRuntime
 } from "./browser/trade-runtime.js";
 import { browserConfig } from "./config.js";
 import { NostrOrderService } from "./order/service.js";
@@ -26,7 +25,6 @@ import { RelayClient } from "./nostr/relay.js";
 import { OrderOutboxRepository } from "./storage/order-outbox.js";
 import { IndexedDbStorageDriver } from "./storage/driver.js";
 import { detectInjectedProvider } from "./zenon/injected-signer.js";
-import { ChainMismatchError, SdkZenonNode } from "./zenon/sdk-node.js";
 import { applyTheme, mountThemeToggle } from "./ui/theme.js";
 import { tokenDirectory, type TokenLookup } from "./ui/tokens.js";
 
@@ -155,6 +153,12 @@ const wallet = createWalletSurface({
     trading.repaintWalletDependentSurfaces(connected)
 });
 
+// Dynamic on purpose: the SDK resolves to one opaque 1.3 MB pre-webpacked
+// bundle (plus a 620 KB argon2 chunk) that no bundler can tree-shake. Loading
+// it through import() keeps it out of the entry chunk, so the static page and
+// the Nostr order book are interactive while the chain SDK streams in.
+const { ChainMismatchError, SdkZenonNode } = await import("./zenon/sdk-node.js");
+
 try {
   const node = await SdkZenonNode.connect({
     nodeUrl: config.nodeUrl,
@@ -168,6 +172,9 @@ try {
   createTradeRuntime = async () => {
     const account = api.account();
     if (account === null) throw new Error("Connect your wallet before trading");
+    // Same rationale as the sdk-node import above: the runtime statically
+    // drags the HTLC contract codec and with it the whole SDK bundle.
+    const { createBrowserTradeRuntime } = await import("./browser/trade-runtime.js");
     runtimePromise ??= createBrowserTradeRuntime({
       driver,
       node,
