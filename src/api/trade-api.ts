@@ -10,7 +10,7 @@ import {
   type FundsReservationRepository
 } from "../zenon/funds-reservations.js";
 import type { BalanceView, MomentumView } from "../zenon/types.js";
-import { isTokenStandard, isZenonAddress } from "../zenon/validate.js";
+import { isTokenStandard, isZenonAddress, isHex32 } from "../zenon/validate.js";
 import {
   assertVerifiedInitialReserveProposal,
   type VerifiedInitialReserveProposal
@@ -96,7 +96,6 @@ export interface TakeOrderInput {
   fillBaseAmount: string;
 }
 
-const HEX_32 = /^[0-9a-f]{64}$/;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 const defaultSessionFactory: TradeSessionFactoryPort = {
@@ -364,7 +363,7 @@ export class TradeApi {
   ): Promise<OrderRecord> {
     if (
       !address ||
-      !HEX_32.test(expectedProjectionId) ||
+      !isHex32(expectedProjectionId) ||
       !/^(0|[1-9]\d*)$/.test(expectedRevision)
     ) {
       throw new Error("Trade order projection binding is invalid");

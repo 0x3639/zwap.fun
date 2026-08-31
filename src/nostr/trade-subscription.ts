@@ -1,3 +1,4 @@
+import { safeUnixTimestamp, isHex32 } from "../zenon/validate.js";
 import { getPublicKey } from "nostr-tools";
 
 import type { NostrEvent } from "../order/events.js";
@@ -72,14 +73,8 @@ export interface StartTradeSubscriptionInput {
   onError(error: TradeSubscriptionError): void;
 }
 
-const HEX_32 = /^[0-9a-f]{64}$/;
 
-function timestamp(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`${label} must be a non-negative safe Unix timestamp`);
-  }
-  return value;
-}
+const timestamp = safeUnixTimestamp;
 
 function reportSafely(
   callback: (error: TradeSubscriptionError) => void,
@@ -104,7 +99,7 @@ export async function startTradeSubscription(
   const opened: PersistentInboxSubscription[] = [];
   let stopped = false;
   try {
-    if (!HEX_32.test(input.recipientPubkey)) {
+    if (!isHex32(input.recipientPubkey)) {
       throw new Error("Trade subscription recipient pubkey must be lowercase hex");
     }
     if (

@@ -1,3 +1,4 @@
+import { localeCanonicalJson as canonicalJson } from "../order/legacy-canonical.js";
 import {
   nextCoordinatorAction,
   slotLeg,
@@ -69,18 +70,6 @@ function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(",")}]`;
-  }
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
 
 async function sha256(value: string): Promise<string> {
   const digest = await crypto.subtle.digest(

@@ -1,3 +1,4 @@
+import { isHex32 } from "../zenon/validate.js";
 import { nip19 } from "nostr-tools";
 
 import type { TradeMessageType } from "../trade/messages.js";
@@ -9,7 +10,6 @@ import { formatPrice, renderTokenAmount, truncateAddress, truncateHash } from ".
 import { defaultTokens, type TokenLookup } from "./tokens.js";
 
 /** A Nostr public key: exactly what `nip19.npubEncode` accepts. */
-const HEX_32 = /^[0-9a-f]{64}$/;
 
 export interface TradeRenderOptions {
   /** Symbols and decimals observed on chain; falls back to ZNN/QSR. */
@@ -122,7 +122,7 @@ function identity(label: string, value: string | null): HTMLElement {
   }
   // `npubEncode` throws on anything that is not a 32-byte hex key, which would
   // take the whole trade panel down with it. Same guard as `fullNpub`.
-  if (!HEX_32.test(value)) {
+  if (!isHex32(value)) {
     item.append(element("strong", "Unavailable"));
     return item;
   }
@@ -190,7 +190,7 @@ const MESSAGE_COPY: Record<TradeMessageType, {
 };
 
 function fullNpub(value: string | undefined): string {
-  if (value === undefined || !HEX_32.test(value)) {
+  if (value === undefined || !isHex32(value)) {
     return "Unavailable";
   }
   return nip19.npubEncode(value);

@@ -1,3 +1,4 @@
+import { safeUnixTimestamp, isHex32 } from "../zenon/validate.js";
 import { finalizeEvent, getPublicKey, verifyEvent } from "nostr-tools";
 
 import type { NostrEvent } from "../order/events.js";
@@ -72,17 +73,11 @@ export function assertVerifiedInboxLiveProbe(
   }
 }
 
-const HEX_32 = /^[0-9a-f]{64}$/;
 const HEX_64 = /^[0-9a-f]{128}$/;
 const CANONICAL_INTEGER = /^(0|[1-9][0-9]*)$/;
 const SEVEN_DAYS = 7 * 24 * 60 * 60;
 
-function timestamp(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`${label} must be a non-negative safe Unix timestamp`);
-  }
-  return value;
-}
+const timestamp = safeUnixTimestamp;
 
 export function normalizeInboxRelay(value: string): string {
   let parsed: URL;
@@ -166,7 +161,7 @@ function verifyFresh(event: NostrEvent): boolean {
 }
 
 function assertEventShape(event: NostrEvent, label: string): void {
-  if (!HEX_32.test(event.id) || !HEX_32.test(event.pubkey) || !HEX_64.test(event.sig)) {
+  if (!isHex32(event.id) || !isHex32(event.pubkey) || !HEX_64.test(event.sig)) {
     throw new Error(`${label} identifiers or signature are malformed`);
   }
   timestamp(event.created_at, `${label} created_at`);
@@ -197,7 +192,7 @@ export function validateInboxList(
   now: number
 ): ValidatedInboxList {
   timestamp(now, "Current time");
-  if (!HEX_32.test(expectedAuthor)) throw new Error("Expected inbox-list author is malformed");
+  if (!isHex32(expectedAuthor)) throw new Error("Expected inbox-list author is malformed");
   assertEventShape(event, "Inbox list");
   if (event.kind !== 10050 || !verifyFresh(event)) throw new Error("Inbox-list signature or kind is invalid");
   if (event.pubkey !== expectedAuthor) throw new Error("Inbox-list author is unexpected");
@@ -402,7 +397,7 @@ export async function publishGiftWrap(
     timestamp(now, "Current time");
     const relays = normalizeRelays(inboxRelayValues, "Gift-wrap publication", 1, 3);
     const recipient = wrapperSnapshot.tags[0]?.[1] ?? "";
-    if (!HEX_32.test(recipient)) throw new Error("Gift-wrap recipient is malformed");
+    if (!isHex32(recipient)) throw new Error("Gift-wrap recipient is malformed");
     validateGiftWrap(wrapperSnapshot, recipient, now);
     const receipts = await Promise.all(relays.map(async (relay): Promise<InboxReceipt> => {
       try {

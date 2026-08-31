@@ -2,7 +2,7 @@ import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
 
 import type { OrderRecord } from "../order/model.js";
 import { createHtlcMaterial, verifyHtlcMaterial } from "../zenon/htlc-material.js";
-import { isTokenStandard, isZenonAddress } from "../zenon/validate.js";
+import { isTokenStandard, isZenonAddress, isHex32 } from "../zenon/validate.js";
 import {
   advanceAtomicSwapChoreography,
   initialAtomicSwapChoreography,
@@ -58,7 +58,6 @@ export interface MakerSessionInput {
   localAddress: string;
 }
 
-const HEX_32 = /^[0-9a-f]{64}$/;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CHAIN_ID = /^[1-9]\d*$/;
 
@@ -67,7 +66,7 @@ function hex(bytes: Uint8Array): string {
 }
 
 function fromHex(value: string, label: string): Uint8Array {
-  if (!HEX_32.test(value)) throw new Error(`${label} must be 32-byte lowercase hex`);
+  if (!isHex32(value)) throw new Error(`${label} must be 32-byte lowercase hex`);
   return Uint8Array.from(value.match(/../g) ?? [], (part) => Number.parseInt(part, 16));
 }
 
@@ -102,13 +101,13 @@ function assertOpenOrder(
   const market = canonicalMarket(marketInput);
   if (!order.verified) throw new Error("Order must be verified");
   if (
-    !HEX_32.test(expectedProjectionId) ||
+    !isHex32(expectedProjectionId) ||
     order.eventId !== expectedProjectionId ||
     order.state.revision !== expectedRevision
   ) {
     throw new Error("Order projection is stale");
   }
-  if (!HEX_32.test(order.eventId) || !HEX_32.test(order.makerPubkey)) {
+  if (!isHex32(order.eventId) || !isHex32(order.makerPubkey)) {
     throw new Error("Order authority or projection ID is invalid");
   }
   const expectedAddress =
@@ -248,7 +247,7 @@ function baseSession(input: {
   htlcHash: string | null;
   createdAt: number;
 }): TradeSession {
-  if (!HEX_32.test(input.sessionId)) throw new Error("Session ID is invalid");
+  if (!isHex32(input.sessionId)) throw new Error("Session ID is invalid");
   if (!UUID_V4.test(input.reservationId)) throw new Error("Reservation ID is invalid");
   return {
     schema: "zwap/trade-session/v1",
@@ -411,14 +410,14 @@ export async function createMakerSession(
 
   const material = await entropy.htlcMaterial();
   if (
-    !HEX_32.test(material.preimage) ||
-    !HEX_32.test(material.hash) ||
+    !isHex32(material.preimage) ||
+    !isHex32(material.hash) ||
     !(await verifyHtlcMaterial(material.preimage, material.hash))
   ) throw new Error("Maker HTLC material is invalid");
   if ([keys.nostrPrivateKey, message.session_id].includes(material.preimage)) {
     throw new Error("Maker HTLC preimage must be independent");
   }
-  if (!HEX_32.test(input.proposal.rumor.id) || !HEX_32.test(input.proposal.transcriptHash)) {
+  if (!isHex32(input.proposal.rumor.id) || !isHex32(input.proposal.transcriptHash)) {
     throw new Error("Validated proposal transcript identifiers are invalid");
   }
   const evidence = emptyEvidence(input.order);

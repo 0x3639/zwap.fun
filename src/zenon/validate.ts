@@ -14,3 +14,15 @@ export function isHex32(value: unknown): value is string {
 export function isAmount(value: unknown): value is string {
   return typeof value === "string" && /^[1-9]\d*$/.test(value);
 }
+
+/**
+ * The one shared Unix-timestamp validator: non-negative safe integers only.
+ * Every protocol layer used to carry its own copy of this function; the label
+ * keeps each caller's error text unchanged.
+ */
+export function safeUnixTimestamp(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative safe Unix timestamp`);
+  }
+  return value;
+}

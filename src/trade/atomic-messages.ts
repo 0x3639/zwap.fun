@@ -1,3 +1,4 @@
+import { exactKeys } from "./messages.js";
 import {
   canonicalJson,
   termsHash,
@@ -5,7 +6,7 @@ import {
   type ZwapTradeTerms,
   type JsonValue
 } from "./messages.js";
-import { isAmount, isHex32, isTokenStandard, isZenonAddress } from "../zenon/validate.js";
+import { isAmount, isHex32, isTokenStandard, isZenonAddress, safeUnixTimestamp } from "../zenon/validate.js";
 import { CLAIM_CUTOFF_MARGIN, RESERVATION_GRACE_SECONDS } from "./model.js";
 
 export const ATOMIC_SWAP_BODY_SCHEMA = "zwap/atomic-swap-body/v1" as const;
@@ -189,17 +190,9 @@ function bodyRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function exactKeys(value: Record<string, unknown>, expected: readonly string[]): void {
-  const actual = Object.keys(value).sort();
-  const wanted = [...expected].sort();
-  if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
-    throw new Error("Atomic swap body contains missing or unknown fields");
-  }
-}
-
 function exactBody(value: unknown, fields: readonly string[]): Record<string, unknown> {
   const body = bodyRecord(value);
-  exactKeys(body, ["schema", ...fields]);
+  exactKeys(body, ["schema", ...fields], "Atomic swap body");
   if (body.schema !== ATOMIC_SWAP_BODY_SCHEMA) {
     throw new Error("Unknown atomic swap body schema");
   }
@@ -243,12 +236,7 @@ function revision(value: unknown, label: string): string {
   return requiredString(value, label, /^(0|[1-9][0-9]*)$/);
 }
 
-function timestamp(value: unknown, label: string): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`${label} must be a non-negative safe Unix timestamp`);
-  }
-  return value;
-}
+const timestamp = safeUnixTimestamp;
 
 function expirationTime(value: unknown, label: string): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {

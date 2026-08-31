@@ -1,3 +1,4 @@
+import { localeCanonicalJson as canonicalJson } from "../order/legacy-canonical.js";
 import { getEventHash, getPublicKey, verifyEvent } from "nostr-tools";
 
 import { normalizePublicRelay } from "../nostr/relay.js";
@@ -14,7 +15,7 @@ import type {
   TradeSession,
   TradeTranscriptJournal
 } from "../trade/session.js";
-import { deploymentFor, TRADE_MESSAGE_TYPES } from "../trade/messages.js";
+import { deploymentFor, TRADE_MESSAGE_TYPES, exactKeys } from "../trade/messages.js";
 import {
   CLAIM_CUTOFF_MARGIN,
   PERSISTED_PHASE_STEPS,
@@ -33,7 +34,6 @@ const TRADE_SESSIONS_KEY = "zwap.trade-sessions.v2";
 const TERMINAL_TRADE_PHASES = new Set(["filled", "released"]);
 /** How long a finished session (and its keys and preimage) is retained. */
 export const TERMINAL_SESSION_RETENTION_SECONDS = 30 * 86_400;
-const HEX_32 = /^[0-9a-f]{64}$/;
 const HEX_64 = /^[0-9a-f]{128}$/;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ORDER_ADDRESS = new RegExp(
@@ -83,19 +83,6 @@ function object(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function exactKeys(
-  value: Record<string, unknown>,
-  required: readonly string[],
-  label: string
-): void {
-  const actual = Object.keys(value).sort();
-  const expected = [...required].sort();
-  if (
-    actual.length !== expected.length ||
-    actual.some((key, index) => key !== expected[index])
-  ) throw new Error(`${label} contains missing or unknown fields`);
-}
-
 function exactAllowedKeys(
   value: Record<string, unknown>,
   required: readonly string[],
@@ -117,7 +104,7 @@ function safeTime(value: unknown, label: string): number {
 }
 
 function optionalHex(value: unknown, label: string): void {
-  if (value !== null && (typeof value !== "string" || !HEX_32.test(value))) {
+  if (value !== null && (typeof value !== "string" || !isHex32(value))) {
     throw new Error(`${label} is invalid`);
   }
 }
@@ -167,9 +154,9 @@ function validateEvent(
       !Array.isArray(tag) || tag.some((item) => typeof item !== "string")
     ) ||
     typeof event.id !== "string" ||
-    !HEX_32.test(event.id) ||
+    !isHex32(event.id) ||
     typeof event.pubkey !== "string" ||
-    !HEX_32.test(event.pubkey) ||
+    !isHex32(event.pubkey) ||
     (signed && (typeof event.sig !== "string" || !HEX_64.test(event.sig)))
   ) throw new Error(`${label} is invalid`);
   if (signed) {
@@ -305,11 +292,11 @@ function validateChoreography(value: unknown, expectedDeployment: string): void 
   );
   if (
     typeof participants.makerOrderPubkey !== "string" ||
-    !HEX_32.test(participants.makerOrderPubkey)
+    !isHex32(participants.makerOrderPubkey)
   ) throw new Error("Trade participants are invalid");
   for (const field of ["makerSessionPubkey", "takerSessionPubkey"] as const) {
     if (participants[field] !== undefined &&
-      (typeof participants[field] !== "string" || !HEX_32.test(participants[field] as string))) {
+      (typeof participants[field] !== "string" || !isHex32(participants[field] as string))) {
       throw new Error("Trade participants are invalid");
     }
   }
@@ -365,7 +352,7 @@ function validateTranscript(
     }
     for (const field of ["authorPubkey", "recipientPubkey"] as const) {
       if (entry[field] !== undefined &&
-        (typeof entry[field] !== "string" || !HEX_32.test(entry[field] as string))) {
+        (typeof entry[field] !== "string" || !isHex32(entry[field] as string))) {
         throw new Error("Accepted trade message participant is invalid");
       }
     }
@@ -374,9 +361,9 @@ function validateTranscript(
       typeof entry.messageId !== "string" ||
       !UUID_V4.test(entry.messageId) ||
       typeof entry.rumorId !== "string" ||
-      !HEX_32.test(entry.rumorId) ||
+      !isHex32(entry.rumorId) ||
       typeof entry.transcriptHash !== "string" ||
-      !HEX_32.test(entry.transcriptHash)
+      !isHex32(entry.transcriptHash)
     ) throw new Error("Accepted trade transcript entry is invalid");
     return entry as unknown as TradeTranscriptJournal["accepted"][number];
   });
@@ -421,7 +408,7 @@ function validateMessage(value: unknown): void {
     typeof message.message_id !== "string" ||
     !UUID_V4.test(message.message_id) ||
     typeof message.session_id !== "string" ||
-    !HEX_32.test(message.session_id) ||
+    !isHex32(message.session_id) ||
     typeof message.reservation_id !== "string" ||
     !UUID_V4.test(message.reservation_id) ||
     typeof message.sequence !== "string" ||
@@ -451,7 +438,7 @@ function validateOutbox(
   validateEvent(outbox.rumor, 14, "Trade rumor", false);
   validateEvent(outbox.seal, 13, "Trade seal");
   validateEvent(outbox.wrapper, 1059, "Trade wrapper");
-  if (typeof outbox.recipientInboxListId !== "string" || !HEX_32.test(outbox.recipientInboxListId)) {
+  if (typeof outbox.recipientInboxListId !== "string" || !isHex32(outbox.recipientInboxListId)) {
     throw new Error("Recipient inbox list ID is invalid");
   }
   const relays = validateRelayList(outbox.recipientRelays, "Recipient relays", false);
@@ -511,7 +498,7 @@ function validateExpectedLock(value: unknown): void {
     typeof binding.network !== "string" ||
     !ZENON_NETWORK.test(binding.network) ||
     typeof binding.orderId !== "string" || !UUID_V4.test(binding.orderId) ||
-    typeof binding.sessionId !== "string" || !HEX_32.test(binding.sessionId) ||
+    typeof binding.sessionId !== "string" || !isHex32(binding.sessionId) ||
     typeof binding.reservationId !== "string" || !UUID_V4.test(binding.reservationId) ||
     !isHex32(binding.transcriptHash)
   ) throw new Error("Expected Zenon lock binding is invalid");
@@ -639,16 +626,6 @@ function validatePrivateLeg(value: unknown): asserts value is PrivateLegJournal 
   ) throw new Error("Private trade observations are invalid");
 }
 
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
 
 function validateInbox(value: unknown): asserts value is TradeInboxJournal {
   const inbox = object(value, "Trade inbox checkpoint");
@@ -809,7 +786,7 @@ function validatePendingIncoming(
   validateEvent(incoming.seal, 13, "Pending incoming seal");
   validateEvent(incoming.rumor, 14, "Pending incoming rumor", false);
   validateMessage(incoming.message);
-  if (typeof incoming.transcriptHash !== "string" || !HEX_32.test(incoming.transcriptHash)) {
+  if (typeof incoming.transcriptHash !== "string" || !isHex32(incoming.transcriptHash)) {
     throw new Error("Pending incoming transcript hash is invalid");
   }
   safeTime(incoming.receivedAt, "Pending incoming receive time");
@@ -1038,7 +1015,7 @@ async function assertSession(value: unknown): Promise<TradeSession> {
     !Number.isSafeInteger(session.revision) ||
     (session.revision as number) < 0 ||
     typeof session.sessionId !== "string" ||
-    !HEX_32.test(session.sessionId) ||
+    !isHex32(session.sessionId) ||
     typeof session.reservationId !== "string" ||
     !UUID_V4.test(session.reservationId) ||
     (session.role !== "maker" && session.role !== "taker") ||
@@ -1048,7 +1025,7 @@ async function assertSession(value: unknown): Promise<TradeSession> {
     !TRADE_PHASES.has(session.phase) ||
     typeof session.orderAddress !== "string" ||
     typeof session.offeredProjectionId !== "string" ||
-    !HEX_32.test(session.offeredProjectionId) ||
+    !isHex32(session.offeredProjectionId) ||
     typeof session.offeredProjectionRevision !== "string" ||
     !/^(0|[1-9]\d*)$/.test(session.offeredProjectionRevision)
   ) throw new Error("Trade session metadata is invalid");
@@ -1121,9 +1098,9 @@ async function assertSession(value: unknown): Promise<TradeSession> {
   ], "Trade evidence");
   if (
     typeof evidence.makerPubkey !== "string" ||
-    !HEX_32.test(evidence.makerPubkey) ||
+    !isHex32(evidence.makerPubkey) ||
     !Array.isArray(evidence.commitments) ||
-    evidence.commitments.some((item) => typeof item !== "string" || !HEX_32.test(item)) ||
+    evidence.commitments.some((item) => typeof item !== "string" || !isHex32(item)) ||
     !Array.isArray(evidence.chainStates) ||
     evidence.chainStates.some((item) => typeof item !== "string")
   ) throw new Error("Trade evidence is invalid");
@@ -1229,7 +1206,7 @@ async function assertSession(value: unknown): Promise<TradeSession> {
   ], "Trade private state");
   if (
     typeof privateState.nostrPrivateKey !== "string" ||
-    !HEX_32.test(privateState.nostrPrivateKey)
+    !isHex32(privateState.nostrPrivateKey)
   ) throw new Error("Trade private key is invalid");
   if (!isZenonAddress(privateState.localAddress)) {
     throw new Error("Trade local settlement address is invalid");
@@ -1331,7 +1308,7 @@ async function assertSession(value: unknown): Promise<TradeSession> {
       transcript.choreography.phase === "awaiting_reserve_accept" &&
       pending.message.type === "reserve_accept" &&
       typeof pendingBody.reserve_projection_id === "string" &&
-      HEX_32.test(pendingBody.reserve_projection_id) &&
+      isHex32(pendingBody.reserve_projection_id) &&
       pending.message.order_projection_id === pendingBody.reserve_projection_id &&
       pending.message.order_revision === pendingBody.reserve_revision;
     const settlementHandoff =
@@ -1339,7 +1316,7 @@ async function assertSession(value: unknown): Promise<TradeSession> {
       transcript.choreography.phase === "awaiting_settlement_ack" &&
       pending.message.type === "settlement_ack" &&
       typeof pendingBody.fill_projection_id === "string" &&
-      HEX_32.test(pendingBody.fill_projection_id) &&
+      isHex32(pendingBody.fill_projection_id) &&
       pending.message.order_projection_id === pendingBody.fill_projection_id &&
       pending.message.order_revision === pendingBody.fill_revision;
     if (
@@ -1557,14 +1534,14 @@ function assertTakerStartIntent(
     typeof intent.address !== "string" ||
     !ORDER_ADDRESS.test(intent.address) ||
     typeof intent.expectedProjectionId !== "string" ||
-    !HEX_32.test(intent.expectedProjectionId) ||
+    !isHex32(intent.expectedProjectionId) ||
     typeof intent.expectedRevision !== "string" ||
     !/^(0|[1-9]\d*)$/.test(intent.expectedRevision) ||
     typeof intent.fillBaseAmount !== "string" ||
     !POSITIVE_INTEGER.test(intent.fillBaseAmount) ||
     (withSessionId && (
       typeof intent.sessionId !== "string" ||
-      !HEX_32.test(intent.sessionId)
+      !isHex32(intent.sessionId)
     ))
   ) throw new Error(`${label} is invalid`);
 }

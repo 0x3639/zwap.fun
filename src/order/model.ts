@@ -1,4 +1,4 @@
-import { isTokenStandard } from "../zenon/validate.js";
+import { isTokenStandard, isHex32 } from "../zenon/validate.js";
 
 export type OrderSide = "buy" | "sell";
 export type ExecutionCondition = "all_or_none" | "partial";
@@ -139,7 +139,6 @@ export interface OrderBook {
 }
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const HEX_32 = /^[0-9a-f]{64}$/;
 const CHAIN_ID = /^[1-9]\d*$/;
 
 function canonicalChainId(value: string): string {
@@ -276,8 +275,8 @@ export function reserveOrder(state: OrderState, input: ReserveOrderInput): Order
     throw new Error("Order already has a live reservation");
   }
   if (!UUID_V4.test(input.reservationId)) throw new Error("Reservation ID must be a UUID v4");
-  if (!HEX_32.test(input.proposalEventId)) throw new Error("Proposal event ID must be lowercase hex");
-  if (!HEX_32.test(input.takerCommitment)) throw new Error("Taker commitment must be lowercase hex");
+  if (!isHex32(input.proposalEventId)) throw new Error("Proposal event ID must be lowercase hex");
+  if (!isHex32(input.takerCommitment)) throw new Error("Taker commitment must be lowercase hex");
   if (!Number.isSafeInteger(input.acceptedAt) || input.acceptedAt < state.created_at) {
     throw new Error("Reservation acceptance time is invalid");
   }
@@ -352,7 +351,7 @@ export function releaseOrder(state: OrderState, input: ReleaseOrderInput): Order
       throw new Error("Expired release cannot reference an abort event");
     }
   } else if (input.reason === "abort") {
-    if (!input.abortEventId || !HEX_32.test(input.abortEventId)) {
+    if (!input.abortEventId || !isHex32(input.abortEventId)) {
       throw new Error("Abort release requires a signed abort event ID");
     }
   } else {

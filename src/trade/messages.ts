@@ -7,7 +7,7 @@ import {
   verifyEvent
 } from "nostr-tools";
 
-import { isTokenStandard } from "../zenon/validate.js";
+import { isTokenStandard, safeUnixTimestamp } from "../zenon/validate.js";
 import type { OrderSide } from "../order/model.js";
 
 export type JsonValue =
@@ -198,7 +198,7 @@ function record(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function exactKeys(value: Record<string, unknown>, expected: readonly string[], label: string): void {
+export function exactKeys(value: Record<string, unknown>, expected: readonly string[], label: string): void {
   const actual = Object.keys(value).sort();
   const wanted = [...expected].sort();
   if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
@@ -295,12 +295,8 @@ export async function termsHash(terms: ZwapTradeTerms): Promise<string> {
   return sha256([utf8.encode("zwap-terms-v1\n"), utf8.encode(canonicalJson(terms))]);
 }
 
-function safeTimestamp(value: unknown, label: string): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`${label} must be a non-negative safe Unix timestamp`);
-  }
-  return value;
-}
+const safeTimestamp = safeUnixTimestamp;
+
 
 function requiredString(value: unknown, label: string, pattern?: RegExp): string {
   if (typeof value !== "string" || (pattern && !pattern.test(value))) {

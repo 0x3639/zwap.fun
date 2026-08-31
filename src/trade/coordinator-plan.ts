@@ -50,7 +50,7 @@ function safeNow(value: number): number {
   return value;
 }
 
-function makerOffersBase(session: TradeSession): boolean {
+export function makerOffersBase(session: TradeSession): boolean {
   return session.orderSide !== "buy";
 }
 
@@ -68,7 +68,8 @@ export function slotLeg(session: TradeSession, slot: "base" | "quote"): "base" |
   return makerOffersBase(session) ? "quote" : "base";
 }
 
-function legSlot(session: TradeSession, leg: "base" | "quote"): "base" | "quote" {
+/** The inverse of `slotLeg`: which protocol slot funded this market leg. */
+export function legSlot(session: TradeSession, leg: "base" | "quote"): "base" | "quote" {
   return slotLeg(session, "base") === leg ? "base" : "quote";
 }
 

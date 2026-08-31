@@ -1,3 +1,4 @@
+import { isHex32 } from "../zenon/validate.js";
 import { verifyEvent } from "nostr-tools/pure";
 
 import { normalizePublicRelay } from "../nostr/relay.js";
@@ -13,7 +14,6 @@ import type { StorageDriver } from "./driver.js";
 // The projection-only format stores the exact signed artifact required for
 // publication retries and local recovery.
 const OUTBOX_KEY = "zwap.order-outbox.v3";
-const HEX_32 = /^[0-9a-f]{64}$/;
 const HEX_64 = /^[0-9a-f]{128}$/;
 
 export type OrderPublicationOperation = "create" | SuccessorOperation;
@@ -70,8 +70,8 @@ function validProjection(
     event.tags.every((tag) =>
       Array.isArray(tag) && tag.every((item) => typeof item === "string")
     ) &&
-    typeof event.id === "string" && HEX_32.test(event.id) &&
-    typeof event.pubkey === "string" && HEX_32.test(event.pubkey) &&
+    typeof event.id === "string" && isHex32(event.id) &&
+    typeof event.pubkey === "string" && isHex32(event.pubkey) &&
     typeof event.sig === "string" && HEX_64.test(event.sig) &&
     verify(value as StagedOrderPublication["projection"]);
 }
@@ -117,7 +117,7 @@ function assertIntent(value: unknown): asserts value is OrderPublicationIntent {
     typeof intent.address !== "string" ||
     !(intent.expectedProjectionId === null ||
       (typeof intent.expectedProjectionId === "string" &&
-        HEX_32.test(intent.expectedProjectionId))) ||
+        isHex32(intent.expectedProjectionId))) ||
     !(intent.expectedRevision === null ||
       (typeof intent.expectedRevision === "string" &&
         /^(0|[1-9]\d*)$/.test(intent.expectedRevision))) ||

@@ -1,3 +1,4 @@
+import { isHex32 } from "../zenon/validate.js";
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
 
 import type {
@@ -41,8 +42,11 @@ import {
   type AtomicSwapMessageType
 } from "./atomic-messages.js";
 import {
+  legSlot,
+  makerOffersBase,
   recoveryIsIdle,
   recoveryStep,
+  slotLeg,
   type CoordinatorAction
 } from "./coordinator-plan.js";
 import type {
@@ -276,7 +280,6 @@ const OUTGOING_ACTIONS = new Map<CoordinatorAction["kind"], AtomicSwapMessageTyp
   ["stage_settlement_ack", "settlement_ack"]
 ]);
 
-const HEX_32 = /^[0-9a-f]{64}$/;
 const UUID_V4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const NIP17_TIMESTAMP_LOOKBACK_SECONDS = 172_800;
@@ -286,7 +289,7 @@ function clone<T>(value: T): T {
 }
 
 function bytes(hex: string, label: string): Uint8Array {
-  if (!HEX_32.test(hex)) throw new Error(`${label} is not a 32-byte key`);
+  if (!isHex32(hex)) throw new Error(`${label} is not a 32-byte key`);
   return Uint8Array.from(hex.match(/../g) ?? [], (part) => Number.parseInt(part, 16));
 }
 
@@ -370,21 +373,6 @@ const HTLC_STATE_RANK: Record<PersistedHtlcState, number> = {
 };
 
 type ProtocolSlot = "base" | "quote";
-
-function makerOffersBase(session: TradeSession): boolean {
-  return session.orderSide !== "buy";
-}
-
-/** Maps the protocol's two lock slots to the actual market legs. */
-function slotLeg(session: TradeSession, slot: ProtocolSlot): "base" | "quote" {
-  if (slot === "base") return makerOffersBase(session) ? "base" : "quote";
-  return makerOffersBase(session) ? "quote" : "base";
-}
-
-/** The inverse of `slotLeg`: which protocol slot funded this market leg. */
-function legSlot(session: TradeSession, leg: "base" | "quote"): ProtocolSlot {
-  return slotLeg(session, "base") === leg ? "base" : "quote";
-}
 
 /**
  * Builds the exact HTLC terms both sides must agree on for one protocol slot.
@@ -857,7 +845,7 @@ export class ZwapCoordinatorEffects implements CoordinatorEffectPort {
       const takerCommitment =
         (entry.intent.state.reservation as { taker_commitment?: string } | null)
           ?.taker_commitment;
-      if (!takerCommitment || !HEX_32.test(takerCommitment)) {
+      if (!takerCommitment || !isHex32(takerCommitment)) {
         throw new Error("Staged reserve lacks the taker commitment");
       }
       next.reserveProjectionId = entry.publication.projection.id;
@@ -909,7 +897,7 @@ export class ZwapCoordinatorEffects implements CoordinatorEffectPort {
       const takerCommitment =
         (entry.intent.state.reservation as { taker_commitment?: string } | null)
           ?.taker_commitment;
-      if (!takerCommitment || !HEX_32.test(takerCommitment)) {
+      if (!takerCommitment || !isHex32(takerCommitment)) {
         throw new Error("Committed reserve lacks the taker commitment");
       }
       next.reserveProjectionId = entry.publication.projection.id;

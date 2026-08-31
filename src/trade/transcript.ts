@@ -1,7 +1,7 @@
+import { isHex32 } from "../zenon/validate.js";
 import type { AtomicSwapChoreography } from "./atomic-messages.js";
 import type { ZwapTradeMessage } from "./messages.js";
 
-const HEX_32 = /^[0-9a-f]{64}$/;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CANONICAL_INTEGER = /^(0|[1-9][0-9]*)$/;
 
@@ -40,7 +40,7 @@ function assertAdvance(state: TradeTranscriptCheckpoint, input: CheckpointAdvanc
     throw new Error("Trade message sequence does not match the durable checkpoint");
   }
   if (!UUID_V4.test(input.message.message_id)) throw new Error("Trade message ID is invalid");
-  if (!HEX_32.test(input.rumorId) || !HEX_32.test(input.transcriptHash)) {
+  if (!isHex32(input.rumorId) || !isHex32(input.transcriptHash)) {
     throw new Error("Trade transcript identifiers are invalid");
   }
   if (input.message.previous_message_id !== state.lastMessageId) {
