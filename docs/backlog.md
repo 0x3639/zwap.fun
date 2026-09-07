@@ -92,8 +92,13 @@ old ceiling).
   `vite-plugin-node-polyfills` (140 packages) are gone; total JS 2.06 MB →
   0.60 MB; the `src/main.ts` SDK import is static again. Key derivation
   and AES-GCM were cross-checked against the old implementations (1,000
-  and 200 random cases). **Still open**: once upstream merges and publishes,
-  switch the dependency back to a registry version and drop the git dep.
+  and 200 random cases).
+- **Switch back to the upstream SDK** once digitalSloth merges the fork's
+  PRs and publishes a release: replace the git dependency in `package.json`
+  with the registry version, `npm install` to refresh the lockfile, and
+  re-run the checks above (`npm test`, `npm run build` with no argon2 chunk
+  and no eval/externalisation warnings, Docker build). Until then every
+  `npm ci` builds the SDK from the fork commit pinned in the lockfile.
 - **`INSTALL_URL`** in `src/ui/wallet-control.ts` is a placeholder pointing
   at the extension's repository; pin it when the store listing exists.
 
