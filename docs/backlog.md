@@ -82,8 +82,9 @@ old ceiling).
 
 - ~~**SDK ESM issue**~~ (digitalSloth/znn-typescript-sdk#33) — worked
   around on our side 2026-09-07: `package.json` now takes the SDK from the
-  fork branch `0x3639/znn-typescript-sdk#zwap/tree-shakeable` (lockfile
-  pins the commit; npm fetches public GitHub git deps as an https tarball
+  fork `0x3639/znn-typescript-sdk`, pinned to a commit hash in
+  `package.json` (branch `zwap/tree-shakeable`; bump the hash to pick up
+  new commits) as well as in the lockfile ( npm fetches public GitHub git deps as an https tarball
   and runs the SDK's `prepare` build, verified in the Docker image). The
   fork makes the modular ESM the browser entry with `sideEffects: false`,
   drops Node `crypto` / `crypto-browserify` / `ed25519-hd-key` for
