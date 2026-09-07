@@ -80,11 +80,20 @@ old ceiling).
 
 ## 5. Upstream and external waits
 
-- **SDK ESM issue**: digitalSloth/znn-typescript-sdk#33. If upstream ships a
-  tree-shakeable browser build, replace the dynamic-import workaround in
-  `src/main.ts` with targeted imports and re-measure (goal: drop the 924 KB
-  SDK chunk and the 620 KB argon2 chunk from the app entirely, and lose the
-  vendored-eval warning).
+- ~~**SDK ESM issue**~~ (digitalSloth/znn-typescript-sdk#33) — worked
+  around on our side 2026-09-07: `package.json` now takes the SDK from the
+  fork branch `0x3639/znn-typescript-sdk#zwap/tree-shakeable` (lockfile
+  pins the commit; npm fetches public GitHub git deps as an https tarball
+  and runs the SDK's `prepare` build, verified in the Docker image). The
+  fork makes the modular ESM the browser entry with `sideEffects: false`,
+  drops Node `crypto` / `crypto-browserify` / `ed25519-hd-key` for
+  `@noble/*`, and loads argon2 lazily from the bundled build. Result: the
+  924 KB SDK chunk, the 620 KB argon2 chunk, the eval warning, and
+  `vite-plugin-node-polyfills` (140 packages) are gone; total JS 2.06 MB →
+  0.60 MB; the `src/main.ts` SDK import is static again. Key derivation
+  and AES-GCM were cross-checked against the old implementations (1,000
+  and 200 random cases). **Still open**: once upstream merges and publishes,
+  switch the dependency back to a registry version and drop the git dep.
 - **`INSTALL_URL`** in `src/ui/wallet-control.ts` is a placeholder pointing
   at the extension's repository; pin it when the store listing exists.
 
