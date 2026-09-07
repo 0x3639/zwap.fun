@@ -88,23 +88,36 @@ old ceiling).
 - **`INSTALL_URL`** in `src/ui/wallet-control.ts` is a placeholder pointing
   at the extension's repository; pin it when the store listing exists.
 
-## 6. Security-pass follow-ups (2026-08-31, decisions pending)
+## 6. Security-pass follow-ups (2026-08-31; decided 2026-09-07)
 
 From the post-review security pass over `6aecb7b..e4a0caf` (no reportable
 findings; quick wins shipped on `fix/security-hardening`):
 
-- **`assertTakerClaim` proof-of-control**: the anti-squatting gate trusts
-  the claimed taker address (`src/api/trade-api.ts`). Residual risk is
-  DoS-class squatting, already blunted by the `withdrawn` release. Either
-  accept-and-document, or fold a wallet-signed session-bound challenge
-  into the take flow next time it changes.
-- **Generate the CSP from one source at build time** instead of four
-  hand-kept copies (the consistency test now guards all four).
+- ~~**`assertTakerClaim` proof-of-control**~~ — accepted and documented
+  (see *Accepted limitations* below and the gate's docstring in
+  `src/api/trade-api.ts`). Revisit when the take flow's wire format next
+  changes: a wallet-signed, session-bound challenge would close it.
+- ~~**Generate the CSP from one source at build time**~~ — done. The
+  policy lives in `deploy/csp.ts`; a Vite plugin (`deploy/csp-plugin.ts`)
+  injects the `<meta>` into both HTML entries in dev and build, emits
+  `dist/_headers` from `deploy/_headers.template`, and renders the
+  gitignored `deploy/nginx.conf` from `deploy/nginx.conf.template` (the
+  Dockerfile now copies it from the build stage). Tests in `deploy/` check
+  the rendered outputs and that no hand-written CSP meta creeps back into
+  the source HTML.
 - **Re-run the external security review** after the manual mainnet test
   and before launch, on the running system.
 
 ## Accepted limitations (documented, not planned)
 
+- The anti-squatting gate on incoming reservation proposals
+  (`assertTakerClaim`) checks that the *claimed* taker address is funded and
+  not already backing another live reservation, but not that the proposer
+  controls it. Anyone can name a funded stranger's address. Since the
+  deferred base lock, that buys a public slot and nothing on chain, and the
+  `withdrawn` release frees the slot early; residual risk is DoS-class
+  squatting. Proof of control (a wallet-signed, session-bound challenge)
+  is deferred to the next take-flow wire-format change.
 - Per-session Nostr secret keys exist transiently as immutable JS strings;
   `fill(0)` clears the byte copies but cannot scrub string interning. Noted
   in the DM trace; no practical JS fix.

@@ -7,9 +7,10 @@ Docker-capable host.
 
 The image is a two-stage build: `node:22-alpine` runs `npm ci && npm run
 build`, then the built `dist/` is copied into an `nginx:1.27-alpine` image
-configured by [`deploy/nginx.conf`](../../deploy/nginx.conf). There is no
-backend process and no persistent volume — the container serves static
-files only.
+configured by `deploy/nginx.conf`, which the build stage renders from
+[`deploy/nginx.conf.template`](../../deploy/nginx.conf.template) with the
+Content Security Policy filled in from `deploy/csp.ts`. There is no backend
+process and no persistent volume — the container serves static files only.
 
 ## Build
 
@@ -56,8 +57,8 @@ curl -sI localhost:8080/ | head -1
 ```
 
 `node_modules` and any local `.env*` files are excluded from the build
-context by `.dockerignore`, so nothing outside `deploy/nginx.conf` and the
-built `dist/` reaches the final image.
+context by `.dockerignore`, so nothing outside the rendered
+`deploy/nginx.conf` and the built `dist/` reaches the final image.
 
 ## Coolify
 

@@ -74,14 +74,16 @@ Cloudflare provisions and renews the TLS certificate automatically.
 ## Why HTTPS matters here specifically
 
 Pages serves every deployment over HTTPS by default, which is a hard
-requirement for this app, not just a nicety: `index.html`'s Content Security
+requirement for this app, not just a nicety: the site's Content Security
 Policy allows the page to open `wss://` (secure WebSocket) connections to the
 Zenon node and the Nostr relays, and a page served over plain HTTP cannot
 open a `wss://` connection reliably in most browsers (mixed active content).
-Every `wss://` node and relay target already appears in `connect-src` in
-`index.html` — if you change `VITE_ZENON_NODE_WS` or the relay list, update
-the CSP `connect-src` to match, or the browser will block the connection
-silently.
+The CSP has one source, `deploy/csp.ts`; the build renders it into the
+`<meta>` tag of every HTML entry, into `dist/_headers`, and into the nginx
+config. Every `wss://` node and relay target already appears in its
+`connect-src` — if you change `VITE_ZENON_NODE_WS` or the relay list, add the
+new endpoint there (a unit test fails if a configured default is missing),
+or the browser will block the connection silently.
 
 ## Verify locally before pushing
 
@@ -90,10 +92,10 @@ npm run build
 ls dist/_headers
 ```
 
-`public/_headers` is copied verbatim into `dist/` by Vite's default
-`publicDir` behavior, and Cloudflare Pages reads `_headers` from the deploy
-output to set response headers (cache policy for `index.html` vs. hashed
-assets).
+`dist/_headers` is rendered by the build from `deploy/_headers.template`
+(with the CSP filled in from `deploy/csp.ts`), and Cloudflare Pages reads
+`_headers` from the deploy output to set response headers (cache policy for
+`index.html` vs. hashed assets).
 
 Its `/*` block carries the security headers every path needs: `X-Frame-Options:
 DENY` and `Content-Security-Policy: frame-ancestors 'none'` (the page holds a

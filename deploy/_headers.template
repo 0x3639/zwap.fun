@@ -1,0 +1,11 @@
+# Rendered from deploy/_headers.template by `npm run build` (deploy/csp-plugin.ts).
+# Edit the template or the CSP source in deploy/csp.ts, never the rendered file.
+/*
+  X-Frame-Options: DENY
+  Content-Security-Policy: __CSP__
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+/index.html
+  Cache-Control: no-cache
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

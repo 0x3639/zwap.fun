@@ -323,6 +323,16 @@ export class TradeApi {
    * the claimed taker address must actually hold what the taker leg will
    * have to lock, and one funded address must not be able to back every
    * order's reservation at once.
+   *
+   * Accepted limitation: the address is *claimed*, not proven. Nothing here
+   * shows the proposer controls it, so anyone can name a funded stranger's
+   * address and pass both checks. What that buys them is a slot, not funds:
+   * since the deferred base lock, accepting costs the maker only a published
+   * reservation until the taker's session_ack arrives, and a reservation
+   * that never progresses is released early as `withdrawn`. The residual
+   * risk is DoS-class squatting. A wallet-signed, session-bound challenge
+   * in the take flow would close it; fold that in the next time the take
+   * flow's wire format changes rather than as a standalone break.
    */
   private async assertTakerClaim(
     session: TradeSession,

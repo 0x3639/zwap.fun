@@ -6,3 +6,5 @@ coverage/
 .env
 .env.local
 
+# Rendered from deploy/nginx.conf.template by the build (deploy/csp-plugin.ts)
+deploy/nginx.conf

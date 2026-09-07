@@ -1,3 +1,5 @@
+# Rendered from deploy/nginx.conf.template by `npm run build` (deploy/csp-plugin.ts).
+# Edit the template or the CSP source in deploy/csp.ts, never the rendered file.
 server {
     listen 80;
     server_name _;
@@ -16,7 +18,7 @@ server {
     # a location *replaces* the inherited set rather than extending it, so every
     # location below that sets a header of its own restates these four.
     add_header X-Frame-Options "DENY" always;
-    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' wss://my.hc1node.com:35998 wss://node.zenon.network:35998 ws://172.245.236.40:35998 https://auth.nostr1.com https://nos.lol https://relay.primal.net https://offchain.pub wss://auth.nostr1.com wss://nos.lol wss://relay.primal.net wss://offchain.pub; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
+    add_header Content-Security-Policy "__CSP__" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "no-referrer" always;
     # TLS terminates at Cloudflare/Coolify in front of this container, so HSTS
@@ -26,7 +28,7 @@ server {
     location = /index.html {
         add_header Cache-Control "no-cache";
         add_header X-Frame-Options "DENY" always;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' wss://my.hc1node.com:35998 wss://node.zenon.network:35998 ws://172.245.236.40:35998 https://auth.nostr1.com https://nos.lol https://relay.primal.net https://offchain.pub wss://auth.nostr1.com wss://nos.lol wss://relay.primal.net wss://offchain.pub; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
+        add_header Content-Security-Policy "__CSP__" always;
         add_header X-Content-Type-Options "nosniff" always;
         add_header Referrer-Policy "no-referrer" always;
     }
@@ -34,7 +36,7 @@ server {
     location /assets/ {
         add_header Cache-Control "public, max-age=31536000, immutable";
         add_header X-Frame-Options "DENY" always;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' wss://my.hc1node.com:35998 wss://node.zenon.network:35998 ws://172.245.236.40:35998 https://auth.nostr1.com https://nos.lol https://relay.primal.net https://offchain.pub wss://auth.nostr1.com wss://nos.lol wss://relay.primal.net wss://offchain.pub; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
+        add_header Content-Security-Policy "__CSP__" always;
         add_header X-Content-Type-Options "nosniff" always;
         add_header Referrer-Policy "no-referrer" always;
     }
